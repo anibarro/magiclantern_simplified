@@ -3065,6 +3065,16 @@ menu_post_display()
         draw_line(720, 406, 680, 428, MENU_WARNING_COLOR);
     }
 
+    // display build quality / readiness indicator
+    int build_level_colour = COLOR_RED;
+    if (BUILD_LEVEL > 4)
+        build_level_colour = COLOR_YELLOW;
+    else if (BUILD_LEVEL > 8)
+        build_level_colour = COLOR_GREEN2;
+    bfnt_draw_char(ICON_ML_GAMES, 675, 433, build_level_colour, NO_BG_ERASE);
+    bmp_draw_rect(build_level_colour, 670, 430, 48, 48);
+    bmp_draw_rect(build_level_colour, 671, 431, 46, 46);
+
     // display help about how to customize the menu
     if (customize_mode)
     {

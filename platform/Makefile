@@ -229,7 +229,7 @@ $(ZIP_DIR): | $(BUILD_DIR)
 	$(CP) $(TOP_DIR)/scripts/lib/*.lua $(BUILD_DIR)/zip/ML/scripts/lib
 	-$(CP) $(TOP_DIR)/doc/README.user $(BUILD_DIR)/zip/ML/README
 
-zip_contents:: $(ZIP_DIR) $(BUILD_DIR)/autoexec.bin $(BUILD_DIR)/magiclantern.bin | $(BUILD_DIR)
+zip_contents:: $(ZIP_DIR) $(BUILD_DIR)/autoexec.bin $(BUILD_DIR)/magiclantern.bin $(BUILD_DIR)/blevel.bmp | $(BUILD_DIR)
 	$(CP) $(BUILD_DIR)/autoexec.bin $(ZIP_DIR)/
 
 ifeq ($(CONFIG_MODULES),y)
@@ -617,6 +617,29 @@ $(BUILD_DIR)/version.c: FORCE | $(BUILD_DIR)
 	@echo 'const char build_date[] ="'`$(DATE) "+%Y-%m-%d %H:%M:%S %Z"`'";' >> $(BUILD_DIR)/version.tmp
 	@echo 'const char build_user[] = "'`whoami`@`hostname`'";'  >> $(BUILD_DIR)/version.tmp
 	mv $(BUILD_DIR)/version.tmp $@
+
+# Test if env is setup for an official release build
+ML_RELEASE_AUTH_HASH = d010f1916554b147b295c88dfa3a71472e3df40d
+ifeq ($(shell echo -n $(ML_RELEASE_KEY) | sha1sum -z | cut -c -40),$(ML_RELEASE_AUTH_HASH))
+    MAX_BUILD_LEVEL = 9
+    CFLAGS += -DCONFIG_RELEASE_BUILD
+else
+    MAX_BUILD_LEVEL = 5
+endif
+
+# Limit the build level based on per cam Makefile,
+# to MIN(requested, max)
+ifeq ($(shell test $(REQUESTED_BUILD_LEVEL) -gt $(MAX_BUILD_LEVEL); echo $$?),0)
+    BUILD_LEVEL = $(MAX_BUILD_LEVEL)
+else
+    BUILD_LEVEL = $(REQUESTED_BUILD_LEVEL)
+endif
+CFLAGS += -DBUILD_LEVEL=$(BUILD_LEVEL)
+
+# Icon to represent build level - alpha, beta, release, etc.
+# Only official builds get these.
+$(BUILD_DIR)/blevel.bmp: | $(BUILD_DIR)
+	-$(CP) $(TOP_DIR)/data/build_level_icons/blevel$(BUILD_LEVEL).bmp $(BUILD_DIR)/blevel.bmp
 
 $(BUILD_DIR)/xor_chk: $(BUILD_TOOLS_DIR)/xor_chk.c | $(BUILD_DIR)
 	$(HOST_CC) $< -o $@
