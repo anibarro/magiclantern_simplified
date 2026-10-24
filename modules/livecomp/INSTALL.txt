@@ -1,0 +1,38 @@
+Live Composite LCM8 - Canon EOS M firmware 2.0.2
+
+INSTALL
+Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
+only that module. Enable livecomp.mo in the Modules tab and reboot.
+Keep your existing autoexec.bin and its matching EOSM_202.sym together.
+No replacement core, symbol file or other module is included or required.
+Uses standard ML core RAW, FPS and display-filter APIs. Import compatibility
+was checked against this repository's unmodified EOSM.202 core; an unrelated
+older ML build may lack APIs and refuse to load the module.
+
+USE
+1. Movie mode, manual exposure/ISO and fixed white balance; normal unzoomed view.
+2. Set ML FPS override to 3 fps, Low light, and the slowest available shutter.
+   Enable Global Draw. Disable other RAW recording/capture tools.
+3. Shoot > Live Composite: ON. Open its submenu for settings:
+   Capture limit: 30 / 60 / 120 frames (default 120).
+   LCD refresh: every 1 / 2 / 4 seconds (default 1).
+4. Close the menu. Nothing starts until you hold Q/SET (about half a second) in normal Live View.
+5. Hold Q/SET again to stop and save, or wait for the frame limit.
+   LCD shows the growing composite. Every admitted RAW input is merged.
+   After saving completes, the module returns to Armed; hold SET to start again.
+6. LVCPnnnn.DNG, LOG and CSV are saved at the card root. Each capture uses a new filename.
+   Off returns Q/SET to its ordinary function.
+
+Normal photos do not trigger this version. The stock core suppresses short SET presses outside menus; use a long press.
+The confirmed continuous path
+requires Movie Live View, so Q/SET is the explicit start-button fallback.
+The first streaming RAW frame is the base image; no mechanical photo is taken.
+The input resolution is normal Live View (measured 1808x727, active 1736x697),
+not full sensor resolution. DNG output retains LCM5's fixed daylight metadata;
+exact white balance, longer captures and full resolution remain future work.
+
+VALIDATION
+LCM5 capture, LCD and DNG passed a 53-frame camera run. LCM8 adds runtime camera selection and portable key handling while retaining reusable sessions. It passes host tests and standard-core import
+checks; repeated camera sessions still need confirmation.
+If an error appears, retain the LOG/CSV/DNG. Reboot is required only when
+Status explicitly says capture ownership is uncertain. Safe failures allow retry.

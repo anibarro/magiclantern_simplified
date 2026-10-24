@@ -41,6 +41,7 @@ ML_MODULES = \
     ettr \
     dual_iso \
     silent \
+    livecomp \
     dot_tune \
     autoexpo \
     arkanoid \

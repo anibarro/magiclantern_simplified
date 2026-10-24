@@ -9,6 +9,7 @@ syntax: glob
 .*
 !.hgignore
 !.gitignore
+!.gitattributes
 .*.swp
 a.out
 *.exe
@@ -39,6 +40,11 @@ docs/latex
 pymite-nat.c
 pymite-img.c
 platform/*/build
+platform/EOSM.202/build_livecomp/
+platform/EOSM.202/build_stock_check/
+platform/EOSM.202/releases/
+research/bilal-crop-rec/
+tests/livecomp/*-camera/*
 platform/all/autoexec-all
 platform/all/autoexec-fir
 platform/all/ML
@@ -77,3 +83,20 @@ developer_guide/developer_guide.html
 developer_guide/developer_guide.pdf
 
 syntax: regexp
+
+# Local Live Composite research, camera evidence, and developer notes.
+/research/
+/tests/livecomp/
+/LIVE_COMPOSITE_MODULE_PLAN.md
+/LIVE_COMPOSITE_CONTINUOUS_RESEARCH.md
+/doc/live_zoom/
+/build_tools/analyze_livecomp.py
+/build_tools/test_livecomp_contracts.py
+/build_tools/verify_livecomp.py
+__pycache__/
+*.LOG
+*.DNG
+*.mo
+*.o
+*.d
+# Keep module usage/development guides and executable tests versioned.

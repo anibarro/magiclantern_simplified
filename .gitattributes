@@ -1,0 +1,3 @@
+# Executable build scripts must also work from a Windows checkout under WSL.
+*.sh text eol=lf
+*.py text eol=lf
