@@ -106,6 +106,7 @@ uint32_t shamem_read(uint32_t a); void EngDrvOut(uint32_t r,uint32_t v); void En
 int edmac_get_state(uint32_t ch); uint32_t edmac_get_pointer(uint32_t ch);
 struct vram_info { uint8_t *vram; int width,pitch,height; };
 struct vram_info *get_yuv422_vram(void);
+void NotifyBox(int ms,const char *fmt,...);
 int raw_lv_is_enabled(void); int fps_get_current_x1000(void); struct card_info *get_ml_card(void);
 void powersave_prohibit(void); void powersave_permit(void); void gui_uilock(int l);
 int raw2iso(int r);
@@ -155,9 +156,11 @@ void EngDrvOut(uint32_t r,uint32_t v){ (void)r;(void)v; }
 void EngDrvOutLV(uint32_t r,uint32_t v){ if (r==0xC0F06014) reg6014=v; }
 int edmac_get_state(uint32_t ch){ (void)ch; return dma_state; }
 static int overrun_sim;
+static unsigned last_written;
 uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; if (!slurp_dst) return 0;
-    return (uint32_t)(uintptr_t)slurp_dst+(slurp_armed ? (overrun_sim ? 9240u:0u):(uint32_t)(slurp_w*slurp_h)); }
+    return (uint32_t)(uintptr_t)slurp_dst+(slurp_armed ? (overrun_sim ? 9240u:0u):last_written); }
 static struct vram_info vram={0,720,1440,480};
+void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
 struct vram_info *get_yuv422_vram(void){ return &vram; }
 void edmac_raw_slurp(void *dst,int w,int h){ slurp_dst=dst; slurp_w=w; slurp_h=h; slurp_armed=1; }
 int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){ return fps_now; }
@@ -193,8 +196,9 @@ void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 static void frame(void)
 {
     if (stall_after_zoom && zoom==5) return;
-    if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); }
+    if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); last_written=1000; }
     else if (slurp_armed && !dma_stuck) {
+        last_written=slurp_w*slurp_h;
         for (int i=0;i<slurp_w*slurp_h;i+=4096) slurp_dst[i]=(uint8_t)(slurp_frames*7+i);
         memset(slurp_dst+slurp_w*slurp_h-8,0x11,8);
         slurp_frames++;
@@ -269,6 +273,11 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("cont: %s frames=%d\n",status,slurp_frames);
     assert(!unsafe && strstr(status,"saved") && csv_written && zoom==1 && unpatched==4 && slurp_frames>=6);
+    /* Continuous with two partial frames: merged and counted, not fatal. */
+    reset();partial_frames=2;dng_size_ok=2048+bytes;
+    { unsigned before=slurp_frames; (void)before; }
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && strstr(status,"saved"));
     /* Merge overrun (next readout already writing): stop, keep the composite. */
     reset();overrun_sim=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("overrun: %s\n",status);
@@ -299,7 +308,7 @@ def main():
         run(REGS_TEST, 'regs', tmp)
         (tmp / 'stub.h').write_text(STUB)
         for h in ('dryos.h', 'module.h', 'lens.h', 'raw.h', 'mem.h', 'patch.h', 'edmac.h', 'fps.h',
-                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h'):
+                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h', 'notify_box.h'):
             (tmp / h).write_text('#include "stub.h"\n')
         src = (MOD / 'fullres-lv.c').read_text()
         # 32-bit Canon pointers: on the 64-bit host keep addresses as uintptr_t.
