@@ -1015,3 +1015,26 @@ try-lock Live View's own locks of that type (minus the engine's ten) with
 Canon's functions (FF2C5848/FF2C6228), run the reference job (HW_tries
 where 0x20 + type), unlock and delete (FF2C5EB4/FF2C5A60). A type whose
 power breaks the job is the blocker.
+
+## LCM40 camera result (LVFR0001)
+
+Paused reference exact (117 ms). Each of 12 resource types powered with
+Live View's own locks (4:1, 6:16, 7:1, B:1, C:3, E:1, F:1, and the extra
+locks in 2:6, 3:5, 5:16, 0:5, 1:6 ids), one type at a time: every lock
+taken and released cleanly, **engine exact every time (115-116 ms)**.
+
+## Hardware engine: conclusion (LCM9-LCM40)
+
+The engine is exact and takes ~116 ms per full frame with Live View paused
+(9 reproductions). Every static difference between Live View running and
+paused has now been reproduced while paused without breaking it: all ENGIO
+register values (routing, block start/stop, 0xC0F01, sensor timing, alone
+and together) and the power state of every resource type Live View holds.
+In Live View it produces nothing on any channel, and the only channel that
+can carry its output (5) belongs to Live View; borrowing it crashed the
+camera twice. The blockage therefore comes from what Live View actively
+does while running (its per-frame pipeline/timing activity), which cannot
+be reproduced or suspended without PauseLiveView. Pausing per merge costs
+~0.2 + 0.7 s plus re-entering full-res mode - more exposure lost than the
+CPU merge, which overlaps the next exposure with no gap. The CPU path is
+the product; the engine code stays in the tree, unused, documented.
