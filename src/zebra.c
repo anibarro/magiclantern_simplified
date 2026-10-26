@@ -54,6 +54,12 @@
 
 extern uint32_t ml_refresh_display_needed;
 
+#ifdef CONFIG_EOSM
+extern int xpan_photo_ui_active(void);
+extern int xpan_photo_get_65_24_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
+extern int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *crop_height);
+#endif
+
 #if defined(FEATURE_RAW_HISTOGRAM) || defined(FEATURE_RAW_ZEBRAS) || defined(FEATURE_RAW_SPOTMETER)
 #define FEATURE_RAW_OVERLAYS
 #endif
@@ -109,6 +115,11 @@ int FAST get_y_skip_offset_for_overlays()
     // in playback mode, and skip 16:9 bars for movies, but cover the entire area for photos
     if (!lv) return is_pure_play_movie_mode() ? os.off_169 : 0;
 
+#ifdef CONFIG_EOSM
+    /* The XPan still-photo layout replaces both stock status bars. */
+    if (xpan_photo_ui_active()) return 0;
+#endif
+
     // in liveview, try not to overlap top and bottom bars
     int off = 0;
     if (lv && is_movie_mode() && video_mode_resolution <= 1) off = os.off_169;
@@ -125,6 +136,11 @@ int FAST get_y_skip_offset_for_histogram()
 {
     // in playback mode, and skip 16:9 bars for movies, but cover the entire area for photos
     if (!lv) return is_pure_play_movie_mode() ? os.off_169 : 0;
+
+#ifdef CONFIG_EOSM
+    /* Use the former status-bar rows when calculating the photo histogram. */
+    if (xpan_photo_ui_active()) return 0;
+#endif
 
     // in liveview, try not to overlap top and bottom bars
     int off = 0;
@@ -437,7 +453,12 @@ int get_global_draw() // menu setting, or off if
     if (lv && ZEBRAS_IN_LIVEVIEW)
     {
         return 
+#ifdef CONFIG_EOSM
+            /* XPan draws its own HUD in every Canon display mode. */
+            (lv_disp_mode == 0 || xpan_photo_ui_active()) &&
+#else
             lv_disp_mode == 0 &&
+#endif
             !idle_globaldraw_disable && 
             bmp_is_on() &&
             DISPLAY_IS_ON && 
@@ -2395,6 +2416,24 @@ static void spotmeter_step()
 
     int xcb = os.x0 + os.x_ex/2;
     int ycb = os.y0 + os.y_ex/2;
+#ifdef CONFIG_EOSM
+    int xpan_spotmeter_frame = 0;
+    int xpan_frame_left = 0, xpan_frame_right = 0;
+    int xpan_frame_top = 0, xpan_frame_bottom = 0;
+    int frame_x, frame_y, frame_width, frame_height;
+    if (xpan_photo_ui_active() && xpan_photo_get_liveview_frame_rect(
+            &frame_x, &frame_y, &frame_width, &frame_height))
+    {
+        /* Center the default spot reading on the cropped composition, not the full sensor preview. */
+        xpan_frame_left = os.x0 + frame_x;
+        xpan_frame_right = xpan_frame_left + frame_width;
+        xpan_frame_top = os.y0 + frame_y;
+        xpan_frame_bottom = xpan_frame_top + frame_height;
+        xcb = xpan_frame_left + frame_width / 2;
+        ycb = xpan_frame_top + frame_height / 2;
+        xpan_spotmeter_frame = 1;
+    }
+#endif
     
     if (spotmeter_position == 1) // AF frame
     {
@@ -2414,8 +2453,19 @@ static void spotmeter_step()
         }
         xcb = N2BM_X(aff_x0);
         ycb = N2BM_Y(aff_y0);
+#ifdef CONFIG_EOSM
+        if (xpan_spotmeter_frame)
+        {
+            /* Keep a focus-box-linked spot sample inside the selected XPan frame. */
+            xcb = COERCE(xcb, xpan_frame_left + 50, xpan_frame_right - 50);
+            ycb = COERCE(ycb, xpan_frame_top + 50, xpan_frame_bottom - 50);
+        }
+        else
+#endif
+        {
         xcb = COERCE(xcb, os.x0 + 50, os.x_max - 50);
         ycb = COERCE(ycb, os.y0 + 50, os.y_max - 50);
+        }
     }
     
     // save coords, so we know where to erase the spotmeter from
@@ -3463,6 +3513,24 @@ static void draw_zoom_overlay(int dirty)
     }
     //~ bmp_printf(FONT_LARGE, 50, 50, "%d,%d %d,%d", W, H, aff_x0_lv);
 
+    #ifdef CONFIG_EOSM
+    if (xpan_photo_ui_active())
+    {
+        int crop_x, crop_y, crop_w, crop_h;
+        if (xpan_photo_get_preview_rect(lv->width, lv->height,
+                &crop_x, &crop_y, &crop_w, &crop_h))
+        {
+            /* Magic Zoom writes into Canon's source image before XPan moves
+             * its middle strip. Keep the entire window inside that source
+             * strip, so it remains over the photograph in either alignment. */
+            W = MIN(W, crop_w - 8) & ~3;
+            H = MIN(H, crop_h - 8);
+            zb_x0_lv = COERCE(zb_x0_lv, crop_x + W/2 + 4, crop_x + crop_w - W/2 - 4);
+            zb_y0_lv = COERCE(zb_y0_lv, crop_y + H/2 + 4, crop_y + crop_h - H/2 - 4);
+        }
+    }
+    #endif
+
     if (zoom_overlay_pos)
     {
         int w = W * lv->width / hd->width;
@@ -3547,6 +3615,14 @@ static void draw_zoom_overlay(int dirty)
 
 int liveview_display_idle()
 {
+#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+    /* XPan dial mode: Canon sits in ML's menu GUI mode (93) under the HUD so
+     * the MPU forwards the dial; Live View itself is unchanged. */
+    extern int xpan_hud_dial_mode_active(void);
+    if (xpan_hud_dial_mode_active())
+        return DISPLAY_IS_ON && LV_NON_PAUSED && job_state_ready_to_take_pic() &&
+            !menu_active_and_not_hidden() && !mirror_down;
+#endif
 // Common conditions required across all generations
     if( !DISPLAY_IS_ON
         || !LV_NON_PAUSED
@@ -3617,7 +3693,12 @@ int liveview_display_idle()
 // when it's safe to draw zebras and other on-screen stuff
 int zebra_should_run()
 {
-    return liveview_display_idle() && get_global_draw() &&
+    int xpan_preview_needs_updates = 0;
+#ifdef CONFIG_EOSM
+    /* Keep the compact photo HUD alive even when native 3:2 needs no transform. */
+    xpan_preview_needs_updates = xpan_photo_ui_active();
+#endif
+    return liveview_display_idle() && (get_global_draw() || xpan_preview_needs_updates) &&
         !is_zoom_mode_so_no_zebras() &&
         !(clearscreen == 1 && (get_halfshutter_pressed() || dofpreview)) &&
         !WAVEFORM_FULLSCREEN;
@@ -3743,10 +3824,43 @@ void draw_histogram_and_waveform(int allow_play)
     int screen_layout = get_screen_layout();
 #endif
 
+#ifdef CONFIG_EOSM
+    /* XPan monitoring overlays occupy the photograph, leaving its HUD clear. */
+    int xpan_image_graph_y = 0;
+    int xpan_image_graph_height = 0;
+    int xpan_image_graph_x = 0;
+    int xpan_image_graph_width = 0;
+    int xpan_photo_frame = 0;
+    int xpan_photo_histogram_fits = 0;
+    if (lv && !PLAY_MODE)
+    {
+        if (xpan_photo_get_monitor_rect(&xpan_image_graph_x,
+                &xpan_image_graph_y, &xpan_image_graph_width, &xpan_image_graph_height))
+        {
+            xpan_photo_frame = 1;
+            /* Reserve the graph border and keep it inside the image. */
+            xpan_photo_histogram_fits = xpan_image_graph_height >= hist_height + 2;
+        }
+    }
+
+    /* Leave the full 3:2 photo preview intact; the optional guide overlay owns its own matte. */
+#endif
+
 #ifdef FEATURE_HISTOGRAM
     if( hist_draw && !WAVEFORM_FULLSCREEN)
     {
         extern int console_visible;
+#ifdef CONFIG_EOSM
+        if (xpan_photo_frame)
+        {
+            if (xpan_photo_histogram_fits)
+            {
+                /* Keep the histogram anchored; toggling waveform must not move it. */
+                BMP_LOCK( hist_draw_image( xpan_image_graph_x + xpan_image_graph_width - HIST_WIDTH - 12, xpan_image_graph_y); )
+            }
+        }
+        else
+#endif
         #ifdef CONFIG_4_3_SCREEN
         if (PLAY_OR_QR_MODE)
             BMP_LOCK( hist_draw_image( os.x0 + 500,  1); )
@@ -3771,6 +3885,18 @@ void draw_histogram_and_waveform(int allow_play)
 #ifdef FEATURE_WAVEFORM
     if (waveform_draw)
     {
+#ifdef CONFIG_EOSM
+        if (xpan_photo_frame)
+        {
+            /* Fit the waveform vertically inside the photograph. */
+            if (waveform_size < 2 && xpan_image_graph_height >= 24)
+            {
+                int graph_height = MIN(WAVEFORM_HEIGHT * WAVEFORM_FACTOR, xpan_image_graph_height);
+                BMP_LOCK( waveform_draw_image( xpan_image_graph_x + 12, xpan_image_graph_y, graph_height); )
+            }
+        }
+        else
+#endif
         #ifdef CONFIG_4_3_SCREEN
         if (PLAY_OR_QR_MODE && WAVEFORM_FACTOR == 1)
             BMP_LOCK( waveform_draw_image( os.x0 + 100,  1, 54); )
@@ -4169,7 +4295,11 @@ livev_hipriority_task( void* unused )
             #ifdef CONFIG_DISPLAY_FILTERS
             /* to refactor with CBR */
             extern void display_filter_step(int frame_number);
-            display_filter_step(k);
+#ifdef CONFIG_EOSM
+            /* Photo framing has a dedicated producer; monitoring must not pace the LCD. */
+            if (!xpan_photo_preview_crop_enabled())
+#endif
+                display_filter_step(k);
             #endif
             
             #ifdef FEATURE_FALSE_COLOR
@@ -4537,6 +4667,13 @@ static void zebra_init()
     #ifdef FEATURE_CROPMARKS
     menu_add( "Overlay", cropmarks_menu, COUNT(cropmarks_menu) );
     #endif
+#ifdef CONFIG_EOSM
+    menu_add( "Shoot", xpan_photo_menu, COUNT(xpan_photo_menu) );
+#ifdef CONFIG_XPAN
+    /* Append look controls after the single parent/submenu has been registered. */
+    xpan_native_look_add_menu();
+#endif
+#endif
 }
 
 INIT_FUNC(__FILE__, zebra_init);

@@ -17,10 +17,16 @@
 #include "shoot.h"
 #include "focus.h"
 #include "imgconv.h"
+#include "edmac-memcpy.h"
 #include "zebra.h"
 #include "cropmarks.h"
+#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+#include "xpan-mode.h"
+#endif
+#include "vram.h"
 #include "hdr.h"
 #include "lvinfo.h"
+#include <string.h>
 
 #ifdef FEATURE_LCD_SENSOR_SHORTCUTS
 #include "lcdsensor.h"
@@ -3188,11 +3194,222 @@ void defish_draw_play()
 
 #ifdef CONFIG_CAN_REDIRECT_DISPLAY_BUFFER_EASILY
 static void* display_filter_buffer_unaligned = 0;
-static void* display_filter_buffer = 0;
-static void* last_canon_buffer = 0;
+/* These pointers are shared with the EOS M display-state callback. */
+static void * volatile display_filter_buffer = 0;
+static void * volatile last_canon_buffer = 0;
+#ifdef CONFIG_EOSM
+/* EOS M renders into one buffer while the other one is scanned out by the LCD. */
+static void * volatile display_filter_display_buffer = 0;
+static volatile int display_filter_frame_is_xpan = 0;
+#endif
 #endif
 
-static int display_filter_valid_image = 0;
+/* The renderer and Live View callback run asynchronously; publish flags as volatile. */
+static volatile int display_filter_valid_image = 0;
+#ifdef CONFIG_EOSM
+/* Keep the last complete XPan image during brief source-buffer handoff gaps. */
+static volatile int xpan_preview_has_valid_image = 0;
+/* Prevent the display callback from publishing a back buffer while it is being rendered. */
+static volatile int display_filter_rendering = 0;
+#endif
+
+/* Last EDMAC cursor that matched no Live View buffer (shared by all cameras). */
+static volatile uint32_t xpan_preview_unmatched_edmac_cursor = 0;
+
+#ifdef CONFIG_EOSM
+/* Reframe only the redirected LCD buffer; Canon's source buffers and captured files stay intact. */
+static volatile int xpan_preview_last_failure = 0;
+static volatile int xpan_preview_frame_active = 0;
+/* Count published frames rather than render attempts, and invalidate matte caches on reallocation. */
+static volatile unsigned xpan_preview_published_frames;
+static volatile unsigned xpan_preview_fps_x10;
+static unsigned xpan_preview_buffer_generation;
+/* Report a persistent transform guard once, so camera logs explain an unframed LCD. */
+static void xpan_photo_preview_report_failure(int code, const char *reason)
+{
+    if (code && code != xpan_preview_last_failure)
+        printf("XPan preview unavailable: %s\n", reason);
+    xpan_preview_last_failure = code;
+}
+
+/* Let the XPan menu expose failures that would otherwise be visible only on the console. */
+int xpan_photo_preview_failure_code(void)
+{
+    return xpan_preview_last_failure;
+}
+
+/* Report success only while the LCD display register points at a completed XPan frame. */
+int xpan_photo_preview_frame_active(void)
+{
+    if (!xpan_preview_frame_active || !display_filter_display_buffer) return 0;
+    uint32_t display_addr = YUV422_LV_BUFFER_DISPLAY_ADDR;
+    uint32_t xpan_addr = (uint32_t)display_filter_display_buffer;
+    return display_addr == xpan_addr || display_addr == (uint32_t)UNCACHEABLE(display_filter_display_buffer);
+}
+
+unsigned xpan_photo_preview_fps_x10(void)
+{
+    return xpan_preview_fps_x10;
+}
+
+/* Expose an unmatched hardware cursor so the menu can identify address-map errors. */
+unsigned xpan_photo_preview_unmatched_cursor(void)
+{
+    return (unsigned)xpan_preview_unmatched_edmac_cursor;
+}
+
+static int xpan_photo_apply_preview_crop(void *render_buffer, const void *source_buffer)
+{
+    if (!xpan_photo_preview_crop_enabled())
+    {
+        xpan_photo_preview_report_failure(0, 0);
+        return 0;
+    }
+    if (!render_buffer || !source_buffer)
+    {
+        xpan_photo_preview_report_failure(1, "render buffer unavailable");
+        return 0;
+    }
+
+    /* Refresh the display geometry before using the LCD-specific coordinates below. */
+    get_yuv422_vram();
+
+    /* The redirect buffer is allocated for the EOS M's 720x480 LCD view only. */
+    /* The redirect allocation is fixed-size; reject any stride it cannot safely hold. */
+    if (vram_lv.width != 720 || vram_lv.height != 480 || vram_lv.pitch != 720 * 2)
+    {
+        xpan_photo_preview_report_failure(2, "unsupported LCD buffer geometry");
+        return 0;
+    }
+
+    int crop_x, crop_y, crop_width, crop_height;
+    if (!xpan_photo_get_preview_rect(vram_lv.width, vram_lv.height,
+            &crop_x, &crop_y, &crop_width, &crop_height))
+    {
+        xpan_photo_preview_report_failure(3, "65:24 crop geometry unavailable");
+        return 0;
+    }
+
+    /* Position pixels from the LCD raster itself; bitmap overlay geometry can be smaller. */
+    int frame_y = xpan_photo_get_preview_frame_y(vram_lv.width, vram_lv.height);
+    if (crop_x != 0 || crop_width != vram_lv.width || crop_y < 0 ||
+        crop_y + crop_height > vram_lv.height ||
+        frame_y < 0 || frame_y + crop_height > vram_lv.height)
+    {
+        xpan_photo_preview_report_failure(4, "crop rectangle does not fit LCD buffer");
+        return 0;
+    }
+
+    /* The optional LCD look needs the cacheable alias after DMA. Flush stale
+     * back-buffer lines before the copy using the patch-aware cache wrapper. */
+    /* Write through the same uncached alias that LCD DMA scans out. */
+    /* Crop the selected back buffer, not a pointer that may be swapped by the callback. */
+    uint8_t *buffer = UNCACHEABLE(render_buffer);
+    /* Put the same centered source rows at the chosen screen edge in the private display buffer. */
+    const uint8_t *source = UNCACHEABLE(source_buffer);
+    /* Canon and our private LCD buffer do not overlap. Copy only the visible strip
+     * with the word-copy memcpy; this firmware's memmove copies byte by byte. */
+    if (source_buffer != render_buffer)
+    {
+#if defined(CONFIG_EDMAC_MEMCPY) && !defined(CONFIG_QEMU)
+        /* Use the EOS M's existing copy channels so uncached CPU accesses cannot pace Live View. */
+        edmac_memcpy_res_lock();
+        int copied = edmac_memcpy_checked(buffer + frame_y * vram_lv.pitch,
+            (void *)(source + crop_y * vram_lv.pitch), crop_height * vram_lv.pitch, 100);
+        edmac_memcpy_res_unlock();
+        if (!copied)
+        {
+            xpan_photo_preview_report_failure(7, "LCD DMA copy timed out");
+            return 0;
+        }
+#else
+        memcpy(buffer + frame_y * vram_lv.pitch, source + crop_y * vram_lv.pitch,
+            crop_height * vram_lv.pitch);
+#endif
+    }
+    else
+        memmove(buffer + frame_y * vram_lv.pitch, buffer + crop_y * vram_lv.pitch,
+            crop_height * vram_lv.pitch); /* Other display filters still use in-place output. */
+
+    /* DIGIC 5 uses signed chroma: U=V=0 and Y=0 are neutral black, not 128/16. */
+    uint32_t black = UYVY_PACK(0, 0, 0, 0);
+    static void *matte_buffers[2];
+    static int matte_positions[2];
+    static unsigned matte_generation;
+    if (matte_generation != xpan_preview_buffer_generation)
+    {
+        matte_buffers[0] = matte_buffers[1] = 0;
+        matte_generation = xpan_preview_buffer_generation;
+    }
+    int slot = !matte_buffers[0] || matte_buffers[0] == buffer ? 0 : 1;
+    /* A stable matte survives subsequent DMA strip copies. Clear only after layout/filter changes. */
+    if (source_buffer == render_buffer || matte_buffers[slot] != buffer || matte_positions[slot] != frame_y)
+    {
+        for (int y = 0; y < frame_y; y++)
+        {
+            uint32_t *row = (uint32_t *)(buffer + y * vram_lv.pitch);
+            for (int x = 0; x < vram_lv.pitch / 4; x++) row[x] = black;
+        }
+        for (int y = frame_y + crop_height; y < vram_lv.height; y++)
+        {
+            uint32_t *row = (uint32_t *)(buffer + y * vram_lv.pitch);
+            for (int x = 0; x < vram_lv.pitch / 4; x++) row[x] = black;
+        }
+
+        matte_buffers[slot] = buffer;
+        matte_positions[slot] = frame_y;
+    }
+    /* Keep every source column: XPan framing removes only top and bottom rows. */
+    xpan_photo_preview_report_failure(0, 0);
+    return 1;
+}
+#endif
+
+/* Map either cache alias of an EDMAC cursor back to its frame start for full-frame reads. */
+static void *display_filter_normalize_edmac_buffer(void *address)
+{
+    uintptr_t cursor = (uintptr_t)address;
+    uintptr_t b1 = (uintptr_t)CACHEABLE(YUV422_LV_BUFFER_1);
+    uintptr_t b2 = (uintptr_t)CACHEABLE(YUV422_LV_BUFFER_2);
+    uintptr_t b3 = (uintptr_t)CACHEABLE(YUV422_LV_BUFFER_3);
+    uintptr_t b1_uncached = (uintptr_t)UNCACHEABLE((void *)b1);
+    uintptr_t b2_uncached = (uintptr_t)UNCACHEABLE((void *)b2);
+    uintptr_t b3_uncached = (uintptr_t)UNCACHEABLE((void *)b3);
+#ifdef CONFIG_EOSM
+    /* EOS M may report an address inside its 720x480 YUV frame, not its first byte. */
+    const uintptr_t frame_span = 720 * 480 * 2;
+#else
+    const uintptr_t frame_span = 200000;
+#endif
+    uintptr_t distance = cursor > b1 ? cursor - b1 : b1 - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b1; }
+    distance = cursor > b1_uncached ? cursor - b1_uncached : b1_uncached - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b1; }
+    distance = cursor > b2 ? cursor - b2 : b2 - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b2; }
+    distance = cursor > b2_uncached ? cursor - b2_uncached : b2_uncached - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b2; }
+    distance = cursor > b3 ? cursor - b3 : b3 - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b3; }
+    distance = cursor > b3_uncached ? cursor - b3_uncached : b3_uncached - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b3; }
+#ifdef YUV422_LV_BUFFER_4
+    uintptr_t b4 = (uintptr_t)CACHEABLE(YUV422_LV_BUFFER_4);
+    uintptr_t b4_uncached = (uintptr_t)UNCACHEABLE((void *)b4);
+    distance = cursor > b4 ? cursor - b4 : b4 - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b4; }
+    distance = cursor > b4_uncached ? cursor - b4_uncached : b4_uncached - cursor;
+    if (distance < frame_span) { xpan_preview_unmatched_edmac_cursor = 0; return (void *)b4; }
+#endif
+#ifdef CONFIG_EOSM
+    /* Never copy an unrecognized EDMAC cursor as if it were a full 720x480 image. */
+    xpan_preview_unmatched_edmac_cursor = (uint32_t)cursor;
+    return 0;
+#else
+    xpan_preview_unmatched_edmac_cursor = 0;
+    return address;
+#endif
+}
 
 void display_filter_get_buffers(uint32_t** src_buf, uint32_t** dst_buf)
 {
@@ -3207,28 +3424,41 @@ void display_filter_get_buffers(uint32_t** src_buf, uint32_t** dst_buf)
     static void* buff = 0;
     void* current = (void*)shamem_read(REG_EDMAC_WRITE_LV_ADDR);
     
-    // EDMAC may not point exactly to the LV buffer (e.g. it may skip the 16:9 bars or whatever)
-    // so we'll try to choose some buffer that's close enough to the EDMAC address
-    int c = (int) current;
-
-    int b1 = (int)CACHEABLE(YUV422_LV_BUFFER_1);
-    int b2 = (int)CACHEABLE(YUV422_LV_BUFFER_2);
-    int b3 = (int)CACHEABLE(YUV422_LV_BUFFER_3);
-    #ifdef YUV422_LV_BUFFER_4
-    int b4 = (int)CACHEABLE(YUV422_LV_BUFFER_4);
-    #endif
-    if (ABS(c - b1) < 200000) current = (void*)b1;
-    else if (ABS(c - b2) < 200000) current = (void*)b2;
-    else if (ABS(c - b3) < 200000) current = (void*)b3;
-    #ifdef YUV422_LV_BUFFER_4
-    else if (ABS(c - b4) < 200000) current = (void*)b4;
-    #endif
+    /* EOS M's EDMAC cursor can sit past the first 200 KB of the current frame. */
+    current = display_filter_normalize_edmac_buffer(current);
+    if (!current)
+    {
+        /* A full-frame memcpy from an unknown cursor could overread unrelated memory. */
+        prev = 0;
+        buff = 0;
+        *src_buf = 0;
+        *dst_buf = CACHEABLE(display_filter_buffer);
+        return;
+    }
     
     if (current != prev)
         buff = prev;
     prev = current;
-    *src_buf = buff;
-    *dst_buf = CACHEABLE(display_filter_buffer);
+    if (!buff)
+    {
+        /* UNCACHEABLE(0) may not remain null, so reject the first incomplete EDMAC handoff here. */
+        *src_buf = 0;
+        *dst_buf = CACHEABLE(display_filter_buffer);
+        return;
+    }
+#ifdef CONFIG_EOSM
+    if (xpan_photo_preview_crop_enabled())
+    {
+        /* Bypass stale cache lines for Canon's DMA image and the redirected LCD frame. */
+        *src_buf = UNCACHEABLE(buff);
+        *dst_buf = UNCACHEABLE(display_filter_buffer);
+    }
+    else
+#endif
+    {
+        *src_buf = buff;
+        *dst_buf = CACHEABLE(display_filter_buffer);
+    }
 #else // just use some reasonable defaults that won't crash the camera
     *src_buf = CACHEABLE(YUV422_LV_BUFFER_1);
     *dst_buf = CACHEABLE(YUV422_LV_BUFFER_2);
@@ -3252,9 +3482,15 @@ int display_filter_enabled()
     #endif
     
     int fp = focus_peaking_as_display_filter();
-    if (!(defish_preview || anamorphic_preview || fp || mdf)) return 0;
-    if (!zebra_should_run()) return 0;
-    if (should_draw_zoom_overlay()) return 0; // not enough CPU power to run MZ and filters at the same time
+#ifdef CONFIG_EOSM
+    int xpan_preview = xpan_photo_preview_crop_enabled();
+#else
+    int xpan_preview = 0;
+#endif
+    if (!(defish_preview || anamorphic_preview || fp || mdf || xpan_preview)) return 0;
+    /* Keep XPan's redirected LCD frame attached even when the overlay scheduler is busy. */
+    if (!zebra_should_run() && !xpan_preview) return 0;
+    if (should_draw_zoom_overlay() && !xpan_preview) return 0; // not enough CPU power to run MZ and filters at the same time
     
     return fp ? 2 : 1;
 }
@@ -3275,7 +3511,7 @@ int display_filter_lv_vsync(int old_state, int x, int input, int z, int t)
     display_broken = hacked;
 
     if (!display_filter_valid_image) return CBR_RET_CONTINUE;
-    if (!display_filter_enabled()) { display_filter_valid_image = 0;  return CBR_RET_CONTINUE; }
+    if (!display_filter_enabled()) { display_filter_valid_image = 0; return CBR_RET_CONTINUE; }
 
     if (display_filter_enabled())
     {
@@ -3334,20 +3570,98 @@ int display_filter_lv_vsync(int old_state, int x, int input, int z, int t)
 #elif defined(CONFIG_CAN_REDIRECT_DISPLAY_BUFFER_EASILY) // all new cameras should work with this method
 
     if (!display_filter_buffer) return CBR_RET_CONTINUE;
-    if (!display_filter_valid_image) return CBR_RET_CONTINUE;
-    if (!display_filter_enabled()) { display_filter_valid_image = 0;  return CBR_RET_CONTINUE; }
+    int enabled = display_filter_enabled();
+#ifdef CONFIG_EOSM
+    if (xpan_photo_preview_crop_enabled() && lv_dispsize != 1)
+    {
+        /* Magnified (SET zoom): show Canon's zoom frame unshifted. The XPan
+         * buffers stay allocated; 1x waits for a fresh complete frame. */
+        xpan_preview_has_valid_image = 0;
+        xpan_preview_frame_active = 0;
+        display_filter_valid_image = 0;
+        display_filter_frame_is_xpan = 0;
+        return CBR_RET_CONTINUE;
+    }
+#endif
+#ifdef CONFIG_EOSM
+    int keep_xpan_frame = xpan_photo_preview_crop_enabled() && xpan_preview_has_valid_image;
+#else
+    int keep_xpan_frame = 0;
+#endif
+    if (!enabled && !keep_xpan_frame) { display_filter_valid_image = 0; return CBR_RET_CONTINUE; }
+
+#ifdef CONFIG_EOSM
+    int xpan_preview = xpan_photo_preview_crop_enabled();
+    if (xpan_preview && display_filter_rendering)
+    {
+        /* Canon has changed its scanout pointer; keep the previous complete XPan frame. */
+        if (xpan_preview_has_valid_image && display_filter_display_buffer)
+        {
+            YUV422_LV_BUFFER_DISPLAY_ADDR = (uint32_t)display_filter_display_buffer;
+            return CBR_RET_STOP;
+        }
+        return CBR_RET_CONTINUE;
+    }
+    if (xpan_preview && display_filter_valid_image && !display_filter_frame_is_xpan)
+        display_filter_valid_image = 0; /* Never show an unframed intermediate filter result. */
+#endif
+    if (!display_filter_valid_image && !keep_xpan_frame) return CBR_RET_CONTINUE;
     
     /* save the old buffer (to restore it when turning off display filters) */
     void* current_buffer = (void*) YUV422_LV_BUFFER_DISPLAY_ADDR;
+#ifdef CONFIG_EOSM
+    if (current_buffer != display_filter_buffer && current_buffer != display_filter_display_buffer &&
+        current_buffer != UNCACHEABLE(display_filter_buffer) &&
+        current_buffer != UNCACHEABLE(display_filter_display_buffer))
+        last_canon_buffer = current_buffer;
+
+    /* Publish only a completed frame, then render the next frame into the other buffer. */
+    if (display_filter_valid_image && (!xpan_preview || display_filter_frame_is_xpan))
+    {
+        if (xpan_preview)
+        {
+            /* LCD DMA reads the uncached alias; keep the CPU's next back buffer cacheable. */
+            void *completed = UNCACHEABLE(display_filter_buffer);
+            void *back = UNCACHEABLE(display_filter_display_buffer);
+            display_filter_buffer = CACHEABLE(back);
+            display_filter_display_buffer = completed;
+        }
+        else
+        {
+            void *completed = display_filter_buffer;
+            display_filter_buffer = display_filter_display_buffer;
+            display_filter_display_buffer = completed;
+        }
+        display_filter_valid_image = 0;
+        display_filter_frame_is_xpan = 0;
+        if (xpan_preview)
+        {
+            xpan_preview_has_valid_image = 1;
+            xpan_preview_frame_active = 1;
+            xpan_preview_published_frames++;
+        }
+    }
+    else if (xpan_preview && !xpan_preview_has_valid_image)
+    {
+        /* Leave Canon's frame up until the first complete centered XPan frame is ready. */
+        return CBR_RET_CONTINUE;
+    }
+    if (!xpan_preview)
+    {
+        xpan_preview_has_valid_image = 0;
+        xpan_preview_frame_active = 0;
+    }
+    YUV422_LV_BUFFER_DISPLAY_ADDR = (uint32_t) display_filter_display_buffer;
+#else
     if (current_buffer != display_filter_buffer) last_canon_buffer = current_buffer;
-    
-    /* switch the displayed buffer to our filtered image */
+    if (!display_filter_valid_image) return CBR_RET_CONTINUE;
     YUV422_LV_BUFFER_DISPLAY_ADDR = (uint32_t) display_filter_buffer;
+#endif
 #endif
     return CBR_RET_STOP;
 }
 
-void display_filter_step(int k)
+static void display_filter_render_step(int k)
 {
     
     if (!display_filter_enabled())
@@ -3356,30 +3670,120 @@ void display_filter_step(int k)
         /* for new cameras: if there are no more display filters active, free the output buffer */
         if (display_filter_buffer)
         {
+#ifdef CONFIG_EOSM
+            if (YUV422_LV_BUFFER_DISPLAY_ADDR == (uint32_t) UNCACHEABLE(display_filter_display_buffer) ||
+                YUV422_LV_BUFFER_DISPLAY_ADDR == (uint32_t) UNCACHEABLE(display_filter_buffer) ||
+                YUV422_LV_BUFFER_DISPLAY_ADDR == (uint32_t) display_filter_display_buffer ||
+                YUV422_LV_BUFFER_DISPLAY_ADDR == (uint32_t) display_filter_buffer)
+                YUV422_LV_BUFFER_DISPLAY_ADDR = (uint32_t) last_canon_buffer;
+#else
             if (YUV422_LV_BUFFER_DISPLAY_ADDR == (uint32_t) display_filter_buffer)
             {
                 YUV422_LV_BUFFER_DISPLAY_ADDR = (uint32_t) last_canon_buffer;
             }
+#endif
             free(display_filter_buffer_unaligned);
             display_filter_buffer = 0;
+#ifdef CONFIG_EOSM
+            display_filter_display_buffer = 0;
+            display_filter_frame_is_xpan = 0;
+            xpan_preview_frame_active = 0;
+#endif
         }
+#ifdef CONFIG_EOSM
+        xpan_preview_has_valid_image = 0;
+        xpan_preview_frame_active = 0;
+#endif
         #endif
         return;
     }
-    
+
     #ifdef CONFIG_CAN_REDIRECT_DISPLAY_BUFFER_EASILY
     if (!display_filter_buffer)
     {
         /* for new cameras: when you enable a display filter, allocate the output buffer */
         /* some routines (e.g. defishing) use 64-bit operations, so allocate a bit more and align the buffer */
-        display_filter_buffer_unaligned = malloc(720*480*2 + 32);
+        size_t allocation_size = 720 * 480 * 2 + 32;
+#ifdef CONFIG_EOSM
+        /* Keep a private scanout frame and a separate back buffer for tear-free updates. */
+        allocation_size = 2 * 720 * 480 * 2 + 64;
+#endif
+        display_filter_buffer_unaligned = malloc(allocation_size);
+        if (!display_filter_buffer_unaligned)
+        {
+#ifdef CONFIG_EOSM
+            if (xpan_photo_preview_crop_enabled())
+                xpan_photo_preview_report_failure(5, "not enough memory for two LCD frames");
+#endif
+            return;
+        }
         display_filter_buffer = ALIGN64SUP(display_filter_buffer_unaligned);
+#ifdef CONFIG_EOSM
+        display_filter_display_buffer = (uint8_t *)display_filter_buffer + 720 * 480 * 2;
+        xpan_preview_buffer_generation++;
+#endif
     }
     #endif
     
-    msleep(20);
+#ifdef CONFIG_EOSM
+    /* Magnified: nothing to render (vsync passes Canon's frame through). */
+    if (xpan_photo_preview_crop_enabled() && lv_dispsize != 1)
+    {
+        display_filter_valid_image = 0;
+        msleep(50);
+        return;
+    }
+    /* The dedicated photo-preview task already paces frames. */
+    if (!xpan_photo_preview_crop_enabled())
+#endif
+        msleep(20);
     
     //~ if (!HALFSHUTTER_PRESSED) return;
+
+#ifdef CONFIG_EOSM
+    /* Claim the render buffer before clearing its publication flag or copying pixels. */
+    uint32_t render_irq=cli();
+    if (xpan_photo_preview_crop_enabled() && display_filter_valid_image)
+    {
+        /* A completed back frame belongs to vsync until it has been published.
+         * Do not overwrite it or discard it while skipping a duplicate source. */
+        sei(render_irq);
+        return;
+    }
+    display_filter_rendering = 1;
+    display_filter_valid_image = 0;
+    display_filter_frame_is_xpan = 0;
+    sei(render_irq);
+    uint8_t *xpan_render_buffer = 0;
+    if (xpan_photo_preview_crop_enabled())
+    {
+        uint32_t *src_buf, *dst_buf;
+        display_filter_get_buffers(&src_buf, &dst_buf);
+        if (!src_buf || !dst_buf)
+        {
+            /* Retain the cropped LCD frame instead of flashing Canon's uncropped image. */
+            xpan_photo_preview_report_failure(6, "Canon Live View source buffer unavailable");
+            if (!xpan_preview_has_valid_image) display_filter_valid_image = 0;
+            display_filter_rendering = 0;
+            return;
+        }
+        /* Plain photo framing bypasses the expensive full-frame copy and filter chain. */
+        int other_filters = defish_preview || anamorphic_preview || focus_peaking_as_display_filter();
+#ifdef CONFIG_MODULES
+        other_filters |= module_display_filter_enabled();
+#endif
+        if (!other_filters)
+        {
+            display_filter_frame_is_xpan = xpan_photo_apply_preview_crop(dst_buf, src_buf);
+            display_filter_valid_image = display_filter_frame_is_xpan;
+            display_filter_rendering = 0;
+            return;
+        }
+        /* Active image filters still receive a complete source frame. */
+        memcpy(dst_buf, src_buf, 720 * 480 * 2);
+        xpan_render_buffer = (uint8_t *)dst_buf;
+    }
+#endif
     
     #ifdef CONFIG_MODULES
     if (module_display_filter_update())
@@ -3413,9 +3817,104 @@ void display_filter_step(int k)
     #endif
     {
     }
+
+#ifdef CONFIG_EOSM
+    /* Apply XPan framing after other filters, only to their redirected LCD output buffer. */
+    display_filter_frame_is_xpan = xpan_photo_apply_preview_crop(xpan_render_buffer, xpan_render_buffer);
+#endif
     
     display_filter_valid_image = 1;
+#ifdef CONFIG_EOSM
+    /* Publish only after the destination pixels and framing state are complete. */
+    display_filter_rendering = 0;
+#endif
 }
+
+#ifdef CONFIG_EOSM
+static struct semaphore *xpan_preview_render_sem;
+
+static void xpan_preview_init(void *arg)
+{
+    (void)arg;
+    /* Serialize the photo task and legacy overlay task during mode changes. */
+    xpan_preview_render_sem = create_named_semaphore("xpan_preview", SEM_CREATE_UNLOCKED);
+}
+INIT_FUNC("xpan_preview", xpan_preview_init);
+#endif
+
+void display_filter_step(int k)
+{
+#ifdef CONFIG_EOSM
+    if (!xpan_preview_render_sem || take_semaphore_now(xpan_preview_render_sem)) return;
+#endif
+    display_filter_render_step(k);
+#ifdef CONFIG_EOSM
+    give_semaphore(xpan_preview_render_sem);
+#endif
+}
+
+#ifdef CONFIG_EOSM
+static int xpan_preview_should_render(void)
+{
+    /* ML's transparent controls still use Canon GUI mode93. The ordinary
+     * zebra gate rejects that mode, although its Live View pixels keep moving.
+     * Permit only ML's transparent shooting view, with capture/review/pause
+     * guards intact; other Canon dialogs retain the existing overlay gate. */
+    if (menu_active_but_hidden() && CURRENT_GUI_MODE==GUIMODE_ML_MENU)
+        return DISPLAY_IS_ON && LV_NON_PAUSED && !ml_shutdown_requested &&
+            !PLAY_OR_QR_MODE && !mirror_down && job_state_ready_to_take_pic();
+    return zebra_should_run();
+}
+
+static void xpan_preview_task(void *arg)
+{
+    (void)arg;
+    int frame = 0;
+    msleep(1000);
+    uint32_t sample_start = get_ms_clock();
+    unsigned sample_frames = xpan_preview_published_frames;
+    while (1)
+    {
+        uint32_t started = get_ms_clock();
+#ifdef CONFIG_XPAN
+        /* The proven LCD task starts the workflow once and checks creation.
+         * Directory reads and LUT builds remain in the separate worker. */
+        xpan_native_look_start_worker();
+#endif
+        int needs_xpan_frame = xpan_photo_preview_crop_enabled();
+        /* Run once after leaving 65:24 so the old private matte buffer is released. */
+        int needs_display_cleanup = display_filter_buffer && !display_filter_enabled();
+        if (needs_xpan_frame && xpan_preview_should_render())
+        {
+            display_filter_step(frame++);
+            uint32_t period = get_ms_clock() - sample_start;
+            if (period >= 1000)
+            {
+                unsigned published = xpan_preview_published_frames;
+                xpan_preview_fps_x10 = (published - sample_frames) * 10000 / period;
+                sample_frames = published;
+                sample_start = get_ms_clock();
+            }
+        }
+        else if (needs_display_cleanup)
+        {
+            /* Cleanup only restores Canon's buffer; it needs no LV overlay gate. */
+            display_filter_step(frame++);
+        }
+        else
+        {
+            /* Retain the last active rate while the user opens the menu to read it. */
+            sample_start = started;
+            sample_frames = xpan_preview_published_frames;
+        }
+        /* Target about 30 updates/s without the monitor task's locks or waits.
+         * Always yield so Canon and the metadata worker can finish their work. */
+        uint32_t elapsed = get_ms_clock() - started;
+        msleep(elapsed < 33 ? 33 - elapsed : 10);
+    }
+}
+TASK_CREATE("xpan_preview", xpan_preview_task, 0, 0x19, 0x2000);
+#endif
 #endif
 
 #ifdef CONFIG_KILL_FLICKER

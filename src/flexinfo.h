@@ -146,6 +146,7 @@ typedef struct
 #define INFO_STRING_DOF_NEAR             55
 #define INFO_STRING_DOF_FAR              56
 #define INFO_STRING_DOF_HF               57
+#define INFO_STRING_XPAN_EQ              58
 
 #define INFO_FONT_SMALL         0
 #define INFO_FONT_MEDIUM        1

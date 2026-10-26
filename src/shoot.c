@@ -46,6 +46,9 @@
 #include "fps.h"
 #include "lvinfo.h"
 #include "powersave.h"
+#ifdef FEATURE_FLEXINFO
+#include "flexinfo.h"
+#endif
 
 #ifdef FEATURE_LCD_SENSOR_REMOTE
 #include "lcdsensor.h"
@@ -670,6 +673,31 @@ void get_afframe_pos(int W, int H, int* x, int* y)
     
     *x = (afframe[2] + afframe[4]/2) * W / afframe[0];
     *y = (afframe[3] + afframe[5]/2) * H / afframe[1];
+}
+
+/* AF frame rectangle in PROP_LV_AFFRAME units (W x H = full frame); 0 if unknown. */
+int get_afframe_rect(int *x, int *y, int *w, int *h, int *W, int *H)
+{
+    if (!afframe[0] || !afframe[1] || afframe[4]<=0 || afframe[5]<=0) return 0;
+    *x = afframe[2]; *y = afframe[3]; *w = afframe[4]; *h = afframe[5];
+    *W = afframe[0]; *H = afframe[1];
+    return 1;
+}
+
+/* Centre the AF frame on (cx,cy) in PROP_LV_AFFRAME units (XPan touch AF). */
+int set_lv_afframe_center(int cx, int cy)
+{
+#ifdef CONFIG_LIVEVIEW
+    if (!afframe[0] || !afframe[1] || afframe[4]<=0 || afframe[5]<=0) return 0;
+    static int aff[128];
+    memcpy(aff, afframe, sizeof(aff));
+    aff[2] = COERCE(cx - aff[4]/2, 500, aff[0] - aff[4]);
+    aff[3] = COERCE(cy - aff[5]/2, 500, aff[1] - aff[5]);
+    prop_request_change(PROP_LV_AFFRAME, aff, 0);
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 /* get sensor resolution, as specified by PROP_LV_AFFRAME */
@@ -5028,6 +5056,13 @@ static void display_expsim_status()
 
 void display_shooting_info_lv()
 {
+#if defined(CONFIG_EOSM) && defined(FEATURE_FLEXINFO)
+    if (xpan_photo_ui_active())
+    {
+        /* The HUD clears stock remnants in its spare bitmap before publishing a complete draw. */
+        info_print_screen();
+    }
+#endif
 #ifndef CONFIG_5D2
 #ifdef FEATURE_LCD_SENSOR_REMOTE
     int screen_layout = get_screen_layout();
@@ -5485,6 +5520,10 @@ shoot_task( void* unused )
 
         /* allow other tasks to take pictures while we are sleeping */
         ReleaseRecursiveLock(shoot_task_rlock);
+#if defined(CONFIG_EOSM) && !defined(CONFIG_XPAN)
+        /* Keep Canon at 3:2 during XPan Live View, including while visible menus suppress redraws. */
+        xpan_photo_keep_3_2_aspect();
+#endif
         int err = msg_queue_receive(shoot_task_mqueue, (struct event**)&msg, delay);        
         AcquireRecursiveLock(shoot_task_rlock, 0);
 
@@ -5495,6 +5534,9 @@ shoot_task( void* unused )
 
 #if defined(CONFIG_MODULES)
         module_exec_cbr(CBR_SHOOT_TASK);
+#endif
+#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+        { extern void xpan_hud_controls_step(void); xpan_hud_controls_step(); }
 #endif
 
         #ifdef FEATURE_MLU_HANDHELD_DEBUG

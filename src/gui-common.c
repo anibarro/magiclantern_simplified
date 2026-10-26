@@ -98,11 +98,22 @@ int handle_other_events(struct event * event)
 {
     extern int ml_started;
     if (!ml_started) return 1;
+    #if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+    /* XPan > Debug info: non-button GUI events go to the key log too. */
+    extern void xpan_hud_controls_log_other(struct event * event);
+    xpan_hud_controls_log_other(event);
+    #endif
 
 #ifdef CONFIG_LVAPP_HACK
 
     unsigned short int lv_refreshing = lv && event->type == 2 && event->param == GMT_LOCAL_DIALOG_REFRESH_LV;
     unsigned short int should_hide = lv_disp_mode == 0 && get_global_draw_setting() && liveview_display_idle() && lv_dispsize == 1;
+    #ifdef CONFIG_EOSM
+    /* The XPan HUD replaces Canon's info bars even when ML global draw is off. */
+    extern int xpan_photo_ui_active(void); extern int xpan_photo_hud_is_enabled(void);
+    if (!should_hide && lv_disp_mode == 0 && lv_dispsize == 1 && xpan_photo_ui_active() &&
+        xpan_photo_hud_is_enabled() && liveview_display_idle()) should_hide = 1;
+    #endif
     
     if(lv_refreshing)
     {
@@ -469,7 +480,7 @@ int handle_common_events_by_feature(struct event * event)
         return 1;
     }
 
-    if (LV_PAUSED && event->param != GMT_OLC_INFO_CHANGED && event->param >= 0) 
+    if (LV_PAUSED && event->param != GMT_OLC_INFO_CHANGED && event->param >= 0)
     { 
         int ans = (ml_shutdown_requested || pre_shutdown_requested || sensor_cleaning);
         idle_wakeup_reset_counters(event->param);
@@ -491,6 +502,12 @@ int handle_common_events_by_feature(struct event * event)
 
     /* convert Q replacement events into BGMT_Q */
     if (handle_Q_button_equiv(event) == 0) return 0;
+
+    #if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+    /* XPan Live View HUD owns INFO/REC, the d-pad and the wheel while shown. */
+    extern int xpan_hud_controls_key(struct event * event);
+    if (xpan_hud_controls_key(event) == 0) return 0;
+    #endif
 
     #ifdef CONFIG_MENU_WITH_AV
     if (handle_av_short_for_menu(event) == 0) return 0;

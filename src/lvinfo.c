@@ -4,6 +4,11 @@
 #include <bmp.h>
 #include <lvinfo.h>
 
+#ifdef CONFIG_EOSM
+extern int xpan_photo_ui_active(void);
+extern int xpan_photo_enabled(void);
+#endif
+
 #define MAX_ITEMS 64
 #define MIN_SPACING 24
 #define TOTAL_WIDTH 720
@@ -569,6 +574,20 @@ void lvinfo_align_and_display(struct lvinfo_item * items[], int count, int bar_x
 EXCLUDES(lvinfo_sem)
 void lvinfo_display(int top, int bottom)
 {
+#ifdef CONFIG_EOSM
+    /* Playback/quick review must show Canon's image without the stock ML
+     * status strips. Do not paint black rectangles here: zoomed photos may
+     * occupy those rows, and Canon owns its playback information display. */
+    if (PLAY_OR_QR_MODE && xpan_photo_enabled()) return;
+    if (xpan_photo_ui_active())
+    {
+        /* XPan owns the full LCD, including these former bar rows. Its crop
+         * renderer supplies the matte and its HUD supplies the status items.
+         * Even an empty black bar covers the bottom-aligned photograph. */
+        return;
+    }
+#endif
+
     take_semaphore(lvinfo_sem, 0);
 
     static int refresh_timer = INT_MIN;

@@ -11,6 +11,15 @@
 #include <battery.h>
 #include <fps.h>
 #include <focus.h>
+#ifdef CONFIG_EOSM
+#include <propvalues.h>
+#include <raw.h>
+#include <lvinfo.h>
+#include "xpan-mode.h"
+#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+#include "xpan-hud-controls.h"
+#endif
+#endif
 
 #ifdef FEATURE_FLEXINFO
 
@@ -24,6 +33,17 @@
 #endif
 
 #define BUF_SIZE 128
+
+#ifdef CONFIG_EOSM
+extern int xpan_photo_get_65_24_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
+extern int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *crop_height);
+extern int xpan_photo_theme_color(void);
+extern int xpan_photo_status_time_enabled(void);
+extern int xpan_photo_status_space_enabled(void);
+extern unsigned xpan_photo_manual_focal_mm(void);
+extern unsigned xpan_photo_manual_aperture_x10(void);
+extern int xpan_photo_ui_active(void);
+#endif
 
 // those are not camera-specific LP-E6
 #define DISPLAY_BATTERY_LEVEL_1 60 //%
@@ -95,6 +115,24 @@ info_elem_t info_config_dynamic[FLEXINFO_DYNAMIC_ENTRIES];
 info_elem_t info_config_liveview[] =
 {
     { .config = { { INFO_TYPE_CONFIG } } },
+
+#ifdef CONFIG_EOSM
+    { .string = { { INFO_TYPE_STRING, { 15, 14, 2, .name = "XPan equivalent" }}, INFO_STRING_XPAN_EQ, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
+    { .text   = { { INFO_TYPE_TEXT,   {  15, 38, 2, .name = "Photo ISO label" }}, "ISO",     COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .string = { { INFO_TYPE_STRING, {  15, 53, 2, .name = "Photo ISO" }}, INFO_STRING_ISO, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
+    { .text   = { { INFO_TYPE_TEXT,   { 155, 38, 2, .name = "Aperture label" }}, "APERTURE", COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .string = { { INFO_TYPE_STRING, { 155, 53, 2, .name = "Photo aperture" }}, INFO_STRING_APERTURE, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
+    { .text   = { { INFO_TYPE_TEXT,   { 280, 38, 2, .name = "Shutter label" }}, "SHUTTER", COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .string = { { INFO_TYPE_STRING, { 280, 53, 2, .name = "Photo shutter" }}, INFO_STRING_SHUTTER, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
+    { .text   = { { INFO_TYPE_TEXT,   { 415, 38, 2, .name = "Photo WB label" }}, "WHITE BALANCE", COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .string = { { INFO_TYPE_STRING, { 415, 53, 2, .name = "Photo WB" }}, INFO_STRING_WBMODE, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
+    { .text   = { { INFO_TYPE_TEXT,   { 575, 38, 2, .name = "Focus label" }}, "FOCUS", COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .string = { { INFO_TYPE_STRING, { 575, 53, 2, .name = "Photo focus" }}, INFO_STRING_FOCUSMODE, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
+    { .battery_icon = { { INFO_TYPE_BATTERY_ICON, { 678, 14, 2, .name = "Photo battery" }}, DISPLAY_BATTERY_LEVEL_2, DISPLAY_BATTERY_LEVEL_1 } },
+    { .string = { { INFO_TYPE_STRING, { 475, 14, 2, .name = "Photo time" }}, INFO_STRING_TIME, COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .string = { { INFO_TYPE_STRING, { 575, 14, 2, .name = "Photo card space" }}, INFO_STRING_FREE_GB_FLOAT, COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+    { .text   = { { INFO_TYPE_TEXT,   { 610, 14, 2, .name = "Photo card unit" }}, "GB", COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
+#endif
     
 #define i_want_to_test_flexinfo_bars 0
 #if i_want_to_test_flexinfo_bars
@@ -1274,6 +1312,35 @@ char *info_get_cardlabel(char drv)
 /* ********************************************************************************** */
 
 
+#ifdef CONFIG_EOSM
+#define EOSM_XPAN_SENSOR_WIDTH 5184
+#define EOSM_XPAN_RAW_ACTIVE_WIDTH 5184
+#define EOSM_XPAN_RAW_ACTIVE_HEIGHT 3456
+
+/* Convert electronic lens values or manual-lens fallbacks to the XPan crop's scale. */
+static int xpan_photo_get_lens_equivalents(
+    int lens_exists, int electronic_focal, int electronic_aperture,
+    unsigned manual_focal, unsigned manual_aperture, int *focal_equivalent,
+    int *aperture_equivalent)
+{
+    int focal = lens_exists ? electronic_focal : (int)manual_focal;
+    int aperture = lens_exists ? electronic_aperture : (int)manual_aperture;
+    if (!focal_equivalent || !aperture_equivalent) return 0;
+
+    *focal_equivalent = 0;
+    *aperture_equivalent = 0;
+    /* XPan's 65mm or 36mm frame width sets the horizontal equivalent scale. */
+    int64_t reference_width = xpan_photo_is_panoramic() ? 650 : 360;
+    int64_t factor_num = reference_width * EOSM_XPAN_SENSOR_WIDTH;
+    int64_t factor_den = (int64_t)223 * EOSM_XPAN_RAW_ACTIVE_WIDTH;
+    if (focal)
+        *focal_equivalent = (int)(((int64_t)focal * factor_num + factor_den / 2) / factor_den);
+    if (aperture)
+        *aperture_equivalent = (int)(((int64_t)aperture * factor_num + factor_den / 2) / factor_den);
+    return (focal ? 1 : 0) | (aperture ? 2 : 0);
+}
+#endif
+
 uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
 {
     strcpy(buffer, "");
@@ -1661,6 +1728,18 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
             }
             break;
         }
+        case INFO_STRING_FOCUSMODE:
+        {
+#ifdef CONFIG_EOSM
+            /* Do not label an unchipped lens as AF when its focus state is unknowable. */
+            int manual_lens = !lens_info.lens_exists &&
+                (xpan_photo_manual_focal_mm() || xpan_photo_manual_aperture_x10());
+            snprintf(buffer, maxsize, manual_lens || is_manual_focus() ? "MF" : lens_info.lens_exists ? "AF" : "--");
+#else
+            snprintf(buffer, maxsize, is_manual_focus() ? "MF" : "AF");
+#endif
+            break;
+        }
         case INFO_STRING_SHOOTMODE:
         {
             snprintf(buffer, maxsize, "%s", get_shootmode_name(shooting_mode_custom));
@@ -1673,17 +1752,26 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
         }
         case INFO_STRING_APERTURE:
         {
-            if (lens_info.aperture)
+            int aperture = lens_info.aperture;
+#ifdef CONFIG_EOSM
+            /* Show the user's ring setting for unchipped lenses; it does not control exposure. */
+            if (!aperture && xpan_photo_ui_active() && !lens_info.lens_exists)
+                aperture = xpan_photo_manual_aperture_x10();
+#endif
+            if (aperture)
             {
-                if (lens_info.aperture < 100)
+                if (aperture < 100)
                 {
-                    snprintf(buffer, maxsize, SYM_F_SLASH"%d.%d", lens_info.aperture / 10, lens_info.aperture % 10);
+                    snprintf(buffer, maxsize, SYM_F_SLASH"%d.%d", aperture / 10, aperture % 10);
                 }
                 else
                 {
-                    snprintf(buffer, maxsize, SYM_F_SLASH"%d", lens_info.aperture / 10);
+                    snprintf(buffer, maxsize, SYM_F_SLASH"%d", aperture / 10);
                 }
             }
+#ifdef CONFIG_EOSM
+            else if (xpan_photo_ui_active()) snprintf(buffer, maxsize, "--");
+#endif
             break;
         }
         case INFO_STRING_FOCAL_LEN:
@@ -1694,6 +1782,34 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
         case INFO_STRING_FOCAL_LEN_EQ:
         {
             snprintf(buffer, maxsize, "%d", (lens_info.focal_len * SENSORCROPFACTOR + 5) / 10);
+            break;
+        }
+        case INFO_STRING_XPAN_EQ:
+        {
+#ifdef CONFIG_EOSM
+            /* Compare the actual active RAW crop width with the XPan's 65 mm frame. */
+            int focal_eq = 0, aperture_eq = 0;
+            int equivalents = xpan_photo_get_lens_equivalents(
+                lens_info.lens_exists, lens_info.focal_len, lens_info.aperture,
+                xpan_photo_manual_focal_mm(), xpan_photo_manual_aperture_x10(),
+                &focal_eq, &aperture_eq);
+            if (equivalents)
+            {
+                if ((equivalents & 3) == 3)
+                {
+                    snprintf(buffer, maxsize, "%dmm eq  "SYM_F_SLASH"%d.%d eq",
+                        focal_eq, aperture_eq / 10, aperture_eq % 10);
+                }
+                else if (equivalents & 1)
+                {
+                    snprintf(buffer, maxsize, "%dmm eq", focal_eq);
+                }
+                else if (equivalents & 2)
+                {
+                    snprintf(buffer, maxsize, SYM_F_SLASH"%d.%d eq", aperture_eq / 10, aperture_eq % 10);
+                }
+            }
+#endif
             break;
         }
         case INFO_STRING_FOCAL_DIST:
@@ -1742,7 +1858,15 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
             if (shutter_reciprocal > 1000) shutter_reciprocal = 100 * ((shutter_reciprocal+50) / 100);
             
             if (is_bulb_mode()) snprintf(buffer, maxsize, "BULB");
-            else if (lens_info.raw_shutter == 0) snprintf(buffer, maxsize, "");
+            else if (lens_info.raw_shutter == 0)
+            {
+#ifdef CONFIG_EOSM
+                /* Make an unavailable still-photo reading explicit in the XPan control card. */
+                snprintf(buffer, maxsize, xpan_photo_ui_active() ? "--" : "");
+#else
+                snprintf(buffer, maxsize, "");
+#endif
+            }
             else if (shutter_reciprocal >= 10000) snprintf(buffer, maxsize, SYM_1_SLASH "%dK", shutter_reciprocal/1000);
             else if (shutter_x10 <= 3) snprintf(buffer, maxsize, SYM_1_SLASH "%d", shutter_reciprocal);
             else if (shutter_x10 % 10 && shutter_x10 < 30) snprintf(buffer, maxsize, "%d.%d\"", shutter_x10 / 10, shutter_x10 % 10);
@@ -2182,8 +2306,13 @@ uint32_t info_print_battery_perf(info_elem_t *config, info_elem_battery_perf_t *
 
 uint32_t info_print_battery_icon(info_elem_t *config, info_elem_battery_icon_t *element, uint32_t run_type)
 {
+#ifdef CONFIG_EOSM
+    element->hdr.pos.w = 22;
+    element->hdr.pos.h = 14;
+#else
     element->hdr.pos.w = 96;
     element->hdr.pos.h = 32;
+#endif
 
     /* get absolute position of this element */
     info_get_absolute(config, (info_elem_t *)element);
@@ -2193,6 +2322,21 @@ uint32_t info_print_battery_icon(info_elem_t *config, info_elem_battery_icon_t *
     {
         return 1;
     }
+
+#ifdef CONFIG_EOSM
+    int level = COERCE(battery_level_bars, 0, 2);
+    int color = level == 0 ? COLOR_RED : level == 1 ? COLOR_YELLOW : xpan_photo_theme_color();
+    if (run_type == INFO_PRINT)
+    {
+        int x = element->hdr.pos.abs_x;
+        int y = element->hdr.pos.abs_y;
+        bmp_draw_rect(COLOR_WHITE, x, y + 2, 18, 10);
+        bmp_fill(COLOR_WHITE, x + 18, y + 5, 3, 4);
+        for (int segment = 0; segment <= level; segment++)
+            bmp_fill(color, x + 2 + segment * 4, y + 4, 3, 6);
+    }
+    return 0;
+#endif
 
 #if 0 // fights with Canon icon; do not draw, but keep it for positioning the other elements
 
@@ -2294,6 +2438,47 @@ uint32_t info_print_element(info_elem_t *config, info_elem_t *element, uint32_t 
     return 1;
 }
 
+#ifdef CONFIG_EOSM
+/* Give the five photo controls a restrained card background in the XPan matte. */
+static void xpan_photo_draw_control_cards(info_elem_t *config)
+{
+    static const int label_index[] = { 2, 4, 6, 8, 10 };
+    static const int value_index[] = { 3, 5, 7, 9, 11 };
+    int crop_x, crop_y, crop_width, crop_height;
+
+    if (!xpan_photo_get_liveview_frame_rect(&crop_x, &crop_y, &crop_width, &crop_height)) return;
+
+    int frame_top = os.y0 + crop_y;
+    int frame_bottom = frame_top + crop_height;
+    int theme_color = xpan_photo_theme_color();
+
+    for (int i = 0; i < COUNT(label_index); i++)
+    {
+        info_elem_t *label = &config[label_index[i]];
+        info_elem_t *value = &config[value_index[i]];
+        info_elem_t *next_label = i + 1 < COUNT(label_index) ? &config[label_index[i + 1]] : NULL;
+        int left, right, top, bottom;
+
+        if (!label->hdr.pos.shown || !value->hdr.pos.shown) continue;
+
+        left = MAX(4, label->hdr.pos.abs_x - 8);
+        right = next_label ? next_label->hdr.pos.abs_x - 10 : 716;
+        right = MIN(right, 716);
+        top = MIN(label->hdr.pos.abs_y, value->hdr.pos.abs_y) - 5;
+        bottom = MAX(label->hdr.pos.abs_y + label->hdr.pos.h,
+            value->hdr.pos.abs_y + value->hdr.pos.h) + 5;
+
+        /* Never draw a card over active picture pixels if the layout changes. */
+        if (right <= left + 20 || bottom <= top || (top < frame_bottom && bottom > frame_top)) continue;
+        if (top < 0 || bottom > BMP_H_PLUS || bottom - top < 12) continue;
+
+        bmp_fill(COLOR_TRANSPARENT_BLACK, left, top, right - left, bottom - top);
+        bmp_draw_rect(COLOR_GRAY(45), left, top, right - left, bottom - top);
+        bmp_fill(theme_color, left, top + 3, 4, bottom - top - 6);
+    }
+}
+#endif
+
 #ifdef FLEXINFO_DEVELOPER_MENU
 uint32_t info_checksum_element(info_elem_t *config)
 {
@@ -2383,6 +2568,12 @@ uint32_t info_print_config(info_elem_t *config)
         info_print_element(config, &(config[pos]), INFO_PRERUN);
         pos++;
     }
+
+#ifdef CONFIG_EOSM
+    /* Paint card backgrounds after positions resolve but before the text is drawn. */
+    if (config == info_config_liveview && xpan_photo_ui_active())
+        xpan_photo_draw_control_cards(config);
+#endif
     
     z = info_get_next_z(config, 0);
     while(z != INFO_Z_END)
@@ -2493,6 +2684,11 @@ uint32_t info_print_config(info_elem_t *config)
     return 0;
 }
 
+#ifdef CONFIG_EOSM
+/* Draft-based HUD shares this file's value formatting and staged bitmap lock. */
+#include "xpan-photo-hud.inc"
+#endif
+
 uint32_t info_print_screen()
 {
     if(gui_menu_shown())
@@ -2503,6 +2699,38 @@ uint32_t info_print_screen()
     if(lv)
     {
         info_config = info_config_liveview;
+#ifdef CONFIG_EOSM
+        int theme_color = xpan_photo_theme_color();
+        info_config_liveview[1].string.fgcolor = theme_color;
+        /* Keep the equivalent-lens readout clear of the first control row in the matte. */
+        info_config_liveview[1].string.font_type = xpan_photo_ui_active() ? INFO_FONT_SMALL : INFO_FONT_LARGE;
+        for (int i = 2; i <= 10; i += 2)
+            info_config_liveview[i].text.fgcolor = theme_color;
+        info_config_liveview[15].text.fgcolor = theme_color;
+        info_config_liveview[13].string.fgcolor = theme_color;
+        info_config_liveview[14].string.fgcolor = theme_color;
+        info_config_liveview[13].hdr.pos.user_disable = !xpan_photo_status_time_enabled();
+        info_config_liveview[14].hdr.pos.user_disable = !xpan_photo_status_space_enabled();
+        info_config_liveview[15].hdr.pos.user_disable = !xpan_photo_status_space_enabled();
+
+        int crop_x, crop_y, crop_width, crop_height;
+        if (xpan_photo_get_liveview_frame_rect(&crop_x, &crop_y, &crop_width, &crop_height))
+        {
+            /* Keep the equivalent lens readout in the matte, outside the image frame. */
+            /* Top alignment is y=0; any positive y means the full-height photo frame is bottom-aligned. */
+            int bottom_aligned = crop_y > 0;
+            int frame_bottom = os.y0 + crop_y + crop_height;
+            info_config_liveview[1].string.hdr.pos.y = bottom_aligned ? 12 : frame_bottom + 2;
+            int status_header_y = info_config_liveview[1].string.hdr.pos.y;
+            info_config_liveview[12].battery_icon.hdr.pos.y = status_header_y + 1;
+            info_config_liveview[13].string.hdr.pos.y = status_header_y + 1;
+            info_config_liveview[14].string.hdr.pos.y = status_header_y + 1;
+            info_config_liveview[15].text.hdr.pos.y = status_header_y + 1;
+            int status_y = bottom_aligned ? 38 : frame_bottom + 19;
+            for (int i = 2; i < 12; i++)
+                info_config_liveview[i].hdr.pos.y = status_y + ((i - 2) & 1 ? 15 : 0);
+        }
+#endif
     }
     else
     {
@@ -2513,12 +2741,15 @@ uint32_t info_print_screen()
 
     BMP_LOCK
     (
-        //~ bmp_idle_copy(0,1);
-        //~ bmp_draw_to_idle(1);
-        info_print_config(info_config);
-        info_print_config(info_config_dynamic);
-        //~ bmp_draw_to_idle(0);
-        //~ bmp_idle_copy(1,0);
+#ifdef CONFIG_EOSM
+        if (xpan_photo_ui_active())
+            xpan_photo_render_hud(info_config);
+        else
+#endif
+        {
+            info_print_config(info_config);
+            info_print_config(info_config_dynamic);
+        }
     )
     give_semaphore(info_sem);
     
@@ -2967,7 +3198,23 @@ info_string_map_t info_string_map[] =
     { INFO_STRING_HDR                , "HDR"                 },
     { INFO_STRING_CAM_DATE           , "CAM_DATE"            },
     { INFO_STRING_FREE_GB_INT        , "FREE_GB_INT"         },
-    { INFO_STRING_FREE_GB_FLOAT      , "FREE_GB_FLOAT"       }
+    { INFO_STRING_FREE_GB_FLOAT      , "FREE_GB_FLOAT"       },
+    { INFO_STRING_KELVIN_ICO         , "KELVIN_ICO"          },
+    { INFO_STRING_TEMPERATURE        , "TEMPERATURE"         },
+    { INFO_STRING_WBMODE             , "WBMODE"              },
+    { INFO_STRING_FOCUSMODE          , "FOCUSMODE"           },
+    { INFO_STRING_SHOOTMODE          , "SHOOTMODE"           },
+    { INFO_STRING_SHOOTMODE_SHORT    , "SHOOTMODE_SHORT"     },
+    { INFO_STRING_APERTURE           , "APERTURE"            },
+    { INFO_STRING_FOCAL_LEN          , "FOCAL_LEN"           },
+    { INFO_STRING_FOCAL_LEN_EQ       , "FOCAL_LEN_EQ"        },
+    { INFO_STRING_FOCAL_DIST         , "FOCAL_DIST"          },
+    { INFO_STRING_SHUTTER            , "SHUTTER"             },
+    { INFO_STRING_IS_MODE            , "IS_MODE"             },
+    { INFO_STRING_DOF_NEAR           , "DOF_NEAR"            },
+    { INFO_STRING_DOF_FAR            , "DOF_FAR"             },
+    { INFO_STRING_DOF_HF             , "DOF_HF"              },
+    { INFO_STRING_XPAN_EQ            , "XPAN_EQ"             }
 };
 
 void info_edit_parameters(uint32_t action, uint32_t parameter)
@@ -2980,12 +3227,13 @@ void info_edit_parameters(uint32_t action, uint32_t parameter)
         {
             uint32_t string_index = 0;
             
-            while(info_string_map[string_index].type != item->string.string_type && string_index < (sizeof(info_string_map) / sizeof(info_string_map[0])))
+            while(string_index < COUNT(info_string_map) && info_string_map[string_index].type != item->string.string_type)
             {
                 string_index++;
             }
-            
-            snprintf(info_current_menu, sizeof(info_current_menu), "String: %d (%s)", item->string.string_type, info_string_map[string_index].name);
+
+            snprintf(info_current_menu, sizeof(info_current_menu), "String: %d (%s)", item->string.string_type,
+                string_index < COUNT(info_string_map) ? info_string_map[string_index].name : "UNKNOWN");
             snprintf(info_current_desc, sizeof(info_current_desc), "WHEEL: select item, CURSOR: select string");
             switch(action)
             {
@@ -3001,7 +3249,7 @@ void info_edit_parameters(uint32_t action, uint32_t parameter)
                             break;
                             
                         case BGMT_PRESS_RIGHT:
-                            if(item->string.string_type < 43)
+                            if(item->string.string_type < COUNT(info_string_map))
                             {
                                 item->string.string_type++;
                             }
