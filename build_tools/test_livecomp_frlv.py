@@ -358,7 +358,11 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
     /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    assert(!unsafe && sim_hw_calls==2 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
+    /* LCM28: LV attempts on channels 4, 0, 3 (frames 3-5) + paused 3, 4, 0
+     * (channel 5 skipped: simulated resource 5 busy) */
+    assert(!unsafe && sim_hw_calls==6 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
+    assert(strstr(last_log,"T0: 0,3,4,1,") && strstr(last_log,"T2: 0,5,3,1,") && strstr(last_log,"T3: 1,6,5,2,a001,ffff,"));
+    assert(strstr(last_log,"T4: 1,6,3,1,") && strstr(last_log,"T6: 1,6,0,1,"));
     assert(sim_pauses==1 && sim_resumes==1 && !LV_PAUSED && strstr(last_log,"HWP_lv_before_paused_after"));
     /* LCM22 camera case: engine left its output channel busy. The session
      * stops, but the accumulator (never an engine target) is still saved. */

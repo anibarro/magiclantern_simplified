@@ -661,3 +661,32 @@ copy (~260 ms) never fits before the next frame. Partial frame at frame 8.
   target), PauseLiveView, run the same two-band max on the real buffers
   (channel 5 if resource 5 is free, else 3), verify byte for byte against
   the CPU composite, ResumeLiveView. Runs only with "HW merge test" On.
+
+## LCM27 camera result (LVFR0017, LVFR0018, 0.5 fps) - ENGINE VERIFIED
+
+- **With Live View paused, Canon's max engine is exact and fast.** Busy mask
+  0xA000 (resource 5 free), output on Canon's channel 5, both bands
+  completed in 57.6 + 58.1 ms (0017) and 58.0 + 57.6 ms (0018): **~116 ms
+  per full 5280x3506 frame, 0 mismatching bytes** against the CPU composite,
+  both sessions. Live View resumed normally. CPU merge: 1.6-1.9 s.
+- So the job, planes, geometry and verification are right; what blocks it
+  in Live View is Live View's state (resource 5 held, channel 3 receives
+  nothing).
+- In-LV attempt did not run: at 0.5 fps the gating (elapsed + 800 <
+  period - 500) never held.
+- 0.5 fps sessions: 22 and 21 frames, 0 skipped, 1 behind; rolling preview
+  drew 19 and 16 strips (2 and 4 skipped).
+- Byte-wise verification took 3.7 s per frame (now word-wise).
+
+## LCM28
+
+Question: is it the output *channel* or Live View's *state*?
+- Engine accepts output channels 0/3/4/5/6; stuck-output abort applies to
+  any channel still holding our own programmed address.
+- Attempt table (`HW_tries`): where (LV/paused), frame, channel, bands,
+  busy mask, reason, time, output completions, output state and bytes
+  written, abort, other channels that moved, mismatching words.
+- Output area cleared before every attempt (no stale pass).
+- In Live View (needs 0.25 fps for time): frames 3, 4, 5 try channels 4, 0,
+  3 on the top half.
+- Live View paused: channel 5 full frame (reference), then 3, 4, 0 top half.

@@ -1,0 +1,62 @@
+LCM27 full-res composite
+Full-sensor LV readout gate
+Status: Full-res composite saved: 22 frames
+Stage_error_unsafe: 8,0,0
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: 500,100,56b,b41b,10
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,56b056b,56b,b41b,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_cadence_frames_ms_max_gap_ms: 166,0,0,0
+Timer_fixes_last_seen_B: 0,b41b
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 27,54
+Hook_adtg_calls_changes_blanking_seen: 169,119,54
+Hook_engio_calls_changes_drv_changes_overflow: 498,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10562
+Inputs_merged_memcpy_us: 0,22,0
+Black_OBstdev_x10_center_mean_max: 2047,358,2440,2680
+Col_band_means_16px: 2047,2047,2047,2047,2214,2392,2398,2408,2412,2419,2425,2431
+Row_band_means_8px: 2036,2052,2048,2429,2825,2838,2858,2875,2899,2910
+Saved_stage_size: 1,6,32397488
+DNG: B:/LVFR0017.DNG
+Continuous_limit_overrun_offset_missed: 1,30,27587904,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 1857930,35581,1,116575,114997
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 200942,995877
+Zoom_done_ms_late_frames: 52005,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,2,0,19
+HW_prepare_close_tried_frame_busy_channel_safe: 0,0,0,0,0,0,0
+HW_band0_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band1_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band0_after_out_state_flags_addr_ptr: 0,0,0,0
+HW_compare_us_mismatch_bytes_first_expected_actual: 0,0,0,0,0
+HW_plane_ok_band0_band1: 0,0
+HW_band0_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band0_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band0_listener_ch_state_addr_ptr_before_after:
+HW_band0_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band1_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band1_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band1_listener_ch_state_addr_ptr_before_after:
+HW_band1_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band0_moved (ch:state:ptr>state:ptr): 5:0:0>0:0
+HWP_band0_moved (ch:state:ptr>state:ptr): 5:0:2009140>0:2f7ddb0
+HWP_lv_before_paused_after_prepare_close_tried_busy_channel_safe: 1,1,1,0,0,1,a000,5,1
+HWP_band0_reason_us_lock_setup_wait_completed: 0,57628,0,0,0,1/1/1
+HWP_band1_reason_us_lock_setup_wait_completed: 0,58056,0,0,0,1/1/1
+HWP_band0_out_after_state_addr_ptr_aborted: 0,2009140,2f7ddb0,0
+HWP_compare_us_mismatch_bytes_first_expected_actual: 3708086,0,-1,0,0
+HW_engio_lists_during_band0: 0 (us:list:count reg=val ...)
+Write_route_idle (ch:src:state): 0:2e:0 1:1b:1 2:4:1 3:0:0 4:0:0 5:2:1 6:12:0 10:28:0 11:f:1 12:0:0 13:0:0 14:0:0 15:0:0 16:0:0 20:10:0 21:27:0
+DMA_activity_samples_union_mask: 2,326 (bit i = write channel 0..6,0x10..0x16,0x20,0x21)
+Ch5_addr_len_flags_conn_state_ptr: d116000,e0020,20000040,2,1,d116000
+Ch3_addr_len_flags_conn_state_ptr: 0,0,0,0,0,0
+Activity_ms_after_vsync_mask_ptr3_ptr5:
+361:326:0:d116000 1941:200:0:d1161e0 
+Partials: 1
+Attempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:
+DMA_trace_attempt: us_after_arm:bytes ...
+Vsync_intervals_us (last 32): 33378 33370 33344 2223967 1999065 1999955 1999927 1999952 1999995 1999873 1999985 1999914 1999943 1999936 1999944 1999917 1999963 1999902 1999967 1999912 1999942 1999934 1999953 1999899 1999948 1999943 1999922 1999910

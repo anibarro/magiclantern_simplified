@@ -174,7 +174,9 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     const struct lc_native_plane *b,const struct lc_native_plane *out,
     struct lc_native_engine_result *r,unsigned channel)
 {
-    if (channel!=3 && channel!=5) return LC_NATIVE_ARGUMENT;
+    /* LCM28: 5 = Canon's native route (verified exact with Live View
+     * paused, LCM27); 0/3/4/6 = replacement routes under test. */
+    if (channel!=0 && channel!=3 && channel!=4 && channel!=5 && channel!=6) return LC_NATIVE_ARGUMENT;
     if (!running) OUTPUT_CHANNEL=channel;
     if (!r) return LC_NATIVE_ARGUMENT;
     memset(r,0,sizeof(*r));r->lock=r->setup=r->wait=r->event_delete=r->unlock=UNSET;
@@ -282,7 +284,9 @@ stop:
      * View (LCM21/22 activity map), so the stuck transfer is ours: abort it
      * (AbortEDmac, RAM 0x1CA60: writes 3 to the channel's control register)
      * instead of quarantining the whole session. */
-    if (r->channels[2] && !r->channels[0] && !r->channels[1] && OUTPUT_CHANNEL==3 &&
+    /* Ownership proof is our own programmed start address (LCM28: any
+     * output channel; LCM23-27 restricted this to channel 3). */
+    if (r->channels[2] && !r->channels[0] && !r->channels[1] &&
         physical(edmac_get_address(OUTPUT_CHANNEL))==out_start) {
         ((void (*)(unsigned))0x1ca60)(OUTPUT_CHANNEL);
         unsigned t0=(unsigned)get_us_clock();
