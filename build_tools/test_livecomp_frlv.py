@@ -215,9 +215,10 @@ void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(in
 int raw2iso(int r){ return r; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
-static int dng_created,cur_dng;
-FILE *FIO_CreateFile(const char *p){ if (strstr(p,".CSV")) csv_written=1; if (strstr(p,".LOG")) log_files++; cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
-int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f;(void)b; if (cur_dng) dng_bytes+=n; return n; }
+static int dng_created,cur_dng,cur_log;static char last_log[8192];static unsigned last_log_n;
+FILE *FIO_CreateFile(const char *p){ if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0; } cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
+int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) dng_bytes+=n;
+  if (cur_log && last_log_n+n<sizeof(last_log)) { memcpy(last_log+last_log_n,b,n);last_log_n+=n;last_log[last_log_n]=0; } return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
 static unsigned dng_size_ok;
 int FIO_GetFileSize(const char *p,uint32_t *s){ if (strstr(p,".DNG") && dng_created) { *s=dng_size_ok; return 0; } return 1; }
@@ -329,6 +330,15 @@ int main(void)
     reset();overrun_sim=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("overrun: %s\n",status);
     assert(!unsafe && strstr(status,"saved") && zoom==1);
+    /* LCM26: frames arrive faster than the (simulated 80 ms) merge: the
+     * session keeps going (behind/skipped frames counted) and saves. */
+    reset();sim_period_us=70000;o.limit=8;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    { const char *k=strstr(last_log,"preview_skipped_behind: select,");unsigned bands=0,skip=0,behind=0;
+      assert(k && sscanf(k,"preview_skipped_behind: select,%u,%u,%u",&bands,&skip,&behind)==3);
+      printf("behind: %s (behind=%u skipped_previews=%u)\n",status,behind,skip);
+      assert(!unsafe && strstr(status,"saved") && zoom==1 && behind>0); }
+    sim_period_us=4000000;o.limit=6;
     /* HW merge test: registry busy -> no engine call; free -> one call. */
     reset();sim_hw_busy=2;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);

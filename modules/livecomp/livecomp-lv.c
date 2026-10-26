@@ -79,7 +79,7 @@ static CONFIG_INT("livecomp.preview",preview_interval,0);
 /* Task selection is deliberately not persisted across boots:
  * 0=Live composite, 1=Full-res check (native engine), 2=Full-res readout. */
 static int fullres_check;
-static int frlv_fps,frlv_expo,frlv_inputs=1,frlv_keep_fp,frlv_hw;
+static int frlv_fps=7,frlv_expo,frlv_inputs=1,frlv_keep_fp,frlv_hw;
 static const unsigned frlv_input_counts[]={1,4,8};
 static unsigned trigger_ms;
 static const unsigned frame_limits[]={30,60,120};

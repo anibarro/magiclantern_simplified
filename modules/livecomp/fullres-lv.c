@@ -247,7 +247,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned memcpy_us,saved,save_stage,save_size;
     unsigned fps_x1000,expo_pct,timer_fixes,timer_seen_b,pdm[6];
-    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped;
+    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
@@ -301,7 +301,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Continuous_limit_overrun_offset_missed: %d,%d,%d,%d\n"
         "Merge_max_us_sum_ms_preview_ok_render_us_copy_us: %d,%d,%d,%d,%d\n"
         "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n"
-        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped: select,%d,%d\n",
+        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped_behind: select,%d,%d,%d\n",
         stats.cmos_calls,stats.cmos_changes,stats.adtg_calls,stats.adtg_changes,stats.blanking_seen,
         stats.engio_calls,stats.engio_changes,stats.drv_changes,stats.overflow,
         stats.orig_6804,stats.orig_timer_a,stats.orig_timer_b,stats.orig_blanking,
@@ -314,7 +314,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->continuous,r->limit,r->overrun_offset,r->missed,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
-        r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped);
+        r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped,r->behind);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),
         "HW_prepare_close_tried_frame_busy_channel_safe: %d,%d,%d,%d,%x,%d,%d\n"
@@ -692,7 +692,13 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             if (!in_flight) break;                       /* clean stop: nothing armed */
             r->error|=FE_STALL;*msg="LV frame missing; see LOG";break;
         }
-        if (frames_done!=seen+1) { r->missed+=frames_done-seen-1;r->error|=FE_DMA;*msg="Merge too slow: frame missed";cont_arm=0;break; }
+        /* LCM26: a frame that arrived while we were still busy is skipped
+         * (a gap of one sub-exposure), not fatal. The capture buffer holds
+         * the latest complete frame. Stop only if it keeps happening. */
+        if (frames_done!=seen+1) {
+            r->missed+=frames_done-seen-1;
+            if (r->missed>2+r->limit/4) { r->error|=FE_DMA;*msg="Merge too slow: frames missed";cont_arm=0;break; }
+        }
         seen=frames_done;
         unsigned state=done_state,pointer=done_pointer,done=done_ms;
         if (act_on) act_on=0;                            /* frame 3 arrived: map complete */
@@ -702,8 +708,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (state) { cont_arm=0;*dma_uncertain=1;r->error|=FE_DMA;*msg="RAW DMA did not finish";break; }
         if (!guards_ok(cap,r->bytes)) { cont_arm=0;*dma_uncertain=1;r->error|=FE_GUARD;*msg="Buffer guard overwritten";break; }
         if (r->merged>=r->limit) continue;               /* past the limit: not merged */
-        /* Next frame: arm now (its readout starts ~period-readout later). */
-        msleep(40);
+        /* Next frame: arm now (its readout starts ~period-readout later),
+         * never inside the vsync: preview_show (~110 ms) already waited. */
+        if (!preview_yuv) msleep(40);
         if (cont_arm) arm_from_task();
         struct frlv_frame *c=&cont_frames[r->merged];
         memset(c,0,sizeof(*c));                         /* static: reused across sessions */
@@ -745,10 +752,11 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         c->offset_after=off;
         r->merged++;
         if (off && off<=r->bytes) r->overrun_offset=MAX(r->overrun_offset,off);
-        if (frames_done!=seen) {
-            r->error|=FE_DMA;cont_arm=0;
-            *msg="Merge too slow for this FPS; use a slower FPS";break;
-        }
+        /* The next frame completed while we merged the last band(s): those
+         * rows hold a mix of two real exposures, harmless for a maximum.
+         * Merge that frame right away, without preview (LCM26: was fatal;
+         * 0.5 fps at 99 % changed pixels needs 1.89 s). */
+        if (frames_done!=seen) { r->behind++;r->preview_skipped++;continue; }
         c->busy_idle=resource_busy();
         /* Hardware max test: once, on frame 3 or later, while the capture
          * buffer is idle with enough time left before the next readout. */
@@ -1038,7 +1046,7 @@ out:
     else if (r.saved) msg=r.continuous ? "Composite saved; stopped early, see LOG":"Full-res DNG saved with warnings; see LOG";
     if (r.continuous && r.saved && !r.error && !r.unsafe) {
         static char done[64];
-        if (r.late_frames) snprintf(done,sizeof(done),"Composite saved: %d frames, %d late (see CSV)",r.merged,r.late_frames);
+        if (r.late_frames || r.missed) snprintf(done,sizeof(done),"Composite saved: %d frames, %d late, %d skipped",r.merged,r.late_frames,r.missed);
         else snprintf(done,sizeof(done),"Full-res composite saved: %d frames",r.merged);
         msg=done;
     }

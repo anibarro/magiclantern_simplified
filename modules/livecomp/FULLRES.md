@@ -617,3 +617,26 @@ verified output.
   messages say so until the DNG is saved.
 - New 0.4 fps (2.5 s, timer A 0x56B, B 57635) choice. HW merge test now
   defaults to Off.
+
+## LCM25 camera result (LVFR0012-0015)
+
+- **0.4 fps (2.5 s) works with live preview**: 23 frames, preview rendered
+  every frame (0 skipped), merge 1.54-1.90 s, stopped cleanly by one short
+  SET press. Render 124-133 ms (LCM24: 263 ms), copy ~110 ms.
+- **0.5 fps (both variants) stopped after frame 2** (FE_DMA): the first max
+  merge saw 99 % changed pixels and took 1.89 s; with the 110 ms preview
+  copy at the frame start, the next frame completed during the merge and
+  LCM20-25 treated that as fatal. (LCM24's 0.5 fps run had 62 % changed:
+  1.77 s, fitted.)
+- Partial frame again on the 5th frame of the 0.4 fps session.
+
+## LCM26
+
+- A frame completing during the merge is no longer fatal: it is merged
+  next, without preview (`behind` counter). Frames that arrive while the
+  worker is behind are skipped and counted (`missed`); the session stops
+  only if more than 2 + limit/4 are skipped. Rows overwritten during the
+  last band hold a mix of two real exposures - harmless for a maximum.
+- The 40 ms pre-arm sleep is dropped when the preview copy (~110 ms)
+  already separates the arm from the vsync.
+- Default full-res FPS is now 0.4 fps (2.5 s).
