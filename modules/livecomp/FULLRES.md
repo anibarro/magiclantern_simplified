@@ -729,3 +729,31 @@ Test (HW merge test On, 0.25 fps): borrow on frames 3, 4, 5 (full frame,
 word-verified after channel 5 is returned); CSV records Live View's
 channel 5 state/address at every frame to show it keeps working. Paused
 test reduced to the channel-5 reference. Zero fill removed.
+
+## LCM29 camera result (LVFR0000 after card cleanup, 0.25 fps)
+
+- B0 (frame 3): refused correctly - channel 5 was not armed (state 0,
+  pointer 0x1E0 past start). Live View double-buffers channel 5
+  (0x0D116000 / 0x0D119C00) and is not always armed in the idle window.
+- B1 (frame 4): borrow worked (abort idle in 1 us), job ran with output on
+  channel 5 (source 1, lock set 3), inputs completed, **channel 5 wrote 0
+  bytes**; stuck output aborted; channel 5 returned and verified identical
+  (state 1, 0x0D119C00, control 0x20000040, source 2).
+- B2 (frame 5): AbortEDmac did not idle channel 5 within 20 ms -> quarantine,
+  composite saved, reboot.
+
+Conclusion: the engine produces output only with **channel 5 and Live
+View paused**. In Live View no channel (3, 4, 5) receives it. Borrowing
+channel 5 is not enough and is risky (B2); it is disabled.
+
+## LCM30: register-shadow diff, Live View running vs paused
+
+Canon's ENGIO shadow (shamem_read = FF2C1730, RAM lookup of the last value
+written through EngDrvOut/ENGIO, no peripheral access) over 0xC0F08000-
+0xC0F08FFC, 0xC0F0D000-0xC0F0D0FC (engine blocks) and 0xC0F05000-0xC0F052FC
+(EDMAC routing): snapshot on frame 3 (Live View running, no engine job) and
+after PauseLiveView (before the channel-5 reference job). The engine job's
+own config list (RAM 0x55020) is logged after the paused job. The log lists
+every register that differs, flagged by whether the job list rewrites it:
+differing registers the job does not rewrite are the candidates.
+No engine job runs in Live View.

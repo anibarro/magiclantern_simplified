@@ -107,6 +107,9 @@ struct lc_native_borrow {
     uint32_t abort_wait_us,restored,after_state,after_addr,after_ptr,after_flags,after_conn;
 };
 unsigned lc_native_borrow5(struct lc_native_borrow *b);
+/* LCM30: Canon's engine job configuration list (ENGIO pairs written by
+ * setup FF429E68 at RAM 0x55020, seen in the LCM24 trace). Returns pairs. */
+unsigned lc_native_job_list(uint32_t *pairs,unsigned max_pairs);
 unsigned lc_native_return5(struct lc_native_borrow *b);
 /* Output on `channel`, engine resources locked with `lock_channel`'s set
  * (only channel 5 with lock 3: Live View holds resource 5). */

@@ -413,6 +413,18 @@ unsigned lc_native_return5(struct lc_native_borrow *b)
     return 0;
 }
 
+#define JOB_LIST 0x55020u
+unsigned lc_native_job_list(uint32_t *pairs,unsigned max_pairs)
+{
+    if (!rom_valid()) return 0;
+    const volatile uint32_t *l=(const volatile uint32_t *)JOB_LIST;
+    unsigned n=0;
+    while (n<max_pairs && l[2*n]!=0xFFFFFFFFu && (l[2*n]&0xFFF00000u)==0xC0F00000u) {
+        pairs[2*n]=l[2*n];pairs[2*n+1]=l[2*n+1];n++;
+    }
+    return n;
+}
+
 /* RAM/ROM only. No powered peripheral reads, lock or engine job. A matching
  * snapshot is a prerequisite, not proof that Canon will grant the resource. */
 int lc_native_snapshot(uint32_t state[12])

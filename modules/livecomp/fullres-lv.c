@@ -210,6 +210,26 @@ static struct frlv_try tries[FRLV_TRIES];
 static unsigned ntries;
 static struct lc_native_borrow borrows[3];
 static unsigned nborrows;
+/* LCM30: Canon's register shadow (shamem_read = FF2C1730, RAM lookup of the
+ * last value written through EngDrvOut/ENGIO; no peripheral access) over the
+ * engine blocks and the EDMAC routing registers, with Live View running and
+ * with Live View paused. Registers that differ and that the engine's own
+ * setup list does not rewrite are the suspects for the missing output. */
+static const struct { uint32_t base,words; } snap_ranges[3]={
+    {0xC0F08000u,1024u},{0xC0F0D000u,64u},{0xC0F05000u,192u}};
+#define FRLV_SNAP 1280u
+static uint32_t snap_lv[FRLV_SNAP],snap_paused[FRLV_SNAP];
+static unsigned snap_lv_ok,snap_paused_ok,job_pairs;
+static uint32_t job_list[2*64];
+static uint32_t snap_reg(unsigned i)
+{
+    for (unsigned k=0;k<3;k++) { if (i<snap_ranges[k].words) return snap_ranges[k].base+4*i; i-=snap_ranges[k].words; }
+    return 0;
+}
+static void snap_take(uint32_t *v)
+{
+    for (unsigned i=0;i<FRLV_SNAP;i++) v[i]=shamem_read(snap_reg(i));
+}
 /* Write-channel activity over one full frame period (frame 2 -> 3): when is
  * each EDMAC write channel busy, and what are channels 3/5 doing. */
 #define FRLV_ACT 160u
@@ -391,6 +411,31 @@ static void write_log(const struct frlv_result *r,const char *status)
             q->flags,q->conn,q->rec[1],q->rec[2],q->rec[3],q->abort_wait_us,q->restored,
             q->after_state,q->after_addr,q->after_ptr,q->after_flags,q->after_conn);
         ok&=write_text(f,t,n);
+    }
+    n=snprintf(t,sizeof(t),"Job_config_list (%d pairs, reg=val):",job_pairs);
+    for (unsigned k=0;k<job_pairs;k++) {
+        if (n>(int)sizeof(t)-40) { ok&=write_text(f,t,n);n=0; }
+        n+=snprintf(t+n,sizeof(t)-n," %x=%x",job_list[2*k],job_list[2*k+1]);
+    }
+    t[n++]='\n';ok&=write_text(f,t,n);
+    {
+        unsigned diffs=0;
+        n=snprintf(t,sizeof(t),"Reg_diff_LV_vs_paused (lv_ok %d paused_ok %d; reg:lv:paused:in_job_list):",snap_lv_ok,snap_paused_ok);
+        for (unsigned i=0;i<FRLV_SNAP && snap_lv_ok && snap_paused_ok;i++) {
+            if (snap_lv[i]==snap_paused[i]) continue;
+            uint32_t reg=snap_reg(i);unsigned in_job=0;
+            for (unsigned k=0;k<job_pairs;k++) if (job_list[2*k]==reg) in_job=1;
+            if (n>(int)sizeof(t)-48) { ok&=write_text(f,t,n);n=0; }
+            n+=snprintf(t+n,sizeof(t)-n,"%s%x:%x:%x:%d",diffs%4 ? " ":"\n",reg,snap_lv[i],snap_paused[i],in_job);
+            diffs++;
+        }
+        n+=snprintf(t+n,sizeof(t)-n,"\nReg_diff_count: %d\nReg_nonzero_LV (reg:val, engine blocks only):",diffs);
+        unsigned nz=0;
+        for (unsigned i=0;i<1088 && snap_lv_ok;i++) if (snap_lv[i]) {
+            if (n>(int)sizeof(t)-32) { ok&=write_text(f,t,n);n=0; }
+            n+=snprintf(t+n,sizeof(t)-n,"%s%x:%x",nz%6 ? " ":"\n",snap_reg(i),snap_lv[i]);nz++;
+        }
+        t[n++]='\n';ok&=write_text(f,t,n);
     }
     n=snprintf(t,sizeof(t),"HW_engio_lists_during_band0: %d (us:list:count reg=val ...)\n",rec_n);
     ok&=write_text(f,t,n);
@@ -763,7 +808,11 @@ static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,u
      * replacement channels on the top half: do they work without Live View? */
     /* LCM28: channels 3/4/0 never receive the engine output (paused
      * channel 3 even refused to abort); only the channel 5 reference. */
-    if (h->paused) unsafe=hw_test(h,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,1);
+    if (h->paused) {
+        snap_take(snap_paused);snap_paused_ok=1;
+        unsafe=hw_test(h,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,1);
+        job_pairs=lc_native_job_list(job_list,64);
+    }
     ResumeLiveView();
     for (unsigned i=0;i<60 && (!lv || LV_PAUSED);i++) msleep(50);
     h->lv_after=lv && !LV_PAUSED;
@@ -780,7 +829,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));nborrows=0;memset(borrows,0,sizeof(borrows));
-    unsigned lv_try=0;
+    snap_lv_ok=snap_paused_ok=job_pairs=0;
     if (hw_enable) {
         hw_geometry=fio_malloc(128);
         hw.prepare=hw_geometry ? lc_native_engine_prepare((uint32_t *)(((unsigned)hw_geometry+63)&~63u)):999;
@@ -876,24 +925,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
          * 0.5 fps at 99 % changed pixels needs 1.89 s). */
         if (frames_done!=seen) { r->behind++;r->preview_skipped++;continue; }
         c->busy_idle=resource_busy();
-        /* Hardware max test: once, on frame 3 or later, while the capture
-         * buffer is idle with enough time left before the next readout. */
-        /* LCM28: one engine attempt per frame from frame 3, on the write
-         * channels Live View leaves unconfigured: 4, 0, then 3 (control). */
-        /* LCM29: borrow channel 5 from Live View on frames 3, 4 and 5 (full
-         * frame); the frames that follow show whether Live View is unharmed. */
-        if (hw_enable && lv_try<3 && r->merged>=3 && !off && !c->lost_bands &&
-            get_ms_clock()-done+900<period_ms-600) {
-            NotifyBox(2000,"Testing hardware merge %d/3...",lv_try+1);
-            lv_try++;
-            if (hw_test(&hw,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,2)) {
-                /* The engine only ever writes the capture buffer; the
-                 * accumulator stays valid and is still saved (LCM23). */
-                *hw_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
-            }
-            write_log(r,"hw merge tested");
-            continue;                                    /* preview next frame */
-        }
+        /* LCM30: no engine job in Live View (LCM29: even a borrowed channel 5
+         * gets no output there). Snapshot Canon's register shadow instead. */
+        if (hw_enable && !snap_lv_ok && r->merged>=3) { snap_take(snap_lv);snap_lv_ok=1; }
         /* The preview reads only the accumulator, so it may overlap the next
          * readout (which writes the capture buffer); it must just end before
          * the next frame arrives, or the next merge starts late. Estimate =
