@@ -969,3 +969,19 @@ After the exact paused reference: give 0xC0F06004/0xC0F07000 (enable bits)
 their Live View value, run the job, restore (where 16); if still exact,
 give every differing 0xC0F06/07xxx register its Live View value (where 15).
 A broken job confirms the timing generator as the gate.
+
+## LCM38 camera result (LVFR0009)
+
+Paused reference exact (115 ms). Timing-generator enable bits (0xC0F06004,
+0xC0F07000) at their Live View value: exact (116 ms). All 15 differing
+0xC0F06/07xxx registers at their Live View values: exact (116 ms).
+PauseLiveView 194 ms, ResumeLiveView 712 ms.
+
+Caveat: Live View holds its own engine resources (ROM strings
+"LockEngineResources HEAD", "LockEngineResources( hRscLckLv )"); pausing
+releases them, which can power-gate the timing generator, so writing its
+enable bit while paused may have no effect. The conclusion that holds:
+**no register value recorded in Canon's ENGIO shadow, alone or combined,
+reproduces the Live View blockage.** What remains is power/clock/resource
+state owned by Live View's running paths, which only PauseLiveView
+releases.
