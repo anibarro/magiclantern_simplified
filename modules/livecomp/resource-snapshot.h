@@ -34,4 +34,28 @@ static inline int lc_resource_read(lc_read_word read,void *ctx,uint32_t lock,
     }
     *out=s;return 1;
 }
+/* LCM39: every node of every resource type (16 types, <= 64 nodes each),
+ * same validated layout: list head heads+8*type, node-4 signature, node+4
+ * next, node+8 id, node+12 state (1 = locked). Read-only. Returns the
+ * number of nodes stored (<= max), 0 on any inconsistency. */
+static inline unsigned lc_resource_enum(lc_read_word read,void *ctx,uint32_t manager,
+    uint32_t node_signature,uint32_t *ids,uint32_t *states,unsigned max)
+{
+    uint32_t heads,signature;
+    unsigned n=0;
+    if (!read(ctx,manager+4,&heads)) return 0;
+    for (unsigned type=0;type<16;type++) {
+        uint32_t head=heads+8*type,node;
+        if (!read(ctx,head+4,&node)) return 0;
+        for (unsigned k=0;k<64 && node!=head;k++) {
+            uint32_t id,st;
+            if (node<4 || !read(ctx,node-4,&signature) || signature!=node_signature ||
+                !read(ctx,node+8,&id) || !read(ctx,node+12,&st)) return 0;
+            if ((id>>16)!=type) return 0;
+            if (n<max) { ids[n]=id;states[n]=st;n++; }
+            if (!read(ctx,node+4,&node)) return 0;
+        }
+    }
+    return n;
+}
 #endif

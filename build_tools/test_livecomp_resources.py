@@ -53,6 +53,22 @@ int main(void) {
     reset();W(120,0xfffffff0);assert(!snapshot(&s));
     reset();W(404,0xffffffff);assert(!snapshot(&s));
     reset();W(512,6);W(508,400);assert(!snapshot(&s)); /* requested ID absent */
+    /* LCM39 whole-registry walk: empty lists point to their own head. */
+    { uint32_t ids[8],st[8];
+      reset();W(304,800);                          /* heads at 800..927, clear of the nodes */
+      for (unsigned t=0;t<16;t++) W(800+8*t+4,800+8*t);
+      W(804,504);W(508,800);W(812,604);W(608,808);
+      memcpy(before,memory,sizeof(memory));
+      assert(lc_resource_enum(read_word,0,300,0xabcd,ids,st,8)==2);
+      assert(ids[0]==5 && st[0]==1 && ids[1]==0x1000a && st[1]==0);
+      assert(!memcmp(memory,before,sizeof(memory)));
+      W(512,6);W(508,704);W(700,0xabcd);W(708,800);W(712,7);W(716,1);   /* type 0: 6 then 7 */
+      assert(lc_resource_enum(read_word,0,300,0xabcd,ids,st,8)==3 && ids[0]==6 && ids[1]==7 && ids[2]==0x1000a);
+      assert(lc_resource_enum(read_word,0,300,0xabcd,ids,st,2)==2);      /* bounded by max */
+      W(712,0x20007);assert(!lc_resource_enum(read_word,0,300,0xabcd,ids,st,8)); /* id in wrong list */
+      W(712,7);W(708,504);reads=0;
+      assert(lc_resource_enum(read_word,0,300,0xabcd,ids,st,8)<=8 && reads<2000);  /* cycle bounded */
+      reset();W(304,800);assert(!lc_resource_enum(read_word,0,300,0xabcd,ids,st,8)); } /* missing heads */
     return 0;
 }
 '''
@@ -61,7 +77,7 @@ int main(void) {
         subprocess.run([os.environ.get('CC','cc'),'-std=c99','-O2','-Wall','-Wextra','-Werror',
             '-I'+str(ROOT/'modules/livecomp'),str(p/'check.c'),'-o',str(p/'check')],check=True)
         subprocess.run([str(p/'check')],check=True)
-    print('PASS: resource IDs/busy masks, read-only access, bounded cycles and malformed registry rejection')
+    print('PASS: whole-registry walk, resource IDs/busy masks, read-only access, bounded cycles and malformed registry rejection')
 
 
 if __name__=='__main__': main()

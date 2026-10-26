@@ -232,6 +232,11 @@ static const unsigned pause_group_n[3]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC};
  * out at 3 fps; idle window at 0.25 fps: 0 bytes). where 16 = enable bits
  * only (0xC0F06004, 0xC0F07000), 15 = every differing 0xC0F06/07 register. */
 static unsigned tg_written[2];
+/* LCM39: Canon's whole resource registry (which hardware locks are held),
+ * Live View running (frame 3) vs paused. Read-only. */
+#define FRLV_RES 256u
+static uint32_t res_lv_id[FRLV_RES],res_lv_st[FRLV_RES],res_p_id[FRLV_RES],res_p_st[FRLV_RES];
+static unsigned res_lv_n,res_p_n;
 /* LCM36: LCM35 showed the whole register state of Live View does not stop
  * the paused engine (all 189 values at once: exact). What runs only in
  * Live View is its activity, the obvious part being the LCD refresh. Turn
@@ -454,6 +459,28 @@ static void write_log(const struct frlv_result *r,const char *status)
         n=snprintf(t,sizeof(t),"B%d: %x,%x,%x,%x,%x,%x,%d,%d,%x,%x,%d,%d\n",k,q->reason,q->state,q->addr,q->ptr,
             q->flags,q->conn,q->abort_wait_us,q->restored,q->after_state,q->after_addr,pause_write_err[k],pause_bad[k]);
         ok&=write_text(f,t,n);
+    }
+    {
+        unsigned nl=0,np=0;
+        for (unsigned i=0;i<res_lv_n;i++) if (res_lv_st[i]) nl++;
+        for (unsigned i=0;i<res_p_n;i++) if (res_p_st[i]) np++;
+        n=snprintf(t,sizeof(t),"Resources (id:state, nonzero only): LV nodes %d locked %d | paused nodes %d locked %d\nRes_LV:",
+            res_lv_n,nl,res_p_n,np);
+        for (unsigned i=0;i<res_lv_n;i++) if (res_lv_st[i]) {
+            if (n>(int)sizeof(t)-24) { ok&=write_text(f,t,n);n=0; }
+            n+=snprintf(t+n,sizeof(t)-n," %x:%x",res_lv_id[i],res_lv_st[i]);
+        }
+        n+=snprintf(t+n,sizeof(t)-n,"\nRes_paused:");
+        for (unsigned i=0;i<res_p_n;i++) if (res_p_st[i]) {
+            if (n>(int)sizeof(t)-24) { ok&=write_text(f,t,n);n=0; }
+            n+=snprintf(t+n,sizeof(t)-n," %x:%x",res_p_id[i],res_p_st[i]);
+        }
+        n+=snprintf(t+n,sizeof(t)-n,"\nRes_all_LV:");
+        for (unsigned i=0;i<res_lv_n;i++) {
+            if (n>(int)sizeof(t)-24) { ok&=write_text(f,t,n);n=0; }
+            n+=snprintf(t+n,sizeof(t)-n," %x",res_lv_id[i]);
+        }
+        t[n++]='\n';ok&=write_text(f,t,n);
     }
     n=snprintf(t,sizeof(t),"TG_reverse_test (HW_tries where 16 = enable bits, 15 = all 0xC0F06/07): written %d,%d\npause_ms=%d resume_ms=%d\n",
         tg_written[0],tg_written[1],pause_ms,resume_ms);
@@ -858,6 +885,7 @@ static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,u
      * channel 3 even refused to abort); only the channel 5 reference. */
     if (h->paused) {
         if (snap_lv_ok) { snap_diff();snap_paused_ok=1; }
+        res_p_n=lc_native_resource_list(res_p_id,res_p_st,FRLV_RES);
         unsigned before=ntries;
         unsafe=hw_test(h,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,1);
         job_pairs=lc_native_job_list(job_list,64);
@@ -923,7 +951,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));
     snap_lv_ok=snap_paused_ok=job_pairs=0;
-    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;tg_written[0]=tg_written[1]=0;memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
+    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;tg_written[0]=tg_written[1]=0;res_lv_n=res_p_n=0;memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
     unsigned lv_tries=0,lv_step=0,lv_done=0;disp_off_ms=disp_try_frame=0;
     if (hw_enable) {
         if (!snap_lv) snap_lv=malloc(FRLV_SHADOW_WORDS*4);
@@ -1023,7 +1051,10 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         c->busy_idle=resource_busy();
         /* LCM30: no engine job in Live View (LCM29: even a borrowed channel 5
          * gets no output there). Snapshot Canon's register shadow instead. */
-        if (hw_enable && snap_lv && !snap_lv_ok && r->merged>=3) { snap_take(snap_lv);snap_lv_ok=1; }
+        if (hw_enable && snap_lv && !snap_lv_ok && r->merged>=3) {
+            snap_take(snap_lv);snap_lv_ok=1;
+            res_lv_n=lc_native_resource_list(res_lv_id,res_lv_st,FRLV_RES);
+        }
         /* LCM33: escalating Live View attempts A, A+B, A+B+C on frames
          * where channel 5 can be borrowed; stop at the first exact one. */
         if (FRLV_DISPLAY_TEST && hw_enable && !disp_off_ms && r->merged==3) { display_off();disp_off_ms=get_ms_clock()-done; }

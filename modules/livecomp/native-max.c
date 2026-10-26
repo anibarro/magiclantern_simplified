@@ -471,3 +471,14 @@ int lc_native_resources(struct lc_resource_snapshot *snapshot)
         node_signature,lock_signature,snapshot);
     sei(irq);return ok;
 }
+unsigned lc_native_resource_list(uint32_t *ids,uint32_t *states,unsigned max)
+{
+    /* Same ROM fingerprint and literal checks as lc_native_resources. */
+    if (!rom_valid() || hash((void *)0xff2c5bf8,0xcc)!=0x78ca9956u ||
+        *(volatile uint32_t *)0xff2c59ac!=0x4c3f8u ||
+        *(volatile uint32_t *)0xff2c59f4!=0xff8ffab0u) return 0;
+    uint32_t node_signature=*(volatile uint32_t *)0xff8ffab0;
+    unsigned irq=cli();
+    unsigned n=lc_resource_enum(read_ram_word,NULL,0x4c3f8,node_signature,ids,states,max);
+    sei(irq);return n;
+}

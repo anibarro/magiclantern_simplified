@@ -123,4 +123,6 @@ unsigned lc_native_engine_max_lock(const struct lc_native_plane *a,
 void lc_native_set_wait_ms(unsigned ms);
 int lc_native_snapshot(uint32_t state[12]);
 int lc_native_resources(struct lc_resource_snapshot *snapshot);
+/* LCM39: whole resource registry (id, state) - read-only diagnostic. */
+unsigned lc_native_resource_list(uint32_t *ids,uint32_t *states,unsigned max);
 #endif

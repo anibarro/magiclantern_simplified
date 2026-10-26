@@ -985,3 +985,12 @@ enable bit while paused may have no effect. The conclusion that holds:
 reproduces the Live View blockage.** What remains is power/clock/resource
 state owned by Live View's running paths, which only PauseLiveView
 releases.
+
+## LCM39: resource-registry diff (read-only)
+
+`lc_resource_enum` walks every node of all 16 resource types in Canon's
+registry (manager 0x4C3F8, same fingerprinted layout as FF2C5BF8; bounded,
+signature-checked, no writes). Snapshots: frame 3 (Live View running) and
+after PauseLiveView, before the reference job. Logged: every locked
+resource in each state and the full Live View node list. Shows which
+hardware locks Live View holds that pausing releases.
