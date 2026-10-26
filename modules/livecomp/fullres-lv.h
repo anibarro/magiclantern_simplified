@@ -6,6 +6,7 @@ struct lc_frlv_options {
     unsigned fps_index,expo_index,inputs;
     unsigned continuous;   /* 1: full-res composite (arm every frame, merge, preview) */
     unsigned limit;        /* continuous: frames to merge before stopping */
+    unsigned fix_focus_pixels; /* replace EOS M PDAF pixels before saving */
 };
 /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,

@@ -399,3 +399,36 @@ DMA offset after merge.
 Next: faster merge (word-level SWAR prototype exists but gave only ~15% fewer
 instructions; needs a better formulation or assembly) to allow 0.5 fps,
 focus-pixel removal, white balance in DNG, JPEG output.
+
+## LCM18 camera result
+
+17 frames merged at 0.25 fps, user-stopped, DNG saved, "worked quite good".
+Merge 2.08-2.58 s, preview 0.29 s, no overrun. One partial frame (6 rows) was
+merged and logged: arming 40 ms after the vsync did not remove partials.
+
+## LCM19: partial-frame diagnostics, focus pixels, white balance, merge
+
+- **Partial frames.** The module now runs its own RAW slurp (same EDMAC calls as
+  the core's `edmac_raw_slurp`) with its own complete/abort/pop callbacks.
+  The CSV records, per frame: arm delay after the vsync, which callback fired,
+  when (after arming) and the DMA offset at that moment, plus how many ENGIO
+  and ADTG writes Canon made during the frame. A partial frame will show
+  whether the transfer was aborted, completed early, or coincided with a
+  Canon sensor reconfiguration.
+- **Focus pixels.** `fullres-fix.h`: the EOS M full-res raster has PDAF pixels
+  at (x%24, y%30) in {(0,4),(5,23),(6,18),(11,19),(12,16),(17,23),(18,18),(23,1)}
+  for x 72..5279, y 31..3499 - exactly the 200,942 points of MLV App's
+  `80000331_5280x3506.fpm`, and 89% of the bright dots measured in our own
+  frames. All are R/B sites with clean same-colour neighbours; they are
+  replaced by the mean of x+-2 / y+-2 before saving (menu: Focus pixels Fix/Keep).
+- **White balance.** DNG AsShotNeutral from Canon's WB setting (Kelvin, presets
+  as in mlv_dump, or custom gains) via a 2500-10000 K table computed from the
+  EOS M ColorMatrix1; also used for the LCD preview.
+- **Merge.** Compare-first SWAR-free variant: extracts the 16 samples of two
+  blocks from 7 aligned words and only unpacks/packs when something got
+  brighter. qemu ARM946 instruction counts: 81 vs 94 per 8 samples when
+  nothing changes, 203 vs 120 when everything changes, so it is used only when
+  the previous frame changed <30% of blocks. Expected gain ~10%: **2 s frames
+  (0.5 fps) are not reachable with CPU merging** (memory + compute ~2.1 s per
+  18 Mpixel frame). The realistic next step for faster cadence is double
+  buffering with a third 32 MB buffer, if the camera can provide one.

@@ -11,6 +11,7 @@ struct lc_dng_metadata {
     uint32_t width,height,pitch,bytes,black,white,cfa,active[4];
     int32_t matrix[18];
     uint32_t iso,tvr,aperture,focal,fps,illuminant;
+    int32_t neutral[3];   /* AsShotNeutral x1e6 (R,G,B); all zero = fixed daylight */
 };
 static void lc_dng_u16(uint8_t *p,uint32_t v) { p[0]=v;p[1]=v>>8; }
 static void lc_dng_u32(uint8_t *p,uint32_t v)
@@ -68,9 +69,12 @@ static int lc_dng_header(uint8_t *h,const struct lc_dng_metadata *m)
     lc_dng_entry(&b,50720,4,2,v,8);
     for (unsigned i=0;i<18;i++) lc_dng_u32(v+4*i,(uint32_t)m->matrix[i]);
     lc_dng_entry(&b,50721,10,9,v,72);
-    /* Same daylight neutral as the existing core's default DNG writer. The LCD
-     * colour preview is approximate; exact Canon colour development is pending. */
-    const uint32_t neutral[]={473635,1000000,1,1,624000,1000000};
+    /* Caller's AsShotNeutral (full-res: from Canon's WB setting), otherwise the
+     * same daylight neutral as the existing core's default DNG writer. */
+    uint32_t neutral[]={473635,1000000,1,1,624000,1000000};
+    if (m->neutral[0]>0 && m->neutral[1]>0 && m->neutral[2]>0) {
+        neutral[0]=m->neutral[0];neutral[2]=m->neutral[1];neutral[3]=1000000;neutral[4]=m->neutral[2];
+    }
     for (unsigned i=0;i<6;i++) lc_dng_u32(v+4*i,neutral[i]);
     lc_dng_entry(&b,50728,5,3,v,24);
     lc_dng_scalar(&b,50778,3,m->illuminant ? m->illuminant:21);

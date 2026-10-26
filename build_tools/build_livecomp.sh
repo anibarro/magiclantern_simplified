@@ -14,10 +14,11 @@ python3 build_tools/test_livecomp_native.py
 python3 build_tools/test_livecomp_fullres_check.py
 python3 build_tools/test_livecomp_fullres_suite.py
 python3 build_tools/test_livecomp_frlv.py
+python3 build_tools/test_livecomp_fullres_fix.py
 make -C modules/livecomp -j1 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
-  build/module_complete build/effective-config.txt 2>&1 | tee "$B/lcm18-module-build.log"
+  build/module_complete build/effective-config.txt 2>&1 | tee "$B/lcm19-module-build.log"
 # Standard core only for import checking; never packaged or installed.
 make -C platform/EOSM.202 -j2 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
-  build/EOSM_202.sym > "$B/lcm18-stock-core-check.log" 2>&1
+  build/EOSM_202.sym > "$B/lcm19-stock-core-check.log" 2>&1
 python3 build_tools/package_livecomp_standalone.py
-echo "Module-only package: $B/livecomp-LCM18-module-only.zip"
+echo "Module-only package: $B/livecomp-LCM19-module-only.zip"

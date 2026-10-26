@@ -92,7 +92,7 @@ STUB = r'''
 int is_camera(const char *m,const char *f);
 struct card_info { const char *drive_letter; };
 struct raw_info { int white_level; uint32_t cfa_pattern; int32_t color_matrix1[18]; int calibration_illuminant1; };
-struct lens_info_t { int raw_iso,aperture,focal_len,job_state; };
+struct lens_info_t { int raw_iso,aperture,focal_len,job_state,wb_mode,kelvin; unsigned WBGain_R,WBGain_G,WBGain_B; };
 extern struct raw_info raw_info; extern struct lens_info_t lens_info;
 extern int lv,LV_PAUSED,RECORDING,lv_dispsize,ml_shutdown_requested,icu_uilock;
 extern uint32_t raw_write_chan;
@@ -104,6 +104,14 @@ int patch_hook_function(uintptr_t addr,uint32_t orig,patch_hook_function_cbr cb,
 int unpatch_memory(uintptr_t addr); void set_lv_zoom(int z);
 uint32_t shamem_read(uint32_t a); void EngDrvOut(uint32_t r,uint32_t v); void EngDrvOutLV(uint32_t r,uint32_t v);
 int edmac_get_state(uint32_t ch); uint32_t edmac_get_pointer(uint32_t ch);
+struct edmac_info { unsigned off1a,off1b,off2a,off2b,off3,xa,xb,ya,yb,xn,yn; };
+#define EDMAC_2_BYTES_PER_TRANSFER 0x20000000
+void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx);
+void RegisterEDmacAbortCBR(int ch,void (*cbr)(void*),void *ctx);
+void RegisterEDmacPopCBR(int ch,void (*cbr)(void*),void *ctx);
+void ConnectWriteEDmac(unsigned ch,unsigned where);
+void SetEDmac(unsigned ch,void *addr,struct edmac_info *info,int flags);
+void StartEDmac(unsigned ch,int flags);
 struct vram_info { uint8_t *vram; int width,pitch,height; };
 struct vram_info *get_yuv422_vram(void);
 void NotifyBox(int ms,const char *fmt,...);
@@ -121,7 +129,7 @@ SIM = r'''
 #include "fullres-lv.h"
 struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0}}; /* host: no alias bit, no LCD */
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
-struct lens_info_t lens_info={72,40,22,0};
+struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024};
 int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock;
 uint32_t raw_write_chan=0x12;
 static struct card_info card={"B"};
@@ -162,7 +170,14 @@ uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; if (!slurp_dst) return 0;
 static struct vram_info vram={0,720,1440,480};
 void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
 struct vram_info *get_yuv422_vram(void){ return &vram; }
-void edmac_raw_slurp(void *dst,int w,int h){ slurp_dst=dst; slurp_w=w; slurp_h=h; slurp_armed=1; }
+static void (*sim_cb)(void*);static void *sim_cb_ctx;
+void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch; sim_cb=cbr; sim_cb_ctx=ctx; }
+void RegisterEDmacAbortCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch;(void)cbr;(void)ctx; }
+void RegisterEDmacPopCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch;(void)cbr;(void)ctx; }
+void ConnectWriteEDmac(unsigned ch,unsigned where){ (void)ch;(void)where; }
+static uint8_t *pending_dst;static int pending_w,pending_h;
+void SetEDmac(unsigned ch,void *addr,struct edmac_info *info,int flags){ (void)ch;(void)flags; pending_dst=addr; pending_w=info->xb; pending_h=info->yb+1; }
+void StartEDmac(unsigned ch,int flags){ (void)ch;(void)flags; slurp_dst=pending_dst; slurp_w=pending_w; slurp_h=pending_h; slurp_armed=1; }
 int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){ return fps_now; }
 struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
@@ -202,6 +217,7 @@ static void frame(void)
         for (int i=0;i<slurp_w*slurp_h;i+=4096) slurp_dst[i]=(uint8_t)(slurp_frames*7+i);
         memset(slurp_dst+slurp_w*slurp_h-8,0x11,8);
         slurp_frames++;
+        if (sim_cb) sim_cb(sim_cb_ctx);
     }
     dma_state=dma_stuck && (slurp_armed || dma_state);
     slurp_armed=0;
@@ -225,7 +241,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={5,0,4,0,0};   /* index 5 = 3 fps */
+    struct lc_frlv_options o={5,0,4,0,0,1};   /* index 5 = 3 fps, fix focus pixels */
     /* Happy path: 4 inputs, geometry from registers, restore, unhook, DNG. */
     reset();
     unsigned w=(0x538-0x12)*4,h=0xDB2-1+1,bytes=w*14/8*h;

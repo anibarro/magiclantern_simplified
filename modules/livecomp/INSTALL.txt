@@ -1,4 +1,4 @@
-Live Composite LCM17 - Canon EOS M firmware 2.0.2
+Live Composite LCM19 - Canon EOS M firmware 2.0.2
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
@@ -40,6 +40,8 @@ OFF, no other RAW tools, fixed ISO/WB, x1 view). Submenu:
    Full-res FPS: 0.25 fps (4 s) - each frame is one ~4 s sub-exposure
    Full-res exposure: 100% of frame (gapless as possible)
    Capture limit: 30 / 60 / 120 frames
+   Focus pixels: Fix (default) removes the EOS M dot grid from the DNG
+The DNG white balance follows Canon's WB setting (Kelvin or preset).
 Close the menu, press SET once. The camera zooms to x5. After ~8 s the LCD
 shows the growing composite (low-res monitor view, refreshed every frame;
 Canon's garbage view may flash briefly at each frame). Press SET to stop, or

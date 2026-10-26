@@ -79,7 +79,7 @@ static CONFIG_INT("livecomp.preview",preview_interval,0);
 /* Task selection is deliberately not persisted across boots:
  * 0=Live composite, 1=Full-res check (native engine), 2=Full-res readout. */
 static int fullres_check;
-static int frlv_fps,frlv_expo,frlv_inputs=1;
+static int frlv_fps,frlv_expo,frlv_inputs=1,frlv_keep_fp;
 static const unsigned frlv_input_counts[]={1,4,8};
 static unsigned trigger_ms;
 static const unsigned frame_limits[]={30,60,120};
@@ -470,7 +470,7 @@ static void run(void *unused)
     if (fullres_check>=2) {
         struct lc_frlv_options o={(unsigned)frlv_fps,(unsigned)frlv_expo,
             frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1],
-            fullres_check==3,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2]};
+            fullres_check==3,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2],!frlv_keep_fp};
         unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
         NotifyBox(5000,"%s",status);
         if (unsafe) { requested=0;attempted=1;running=0; }
@@ -671,6 +671,9 @@ static struct menu_entry lv_menu[]={
         {.name="Full-res exposure",.priv=&frlv_expo,.max=3,
          .choices=CHOICES("100% of frame","50% of frame","25% of frame","12% of frame"),
          .help="Full-res readout only: shutter as a fraction of the frame period."},
+        {.name="Focus pixels",.priv=&frlv_keep_fp,.max=1,
+         .choices=CHOICES("Fix","Keep"),
+         .help="Full-res DNG: replace the EOS M focus-pixel dot grid (Fix) or keep raw."},
         {.name="Full-res frames",.priv=&frlv_inputs,.max=2,
          .choices=CHOICES("1 frame","4 frames","8 frames"),
          .help="Full-res readout only: frames captured and max-merged into the DNG."},
