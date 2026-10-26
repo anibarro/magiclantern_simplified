@@ -174,9 +174,20 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     const struct lc_native_plane *b,const struct lc_native_plane *out,
     struct lc_native_engine_result *r,unsigned channel)
 {
+    return lc_native_engine_max_lock(a,b,out,r,channel,channel);
+}
+/* LCM29: output on `channel`, but lock the engine with the resource set of
+ * `lock_channel`. Used to borrow channel 5 (only route the engine output
+ * reaches, LCM28) while Live View keeps resource 5: the caller has already
+ * taken channel 5 over from Live View and restores it afterwards. */
+unsigned lc_native_engine_max_lock(const struct lc_native_plane *a,
+    const struct lc_native_plane *b,const struct lc_native_plane *out,
+    struct lc_native_engine_result *r,unsigned channel,unsigned lock_channel)
+{
     /* LCM28: 5 = Canon's native route (verified exact with Live View
      * paused, LCM27); 0/3/4/6 = replacement routes under test. */
     if (channel!=0 && channel!=3 && channel!=4 && channel!=5 && channel!=6) return LC_NATIVE_ARGUMENT;
+    if (lock_channel!=channel && !(channel==5 && lock_channel==3)) return LC_NATIVE_ARGUMENT;
     if (!running) OUTPUT_CHANNEL=channel;
     if (!r) return LC_NATIVE_ARGUMENT;
     memset(r,0,sizeof(*r));r->lock=r->setup=r->wait=r->event_delete=r->unlock=UNSET;
@@ -207,7 +218,7 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     if (!lc_native_resources(&snapshot) || snapshot.count!=10 ||
         memcmp(snapshot.ids,expected,sizeof(expected))) return r->reason=LC_NATIVE_CONTEXT;
     /* Channel 5 keeps Canon's own resource list unchanged. */
-    uint32_t ids[10];memcpy(ids,expected,sizeof(ids));ids[0]=OUTPUT_CHANNEL;
+    uint32_t ids[10];memcpy(ids,expected,sizeof(ids));ids[0]=lock_channel;
     unsigned started=(unsigned)get_us_clock(),old_resource=state[1],old_geometry=state[5];
     unsigned resource=((unsigned (*)(uint32_t *,unsigned))0xff2c5848)(ids,10);
     if (!resource) return r->reason=LC_NATIVE_RESOURCE;
@@ -329,6 +340,77 @@ done:
     }
     r->elapsed_us=(unsigned)get_us_clock()-started;
     return r->reason;
+}
+
+/* LCM29: borrow channel 5 from Live View.
+ * LCM28: the engine output (source 1) reaches only write channel 5; channels
+ * 3 and 4 receive nothing, with or without Live View. Live View holds
+ * resource 5 and keeps channel 5 armed on source 2 (its own frame output)
+ * from ~0.3 s after each vsync until the next readout, idle in between.
+ * Canon's per-channel EDMAC record (RAM table at *(0x1C404), 32 bytes per
+ * channel; StartEDmac/AbortEDmac/Register*CBR, RAM 0x1C914/0x1CA60/0x1CB00/
+ * 0x1CBE8): +0 abort flag, +4 control word (SetEDmac flags | start mode<<6),
+ * +8 complete CBR, +12 abort CBR, +16 pop CBR, +20/+24/+28 their contexts.
+ * Default (no-op) CBR address at *(0x1C830).
+ * Borrow: only when armed and idle (pointer at start, source 2); save the
+ * programmed address, size/offset registers, control word, source and the
+ * record; point the abort CBR at the default so Live View sees no abort;
+ * AbortEDmac; wait for idle. Return: route back to the saved source,
+ * SetEDmac with the saved geometry, restore the whole record, StartEDmac
+ * with the saved mode, then verify state/address/pointer/control/source. */
+#define EDMAC_RECORDS 0x1c404u
+#define EDMAC_DEFAULT_CBR 0x1c830u
+static struct edmac_info borrow_info;
+static uint32_t borrow_rec[8];
+static volatile uint32_t *borrow_record(void)
+{
+    uint32_t table=*(volatile uint32_t *)EDMAC_RECORDS;
+    return ram(table+5*32,32) ? (volatile uint32_t *)(table+5*32):NULL;
+}
+unsigned lc_native_borrow5(struct lc_native_borrow *b)
+{
+    memset(b,0,sizeof(*b));
+    if (!rom_valid()) return b->reason=LC_NATIVE_ROM;
+    if (running || quarantined) return b->reason=LC_NATIVE_BUSY;
+    volatile uint32_t *rec=borrow_record();
+    uint32_t dflt=*(volatile uint32_t *)EDMAC_DEFAULT_CBR;
+    if (!rec || !dflt) return b->reason=LC_NATIVE_CONTEXT;
+    b->state=edmac_get_state(5);b->addr=edmac_get_address(5);b->ptr=edmac_get_pointer(5);
+    b->flags=edmac_get_flags(5);b->conn=edmac_get_connection(5,EDMAC_DIR_WRITE);
+    for (unsigned i=0;i<8;i++) b->rec[i]=borrow_rec[i]=rec[i];
+    if (b->state!=1 || physical(b->ptr)!=physical(b->addr) || b->conn!=2 || b->rec[1]!=b->flags)
+        return b->reason=LC_NATIVE_CONTEXT;          /* not armed-and-idle as observed */
+    borrow_info=edmac_get_info(5);
+    unsigned irq=cli();
+    if (edmac_get_state(5)!=1 || physical(edmac_get_pointer(5))!=physical(b->addr)) {
+        sei(irq);return b->reason=LC_NATIVE_CONTEXT; /* data started meanwhile */
+    }
+    rec[3]=dflt;                                     /* abort CBR: Live View not told */
+    ((void (*)(unsigned))0x1ca60)(5);                /* AbortEDmac */
+    sei(irq);
+    unsigned t0=(unsigned)get_us_clock();
+    while (edmac_get_state(5) && (unsigned)get_us_clock()-t0<20000u) continue;
+    b->abort_wait_us=(unsigned)get_us_clock()-t0;
+    if (edmac_get_state(5)) { rec[3]=borrow_rec[3];quarantined=1;return b->reason=LC_NATIVE_STOP; }
+    b->ok=1;
+    return 0;
+}
+unsigned lc_native_return5(struct lc_native_borrow *b)
+{
+    if (!b->ok) return 0;
+    volatile uint32_t *rec=borrow_record();
+    if (!rec || edmac_get_state(5)) { quarantined=1;return b->reason|=LC_NATIVE_STOP; }
+    ConnectWriteEDmac(5,b->conn);
+    SetEDmac(5,(void *)b->addr,&borrow_info,(int)(b->flags&~0xC0u));
+    for (unsigned i=0;i<8;i++) rec[i]=borrow_rec[i];
+    ((void (*)(unsigned,unsigned))0x1c914)(5,(b->flags>>6)&3u);   /* StartEDmac */
+    b->after_state=edmac_get_state(5);b->after_addr=edmac_get_address(5);b->after_ptr=edmac_get_pointer(5);
+    b->after_flags=edmac_get_flags(5);b->after_conn=edmac_get_connection(5,EDMAC_DIR_WRITE);
+    b->restored=b->after_state==1 && b->after_addr==b->addr && physical(b->after_ptr)==physical(b->addr) &&
+        b->after_flags==b->flags && b->after_conn==b->conn;
+    b->ok=0;
+    if (!b->restored) { quarantined=1;return b->reason|=LC_NATIVE_CONTEXT; }
+    return 0;
 }
 
 /* RAM/ROM only. No powered peripheral reads, lock or engine job. A matching

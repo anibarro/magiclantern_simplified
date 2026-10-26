@@ -15,6 +15,8 @@ def main():
     # Keep the actual job/plane code, replacing only hardware boundaries.
     native = native[native.index('#define NATIVE_STATE'):]
     native = native.replace('#define NATIVE_STATE 0x54fc8u', '#define NATIVE_STATE ((uintptr_t)state_data)')
+    native = native.replace('#define EDMAC_RECORDS 0x1c404u', '#define EDMAC_RECORDS ((uintptr_t)&records_ptr)')
+    native = native.replace('#define EDMAC_DEFAULT_CBR 0x1c830u', '#define EDMAC_DEFAULT_CBR ((uintptr_t)&default_cbr)')
     native = native.replace(function(native, 'rom_valid('),
                             'static int rom_valid(void) { return camera_ok && rom_ok; }\n')
     native = native.replace(function(native, 'clean_table('),
@@ -63,7 +65,18 @@ static unsigned edmac_get_connection(unsigned ch,unsigned dir) { assert(dir==EDM
 static void ConnectWriteEDmac(unsigned ch,unsigned s) {
     assert(ch<64 && ch!=3);if (fail_restore && s==1) return;conn_reg[ch]=s;
 }
-static void mock_abort(unsigned ch) { assert(ch==3);aborts++; }
+/* LCM29 channel 5 model: Live View's armed channel, or the engine output
+ * when out_ch==5 (locked job test). Canon records at a low fixed address. */
+struct edmac_info { unsigned off1a,off1b,off2a,off2b,off3,xa,xb,ya,yb,xn,yn; };
+static unsigned out_ch=3,ch5_state,ch5_addr,ch5_ptr,ch5_flags,ch5_rearm,ch5_abort_works,sets5,starts5,aborts5;
+static uint32_t *records,records_ptr,default_cbr=0xDEF;
+static struct edmac_info edmac_get_info(unsigned ch) { struct edmac_info i;assert(ch==5);memset(&i,0,sizeof(i));i.xb=1234;return i; }
+static void SetEDmac(unsigned ch,void *addr,struct edmac_info *info,int flags)
+{ assert(ch==5 && info->xb==1234);sets5++;ch5_addr=(unsigned)(uintptr_t)addr;ch5_flags=(unsigned)flags; }
+static void mock_abort(unsigned ch) {
+    if (ch==5 && out_ch!=5) { aborts5++;if (ch5_abort_works) ch5_state=0;return; }
+    assert(ch==out_ch);aborts++;
+}
 static int is_camera(const char *m,const char *f) { (void)m;(void)f;return camera_ok; }
 static unsigned cli(void) { return 0; }
 static void sei(unsigned x) { (void)x; }
@@ -73,22 +86,27 @@ static unsigned patch_hook_function(unsigned a,unsigned b,void *c,const char *d)
 static unsigned unpatch_memory(unsigned x) { (void)x;return 0; }
 static unsigned edmac_get_state(unsigned x) {
     if (x==40) return waited ? busy_channel:pre_busy;
-    if (x==3) return waited && out_stuck && (!aborts || abort_ignored);
+    if (x==out_ch) return waited && out_stuck && (!aborts || abort_ignored);
+    if (x==5) return ch5_state;
     return foreign_ch && x==foreign_ch ? foreign_armed:0;
 }
 static unsigned channel_slot(unsigned ch) {
-    assert(ch==40 || ch==41 || ch==3);return ch==40 ? 0:ch==41 ? 1:2;
+    assert(ch==40 || ch==41 || ch==out_ch);return ch==40 ? 0:ch==41 ? 1:2;
 }
 static void RegisterEDmacCompleteCBR(unsigned ch,void (*cb)(void *),void *ctx)
 { assert(ctx==NULL);callbacks[channel_slot(ch)]=cb; }
 static void mock_complete_a(void *ctx) { assert(ctx==NULL);forwarded[0]++; }
 static void mock_complete_b(void *ctx) { assert(ctx==NULL);forwarded[1]++; }
 static void mock_complete_out(void *ctx) { assert(ctx==NULL);forwarded[2]++; }
-static unsigned edmac_get_flags(unsigned ch) { trace_reads++;return 100+channel_slot(ch); }
-static unsigned edmac_get_address(unsigned ch) { if (foreign_ch && ch==foreign_ch) return 0x0d119c00;return waited && displaced && ch==3 ? 0x0d2dec00:addresses[channel_slot(ch)]; }
+static unsigned edmac_get_flags(unsigned ch) { if (ch==5 && out_ch!=5) return ch5_flags;trace_reads++;return 100+channel_slot(ch); }
+static unsigned edmac_get_address(unsigned ch) {
+    if (foreign_ch && ch==foreign_ch) return 0x0d119c00;
+    if (ch==5 && out_ch!=5) return ch5_addr;
+    return waited && displaced && ch==3 ? 0x0d2dec00:addresses[channel_slot(ch)]; }
 static unsigned edmac_get_pointer(unsigned ch) {
     if (foreign_ch && ch==foreign_ch) return 0x0d119c00;
-    if (ch!=40 && ch!=41 && ch!=3) return 0;
+    if (ch==5 && out_ch!=5) return ch5_ptr;
+    if (ch!=40 && ch!=41 && ch!=out_ch) return 0;
     return addresses[channel_slot(ch)]+(waited ? 128:0); }
 static unsigned mock_create_resource(uint32_t *ids,unsigned count) {
     assert(count==10 && ids[0]==3 && ids[1]==0x1000c && ids[9]==0x30001);
@@ -100,7 +118,10 @@ static unsigned mock_delete_resource(unsigned x) {
 static unsigned mock_lock(unsigned x) { assert(x==789);locks++;if(change_context)state_data[10]=4;return fail_lock; }
 static unsigned mock_event(const char *s,unsigned x) { (void)s;(void)x;return fail_event ? 0:456; }
 static unsigned mock_setup(uint32_t *job);
-static void mock_start(unsigned a,unsigned b) { assert(a==3 || a==40 || a==41);(void)b; }
+static void mock_start(unsigned a,unsigned b) {
+    if (a==5 && out_ch!=5) { starts5++;ch5_state=ch5_rearm;ch5_ptr=ch5_addr;ch5_flags=(ch5_flags&~0xC0u)|(b<<6);return; }
+    assert(a==out_ch || a==40 || a==41);(void)b;
+}
 static void mock_engio(unsigned x) { (void)x; }
 static unsigned mock_wait(unsigned a,unsigned b,unsigned c)
 { assert(a==456 && b==7 && c==5000);
@@ -114,9 +135,9 @@ static unsigned mock_unlock(unsigned x) { assert(x==789);unlocks++;return fail_u
     suffix = r'''
 static unsigned mock_setup(uint32_t *job) {
     assert(job[2]==10 && job[6]==0x8888dddd && job[9]==job[0]);
-    assert(state_data[10]==3 && state_data[1]==123);
+    assert(state_data[10]==out_ch && state_data[1]==123);
     waited=0;addresses[0]=(job[0]&~0x40000000u)-9240;addresses[1]=(job[1]&~0x40000000u)-9240;addresses[2]=job[9]&~0x40000000u;
-    conn_reg[3]=1;                           /* FF429E68: ConnectWriteEDmac(out,1) */
+    conn_reg[out_ch]=1;                      /* FF429E68: ConnectWriteEDmac(out,1) */
     setups++;table_calls=missing_table ? 0:1;return fail_setup;
 }
 static void reset(void) {
@@ -131,12 +152,18 @@ static void reset(void) {
     busy_channel=missing_table=locks=unlocks=setups=stops=deletes=0;
     memset(conn_reg,0,sizeof(conn_reg));foreign_ch=foreign_armed=fail_restore=out_stuck=abort_ignored=aborts=conn_during_wait=0;
     lc_native_set_divert(1);
+    out_ch=3;ch5_state=1;ch5_addr=ch5_ptr=0x0d119c00;ch5_flags=0x20000040;ch5_rearm=1;ch5_abort_works=1;
+    sets5=starts5=aborts5=0;conn_reg[5]=2;
+    for (unsigned i=0;i<8;i++) records[5*8+i]=0x100+i;
+    records[5*8+1]=0x20000040;
     assert(lc_native_engine_prepare((void *)0x41000000)==0);
 }
 int main(void) {
     void *mem=mmap((void *)0x41000000,4096,PROT_READ|PROT_WRITE,
                   MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
     assert(mem==(void *)0x41000000);
+    records=mmap((void *)0x41001000,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    assert(records==(void *)0x41001000);records_ptr=0x41001000u;
     struct lc_native_plane a={0x42000000,LC_FR_STORAGE,
         0x42000000+lc_fr_pixel_offset(0),LC_FR_WIDTH,LC_FR_BAND_ROWS,LC_FR_PITCH};
     struct lc_native_plane b=a;b.storage+=0x02000000;b.pixels+=0x02000000;
@@ -196,6 +223,27 @@ int main(void) {
     bad=a;bad.height=1932;assert(!plane_valid(&bad,1));
     bad=a;bad.pixels+=14;assert(!plane_valid(&bad,1)); /* word alignment */
     bad=a;bad.bytes=LC_FR_PITCH*4;assert(!plane_valid(&bad,1));
+    /* LCM29 borrow channel 5 from Live View and give it back. */
+    { struct lc_native_borrow bw;
+      reset();assert(!lc_native_borrow5(&bw) && bw.ok && aborts5==1 && ch5_state==0 && records[5*8+3]==default_cbr);
+      assert(bw.addr==0x0d119c00 && bw.flags==0x20000040 && bw.conn==2 && bw.rec[2]==0x102);
+      conn_reg[5]=1;records[5*8+2]=0x999;records[5*8+1]=0x20000000;ch5_addr=0x02009140;ch5_flags=0x20000000; /* job used it */
+      assert(!lc_native_return5(&bw) && bw.restored && conn_reg[5]==2 && ch5_state==1 && ch5_addr==0x0d119c00);
+      assert(ch5_ptr==0x0d119c00 && ch5_flags==0x20000040 && sets5==1 && starts5==1);
+      for (unsigned i=0;i<8;i++) assert(records[5*8+i]==(i==1 ? 0x20000040u:0x100u+i));
+      assert(!quarantined);
+      reset();ch5_state=0;assert(lc_native_borrow5(&bw)==LC_NATIVE_CONTEXT && !aborts5 && !bw.ok);
+      reset();ch5_ptr=ch5_addr+0x1e0;assert(lc_native_borrow5(&bw)==LC_NATIVE_CONTEXT && !aborts5); /* data flowing */
+      reset();conn_reg[5]=1;assert(lc_native_borrow5(&bw)==LC_NATIVE_CONTEXT && !aborts5);
+      reset();ch5_abort_works=0;assert(lc_native_borrow5(&bw)==LC_NATIVE_STOP && records[5*8+3]==0x103 && quarantined);
+      reset();assert(!lc_native_borrow5(&bw));ch5_rearm=0;
+      assert(lc_native_return5(&bw)==LC_NATIVE_CONTEXT && !bw.restored && quarantined);
+      assert(!lc_native_return5(&bw));            /* already returned: no-op */
+    }
+    /* LCM29 job with output on channel 5, engine locked with set 3. */
+    reset();out_ch=5;assert(!lc_native_engine_max_lock(&a,&b,&a,&r,5,3));
+    assert(r.resume_safe && state_data[10]==5 && setups==1 && unlocks==1 && r.completed[2]==1);
+    reset();assert(lc_native_engine_max_lock(&a,&b,&a,&r,5,4)==LC_NATIVE_ARGUMENT && !locks);
     /* LCM23 router: register map from RAM 0x1C6A8. */
     assert(lc_native_write_route_reg(3)==0xC0F0500C && lc_native_write_route_reg(16)==0xC0F0501C);
     assert(lc_native_write_route_reg(0x12)==0xC0F05204 && lc_native_write_route_reg(0x20)==0xC0F05218);
@@ -231,7 +279,7 @@ int main(void) {
                         '-Wno-pointer-to-int-cast','-Wno-int-to-pointer-cast',
                         '-I'+str(MOD),str(p/'check.c'),'-o',str(p/'check')],check=True)
         subprocess.run([str(p/'check')],check=True)
-    print('PASS: native job bounds, write-source router divert/restore, stuck-output abort, nonblocking busy, event/setup/wait failures, restore/unlock, DMA quarantine; hardware accuracy untested')
+    print('PASS: channel-5 borrow/return and locked job, native job bounds, write-source router divert/restore, stuck-output abort, nonblocking busy, event/setup/wait failures, restore/unlock, DMA quarantine; hardware accuracy untested')
 
 
 if __name__ == '__main__':

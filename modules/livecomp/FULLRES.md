@@ -690,3 +690,42 @@ Question: is it the output *channel* or Live View's *state*?
 - In Live View (needs 0.25 fps for time): frames 3, 4, 5 try channels 4, 0,
   3 on the top half.
 - Live View paused: channel 5 full frame (reference), then 3, 4, 0 top half.
+
+## LCM28 camera result (LVFR0019, 0.25 fps)
+
+Attempt table:
+- LV ch4: no output, stuck, aborted (safe). LV ch0: resource busy (not run).
+  LV ch3: no output, aborted (as always).
+- Paused ch5 (2 bands): completed, 117 ms, wrote the full 32,395,440 bytes -
+  but every word was 0. Cause: LCM28's new zero fill of the output area,
+  which is also the engine's second input. With real data (LCM27) the
+  output was exact; Canon's engine maps an all-zero input to 0 (values far
+  below the 2047 black level are not plain integers to it).
+- Paused ch3: no output and the abort did not idle it -> quarantine
+  (composite saved, reboot requested).
+
+Conclusion: **the engine output (source 1) reaches only write channel 5**,
+with or without Live View. Channels 3/4 never receive it.
+
+## LCM29: borrow channel 5 from Live View
+
+From ROM (RAM 0x1C914/0x1CA60/0x1CB00/0x1CBE8): Canon keeps a 32-byte record
+per EDMAC channel (table pointer at 0x1C404): +0 abort flag, +4 control word
+(SetEDmac flags | StartEDmac mode<<6), +8/+12/+16 complete/abort/pop CBR,
++20/+24/+28 contexts; default CBR at *(0x1C830). Live View's channel 5:
+control 0x20000040 = EDMAC_2_BYTES_PER_TRANSFER | mode 1, source 2, armed
+and idle from ~0.3 s after each vsync until the next readout.
+
+`lc_native_borrow5` (only if armed, idle, source 2, record consistent):
+save address, geometry (edmac_get_info), control word, source and record;
+point the abort CBR at the default; AbortEDmac(5); wait idle.
+Job: `lc_native_engine_max_lock(..., channel 5, lock set of channel 3)`
+(Live View keeps resource 5). `lc_native_return5`: ConnectWriteEDmac(5,
+saved source), SetEDmac(saved address, geometry, control & ~0xC0), restore
+the full record, StartEDmac(5, saved mode); verify state 1, address,
+pointer at start, control word and source. Any failure quarantines.
+
+Test (HW merge test On, 0.25 fps): borrow on frames 3, 4, 5 (full frame,
+word-verified after channel 5 is returned); CSV records Live View's
+channel 5 state/address at every frame to show it keeps working. Paused
+test reduced to the channel-5 reference. Zero fill removed.

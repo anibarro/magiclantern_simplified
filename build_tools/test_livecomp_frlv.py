@@ -196,6 +196,14 @@ uint32_t edmac_get_address(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_length(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_flags(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_connection(uint32_t ch,uint32_t dir){ (void)ch;(void)dir; return 0; }
+static int sim_borrows,sim_returns;
+unsigned lc_native_borrow5(struct lc_native_borrow *b){ memset(b,0,sizeof(*b)); b->ok=1; sim_borrows++; return 0; }
+unsigned lc_native_return5(struct lc_native_borrow *b){ b->ok=0; b->restored=1; sim_returns++; return 0; }
+unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
+    const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch);
+unsigned lc_native_engine_max_lock(const struct lc_native_plane *a,const struct lc_native_plane *b,
+    const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch,unsigned lock)
+{ (void)lock; return lc_native_engine_max_ch(a,b,o,r,ch); }
 unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
     const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch)
 { (void)a;(void)b;(void)o;(void)ch; memset(r,0,sizeof(*r)); r->resume_safe=!sim_hw_unsafe; sim_hw_calls++;
@@ -354,15 +362,16 @@ int main(void)
     reset();sim_hw_busy=2;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
-    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_pauses=sim_resumes=0;dng_size_ok=2048+bytes;
+    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_pauses=sim_resumes=0;sim_borrows=sim_returns=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
     /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    /* LCM28: LV attempts on channels 4, 0, 3 (frames 3-5) + paused 3, 4, 0
-     * (channel 5 skipped: simulated resource 5 busy) */
-    assert(!unsafe && sim_hw_calls==6 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
-    assert(strstr(last_log,"T0: 0,3,4,1,") && strstr(last_log,"T2: 0,5,3,1,") && strstr(last_log,"T3: 1,6,5,2,a001,ffff,"));
-    assert(strstr(last_log,"T4: 1,6,3,1,") && strstr(last_log,"T6: 1,6,0,1,"));
+    /* LCM29: frames 3-5 borrow channel 5 in Live View (every borrow is
+     * returned); paused reference skipped (simulated resource 5 busy). */
+    printf("hw: borrows=%d returns=%d\n",sim_borrows,sim_returns);
+    assert(!unsafe && sim_hw_calls==3 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
+    assert(sim_borrows==3 && sim_returns==3 && strstr(last_log,"B2: "));
+    assert(strstr(last_log,"T0: 2,3,5,2,") && strstr(last_log,"T2: 2,5,5,2,") && strstr(last_log,"T3: 1,6,5,2,a001,ffff,"));
     assert(sim_pauses==1 && sim_resumes==1 && !LV_PAUSED && strstr(last_log,"HWP_lv_before_paused_after"));
     /* LCM22 camera case: engine left its output channel busy. The session
      * stops, but the accumulator (never an engine target) is still saved. */

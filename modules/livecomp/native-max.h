@@ -100,6 +100,19 @@ unsigned lc_native_engine_max(const struct lc_native_plane *a,
 unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     const struct lc_native_plane *b,const struct lc_native_plane *out,
     struct lc_native_engine_result *r,unsigned channel);
+/* LCM29: borrow Canon's channel 5 from Live View for one engine job.
+ * Live View keeps it armed and idle (source 2) between readouts. */
+struct lc_native_borrow {
+    uint32_t reason,ok,state,addr,ptr,flags,conn,rec[8];
+    uint32_t abort_wait_us,restored,after_state,after_addr,after_ptr,after_flags,after_conn;
+};
+unsigned lc_native_borrow5(struct lc_native_borrow *b);
+unsigned lc_native_return5(struct lc_native_borrow *b);
+/* Output on `channel`, engine resources locked with `lock_channel`'s set
+ * (only channel 5 with lock 3: Live View holds resource 5). */
+unsigned lc_native_engine_max_lock(const struct lc_native_plane *a,
+    const struct lc_native_plane *b,const struct lc_native_plane *out,
+    struct lc_native_engine_result *r,unsigned channel,unsigned lock_channel);
 void lc_native_set_wait_ms(unsigned ms);
 int lc_native_snapshot(uint32_t state[12]);
 int lc_native_resources(struct lc_resource_snapshot *snapshot);

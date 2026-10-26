@@ -1,0 +1,69 @@
+LCM28 full-res composite
+Full-sensor LV readout gate
+Status: Composite saved; HW test left DMA busy: reboot
+Stage_error_unsafe: 8,0,1
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: 250,100,1043,7813,10
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,10431043,1043,7813,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_cadence_frames_ms_max_gap_ms: 171,0,0,0
+Timer_fixes_last_seen_B: 0,7813
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 15,30
+Hook_adtg_calls_changes_blanking_seen: 97,71,30
+Hook_engio_calls_changes_drv_changes_overflow: 276,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10562
+Inputs_merged_memcpy_us: 0,10,0
+Black_OBstdev_x10_center_mean_max: 2047,400,2944,9423
+Col_band_means_16px: 2047,2046,2047,2046,2174,2307,2310,2315,2316,2319,2321,2323
+Row_band_means_8px: 2017,2059,2049,2341,2641,2650,2658,2655,2642,2629
+Saved_stage_size: 1,6,32397488
+DNG: B:/LVFR0019.DNG
+Continuous_limit_overrun_offset_missed: 1,30,0,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 1807007,15259,1,135687,109309
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 200942,1082283
+Zoom_done_ms_late_frames: 45438,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,0,0,0
+HW_prepare_close_tried_frame_busy_channel_safe: 0,0,1,5,a001,3,1
+HW_band0_reason_us_lock_setup_wait_completed: 32,598215,0,0,9,1/1/0
+HW_band1_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band0_after_out_state_flags_addr_ptr: 1,20000000,2009140,2009140
+HW_compare_us_mismatch_bytes_first_expected_actual: 0,0,0,0,0
+HW_plane_ok_band0_band1: 7,0
+HW_band0_outconn_listeners_divert_src_mask_restored_aborted: 1,1,3,1,1,1
+HW_band0_conn_after_setup (ch:src): 0:2e 1:1b 2:4 3:1 4:1 5:2 6:12 10:28 11:f 12:0 13:0 14:0 15:0 16:0 20:10 21:27
+HW_band0_listener_ch_state_addr_ptr_before_after: 4:0:2009140:2009140:2009140
+HW_band0_out_before_state_addr_ptr_after_state_addr_ptr: 0,2009140,2009140,1,2009140,2009140
+HW_band1_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band1_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band1_listener_ch_state_addr_ptr_before_after:
+HW_band1_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band0_moved (ch:state:ptr>state:ptr): 3:0:2009140>1:2009140 5:0:d1161e0>0:d1161e0
+HWP_band0_moved (ch:state:ptr>state:ptr): 5:0:2009140>0:2f7ddb0
+HWP_lv_before_paused_after_prepare_close_tried_busy_channel_safe: 1,1,1,0,4,1,a000,5,1
+HWP_band0_reason_us_lock_setup_wait_completed: 0,57753,0,0,0,1/1/1
+HWP_band1_reason_us_lock_setup_wait_completed: 0,59760,0,0,0,1/1/1
+HWP_band0_out_after_state_addr_ptr_aborted: 0,2009140,2f7ddb0,0
+HWP_compare_us_mismatch_bytes_first_expected_actual: 1760248,8098860,0,7b511f14,0
+HW_tries: where(0=LV,1=paused),frame,ch,bands,busy,reason,us,out_completions,out_state,out_bytes,aborted,moved_mask,mismatch_words,first_bad,safe
+T0: 0,3,4,1,a001,20,596090,0,1,0,1,0,0,0,1
+T1: 0,4,0,1,a001,4,87,0,0,0,0,0,0,0,1
+T2: 0,5,3,1,a001,20,598215,0,1,0,1,0,0,0,1
+T3: 1,10,5,2,a000,0,117513,2,0,32395440,0,0,8098860,0,1
+T4: 1,10,3,1,a000,40,77666,0,1,0,3,0,0,0,0
+HW_engio_lists_during_band0: 0 (us:list:count reg=val ...)
+Write_route_idle (ch:src:state): 0:2e:0 1:1b:1 2:4:1 3:0:0 4:0:0 5:2:1 6:12:0 10:28:0 11:f:1 12:0:0 13:0:0 14:0:0 15:0:0 16:0:0 20:10:0 21:27:0
+DMA_activity_samples_union_mask: 5,366 (bit i = write channel 0..6,0x10..0x16,0x20,0x21)
+Ch5_addr_len_flags_conn_state_ptr: d119c00,e0020,20000040,2,1,d119c00
+Ch3_addr_len_flags_conn_state_ptr: 0,0,0,0,0,0
+Activity_ms_after_vsync_mask_ptr3_ptr5:
+325:326:0:d119c00 3550:366:0:d119c00 3559:326:0:d119c00 3581:226:0:d119c00 
+3593:200:0:d119de0 
+Partials: 1
+Attempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:
+DMA_trace_attempt: us_after_arm:bytes ...
+Vsync_intervals_us (last 32): 33378 33349 33368 4528233 3999246 3999970 4000067 4000078 3999975 4000011 4000195 3999946 4000062 4000014 4000129 3999996
