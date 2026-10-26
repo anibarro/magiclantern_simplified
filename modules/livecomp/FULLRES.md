@@ -640,3 +640,24 @@ verified output.
 - The 40 ms pre-arm sleep is dropped when the preview copy (~110 ms)
   already separates the arm from the vsync.
 - Default full-res FPS is now 0.4 fps (2.5 s).
+
+## LCM26 camera result (LVFR0016, 0.5 fps)
+
+18 frames, 0 behind, 0 skipped, merge 1.58-1.85 s, DNG saved. Preview
+skipped on 17/18 frames: after the merge (~done + 1.7-1.97 s) a full render +
+copy (~260 ms) never fits before the next frame. Partial frame at frame 8.
+
+## LCM27
+
+- Rolling preview: when a full preview does not fit, one quarter strip of
+  the screen is rendered per frame (cycling, ~35 ms); the copy that hides
+  Canon's frame at the next vsync puts it on screen. Counted as `strips`.
+- Engine, in Live View: every write channel's state and pointer just before
+  start and after the wait (`HW_band0_moved`), to see whether the output
+  lands on any other channel.
+- Engine, **Live View paused** (`HWP_*`): the only verified engine output
+  (LCM1) ran with Live View stopped. After the session, with zoom and hooks
+  restored and before the DNG save (accumulator unsaved but never an engine
+  target), PauseLiveView, run the same two-band max on the real buffers
+  (channel 5 if resource 5 is free, else 3), verify byte for byte against
+  the CPU composite, ResumeLiveView. Runs only with "HW merge test" On.

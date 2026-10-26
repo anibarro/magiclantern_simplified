@@ -71,6 +71,10 @@ struct lc_native_engine_result {
     uint32_t diverted;      /* bit i: listener i moved to divert_source for the job */
     uint32_t divert_source,route_restored;
     uint32_t aborted;       /* 1: stuck output aborted, 3: abort did not idle it */
+    /* LCM27: every write channel just before start and right after the wait,
+     * to see whether the engine output lands on any other channel. */
+    uint32_t all_state0[LC_NATIVE_WRITE_CHANNELS],all_ptr0[LC_NATIVE_WRITE_CHANNELS];
+    uint32_t all_state1[LC_NATIVE_WRITE_CHANNELS],all_ptr1[LC_NATIVE_WRITE_CHANNELS];
 };
 enum {
     LC_NATIVE_ARGUMENT=1,LC_NATIVE_ROM=2,LC_NATIVE_BUSY=4,

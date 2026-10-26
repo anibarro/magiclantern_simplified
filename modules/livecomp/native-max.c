@@ -73,6 +73,13 @@ static void route_scan(struct lc_native_engine_result *r)
  * writes the route register through EngDrvOut (shadow kept consistent). The
  * diverted channels are Canon's and are restored right after the wait, long
  * before the next sensor readout (job ~120 ms, readout ~1 s later). */
+static void all_channels(uint32_t state[LC_NATIVE_WRITE_CHANNELS],uint32_t ptr[LC_NATIVE_WRITE_CHANNELS])
+{
+    for (unsigned i=0;i<LC_NATIVE_WRITE_CHANNELS;i++) {
+        state[i]=edmac_get_state(lc_native_write_channels[i]);
+        ptr[i]=edmac_get_pointer(lc_native_write_channels[i]);
+    }
+}
 static unsigned route_divert(struct lc_native_engine_result *r)
 {
     if (!divert_on || !r->listeners) return 0;
@@ -244,12 +251,14 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
         if (!route_restore(r)) route_bad=1;
         goto stop;                                   /* nothing started yet */
     }
+    all_channels(r->all_state0,r->all_ptr0);
     ((void (*)(unsigned,unsigned))0x1c914)(OUTPUT_CHANNEL,0);
     ((void (*)(unsigned))0xff2c19ac)(0x55180);
     ((void (*)(unsigned,unsigned))0x1c914)(40,2);
     ((void (*)(unsigned,unsigned))0x1c914)(41,4);
     r->wait=((unsigned (*)(unsigned,unsigned,unsigned))0x1e7d4)(state[2],7,wait_ms);
     trace_dma(r->after_wait);
+    all_channels(r->all_state1,r->all_ptr1);
     for (unsigned k=0;k<r->listeners && k<LC_NATIVE_MAX_LISTENERS;k++) r->lst_ptr1[k]=edmac_get_pointer(r->lst_ch[k]);
     if (r->diverted && !route_restore(r)) route_bad=1;
     r->table_calls=table_calls;r->table_error=table_error;

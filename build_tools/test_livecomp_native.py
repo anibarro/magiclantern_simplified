@@ -86,7 +86,10 @@ static void mock_complete_b(void *ctx) { assert(ctx==NULL);forwarded[1]++; }
 static void mock_complete_out(void *ctx) { assert(ctx==NULL);forwarded[2]++; }
 static unsigned edmac_get_flags(unsigned ch) { trace_reads++;return 100+channel_slot(ch); }
 static unsigned edmac_get_address(unsigned ch) { if (foreign_ch && ch==foreign_ch) return 0x0d119c00;return waited && displaced && ch==3 ? 0x0d2dec00:addresses[channel_slot(ch)]; }
-static unsigned edmac_get_pointer(unsigned ch) { if (foreign_ch && ch==foreign_ch) return 0x0d119c00;return addresses[channel_slot(ch)]+(waited ? 128:0); }
+static unsigned edmac_get_pointer(unsigned ch) {
+    if (foreign_ch && ch==foreign_ch) return 0x0d119c00;
+    if (ch!=40 && ch!=41 && ch!=3) return 0;
+    return addresses[channel_slot(ch)]+(waited ? 128:0); }
 static unsigned mock_create_resource(uint32_t *ids,unsigned count) {
     assert(count==10 && ids[0]==3 && ids[1]==0x1000c && ids[9]==0x30001);
     return fail_resource ? 0:789;
@@ -199,6 +202,7 @@ int main(void) {
     { uint32_t c[16]={0};c[1]=1;c[5]=2;c[2]=3;assert(lc_native_free_source(c)==4); }
     reset();assert(!lc_native_engine_max(&a,&b,&a,&r));
     assert(r.out_conn==1 && !r.listeners && !r.diverted && !r.aborted);
+    assert(r.all_ptr0[3]==addresses[2] && r.all_ptr1[3]==addresses[2]+128); /* LCM27 snapshot, index 3 = ch3 */
     /* Live View channel 2 armed on source 1: moved away for the job only. */
     reset();foreign_ch=2;conn_reg[2]=1;foreign_armed=1;conn_reg[5]=2;
     assert(!lc_native_engine_max(&a,&b,&a,&r));

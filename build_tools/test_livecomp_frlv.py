@@ -131,6 +131,7 @@ struct vram_info *get_yuv422_vram(void);
 void NotifyBox(int ms,const char *fmt,...);
 int raw_lv_is_enabled(void); int fps_get_current_x1000(void); struct card_info *get_ml_card(void);
 void powersave_prohibit(void); void powersave_permit(void); void gui_uilock(int l);
+void PauseLiveView(void); int ResumeLiveView(void);
 int raw2iso(int r);
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
@@ -212,6 +213,8 @@ void StartEDmac(unsigned ch,int flags){ (void)ch;(void)flags; slurp_dst=pending_
 int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){ return fps_now; }
 struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
+static int sim_pauses,sim_resumes;
+void PauseLiveView(void){ sim_pauses++; LV_PAUSED=1; } int ResumeLiveView(void){ sim_resumes++; LV_PAUSED=0; return 1; }
 int raw2iso(int r){ return r; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
@@ -255,10 +258,11 @@ static void frame(void)
     slurp_armed=0;
     livecomp_frlv_vsync();
 }
+static unsigned sim_slow=1;   /* scales simulated CPU time (msleep) */
 void msleep(int ms)
 {
     unsigned period=(zoom==5) ? sim_period_us:33333;
-    unsigned end=now_us+ms*1000;
+    unsigned end=now_us+ms*1000*sim_slow;
     while (next_vsync_us<=end) { now_us=next_vsync_us; frame(); next_vsync_us+=period; }
     now_us=end;
 }
@@ -334,19 +338,28 @@ int main(void)
      * session keeps going (behind/skipped frames counted) and saves. */
     reset();sim_period_us=70000;o.limit=8;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    { const char *k=strstr(last_log,"preview_skipped_behind: select,");unsigned bands=0,skip=0,behind=0;
-      assert(k && sscanf(k,"preview_skipped_behind: select,%u,%u,%u",&bands,&skip,&behind)==3);
+    { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0;
+      assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u",&bands,&skip,&behind)==3);
       printf("behind: %s (behind=%u skipped_previews=%u)\n",status,behind,skip);
       assert(!unsafe && strstr(status,"saved") && zoom==1 && behind>0); }
-    sim_period_us=4000000;o.limit=6;
+    /* LCM27: a full preview does not fit but a quarter strip does. */
+    reset();sim_period_us=2000000;o.fps_index=3;sim_slow=20;o.limit=8;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0,strips=0;
+      assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u,%u",&bands,&skip,&behind,&strips)==4);
+      printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
+      assert(!unsafe && strstr(status,"saved") && strips>=2); }
+    sim_slow=1;o.fps_index=0;sim_period_us=4000000;o.limit=6;
     /* HW merge test: registry busy -> no engine call; free -> one call. */
     reset();sim_hw_busy=2;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
-    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_pauses=sim_resumes=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    printf("hw: %s calls=%d\n",status,sim_hw_calls);
-    assert(!unsafe && sim_hw_calls==1 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
+    printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
+    /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
+    assert(!unsafe && sim_hw_calls==2 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
+    assert(sim_pauses==1 && sim_resumes==1 && !LV_PAUSED && strstr(last_log,"HWP_lv_before_paused_after"));
     /* LCM22 camera case: engine left its output channel busy. The session
      * stops, but the accumulator (never an engine target) is still saved. */
     reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_hw_unsafe=1;dng_size_ok=2048+bytes;

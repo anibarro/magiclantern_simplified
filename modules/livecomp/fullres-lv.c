@@ -88,6 +88,7 @@ static void frlv_slurp(void *dst,int pitch,int height)
 #define FRLV_BANDS 8u                /* continuous merge: bands between ticks */
 #define FRLV_PREVIEW_MS 420u         /* measured render + copy, LCM23 */
 #define FRLV_MARGIN_MS 80u           /* scheduling before the next vsync */
+#define FRLV_PREVIEW_PARTS 4u        /* rolling preview strips when short of time */
 
 enum { FE_ROM=1,FE_STATE=2,FE_MEMORY=4,FE_HOOK=8,FE_ZOOM=16,FE_REGS=32,FE_STALL=64,
        FE_DMA=128,FE_GUARD=256,FE_SIZE=512,FE_IO=1024,FE_RESTORE=2048,FE_CANCEL=4096,
@@ -199,8 +200,9 @@ void livecomp_frlv_vsync(void)
 
 struct frlv_hw { unsigned tried,frame,busy,channel,reason[2],engine_us[2],lock[2],setup[2],wait[2],
     completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe,plane_ok[2];
-    struct lc_native_engine_result route[2]; }; /* LCM23: router evidence per band */
-static struct frlv_hw hw;
+    struct lc_native_engine_result route[2]; /* LCM23: router evidence per band */
+    unsigned paused,lv_before,lv_after; };     /* LCM27: Live View paused run */
+static struct frlv_hw hw,hw_paused;   /* LCM27: second run with Live View paused */
 /* Write-channel activity over one full frame period (frame 2 -> 3): when is
  * each EDMAC write channel busy, and what are channels 3/5 doing. */
 #define FRLV_ACT 160u
@@ -247,7 +249,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned memcpy_us,saved,save_stage,save_size;
     unsigned fps_x1000,expo_pct,timer_fixes,timer_seen_b,pdm[6];
-    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind;
+    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
@@ -301,7 +303,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Continuous_limit_overrun_offset_missed: %d,%d,%d,%d\n"
         "Merge_max_us_sum_ms_preview_ok_render_us_copy_us: %d,%d,%d,%d,%d\n"
         "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n"
-        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped_behind: select,%d,%d,%d\n",
+        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped_behind_strips: select,%d,%d,%d,%d\n",
         stats.cmos_calls,stats.cmos_changes,stats.adtg_calls,stats.adtg_changes,stats.blanking_seen,
         stats.engio_calls,stats.engio_changes,stats.drv_changes,stats.overflow,
         stats.orig_6804,stats.orig_timer_a,stats.orig_timer_b,stats.orig_blanking,
@@ -314,7 +316,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->continuous,r->limit,r->overrun_offset,r->missed,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
-        r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped,r->behind);
+        r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),
         "HW_prepare_close_tried_frame_busy_channel_safe: %d,%d,%d,%d,%x,%d,%d\n"
@@ -339,6 +341,31 @@ static void write_log(const struct frlv_result *r,const char *status)
             n+=snprintf(t+n,sizeof(t)-n," %x:%x:%x:%x:%x",q->lst_ch[k],q->lst_state[k],q->lst_addr[k],q->lst_ptr0[k],q->lst_ptr1[k]);
         n+=snprintf(t+n,sizeof(t)-n,"\nHW_band%d_out_before_state_addr_ptr_after_state_addr_ptr: %x,%x,%x,%x,%x,%x\n",band,
             q->before_start[8],q->before_start[10],q->before_start[11],q->after_wait[8],q->after_wait[10],q->after_wait[11]);
+        ok&=write_text(f,t,n);
+    }
+    for (unsigned k=0;k<2;k++) {
+        const struct frlv_hw *h=k ? &hw_paused:&hw;
+        const struct lc_native_engine_result *q=&h->route[0];
+        n=snprintf(t,sizeof(t),"%s_band0_moved (ch:state:ptr>state:ptr):",k ? "HWP":"HW");
+        for (unsigned i=0;i<LC_NATIVE_WRITE_CHANNELS;i++)
+            if (q->all_ptr0[i]!=q->all_ptr1[i] || q->all_state0[i]!=q->all_state1[i] || lc_native_write_channels[i]==5)
+                n+=snprintf(t+n,sizeof(t)-n," %x:%x:%x>%x:%x",lc_native_write_channels[i],
+                    q->all_state0[i],q->all_ptr0[i],q->all_state1[i],q->all_ptr1[i]);
+        t[n++]='\n';ok&=write_text(f,t,n);
+    }
+    {
+        const struct frlv_hw *h=&hw_paused;
+        n=snprintf(t,sizeof(t),
+            "HWP_lv_before_paused_after_prepare_close_tried_busy_channel_safe: %d,%d,%d,%d,%d,%d,%x,%d,%d\n"
+            "HWP_band0_reason_us_lock_setup_wait_completed: %d,%d,%x,%x,%x,%d/%d/%d\n"
+            "HWP_band1_reason_us_lock_setup_wait_completed: %d,%d,%x,%x,%x,%d/%d/%d\n"
+            "HWP_band0_out_after_state_addr_ptr_aborted: %x,%x,%x,%d\n"
+            "HWP_compare_us_mismatch_bytes_first_expected_actual: %d,%d,%d,%x,%x\n",
+            h->lv_before,h->paused,h->lv_after,h->prepare,h->close,h->tried,h->busy,h->channel,h->safe,
+            h->reason[0],h->engine_us[0],h->lock[0],h->setup[0],h->wait[0],h->completed[0][0],h->completed[0][1],h->completed[0][2],
+            h->reason[1],h->engine_us[1],h->lock[1],h->setup[1],h->wait[1],h->completed[1][0],h->completed[1][1],h->completed[1][2],
+            h->after[0][8],h->after[0][10],h->after[0][11],h->route[0].aborted,
+            h->compare_us,h->mismatch_bytes,h->first_bad,h->expected,h->actual);
         ok&=write_text(f,t,n);
     }
     n=snprintf(t,sizeof(t),"HW_engio_lists_during_band0: %d (us:list:count reg=val ...)\n",rec_n);
@@ -511,7 +538,7 @@ static void arm_from_task(void)
 struct frlv_frame { unsigned seq,done_ms,merge_us,changed_pct,offset_after,state,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_delta,adtg_delta,lost_bands,busy_vsync,busy_idle; };
 static struct frlv_frame cont_frames[FRLV_CONT_MAX];
 static uint16_t *preview_yuv;              /* cached 720x480 UYVY render */
-static unsigned preview_w,preview_h,preview_pitch;
+static unsigned preview_w,preview_h,preview_pitch,preview_part;
 
 /* Render the accumulator (cached, packed RAW14) into preview_yuv. Active area
  * left 72, top 28, 5208x3478 (measured, LCM15). Nearest RGGB quad sampling,
@@ -532,7 +559,8 @@ static inline __attribute__((always_inline)) void preview_pair(const uint16_t *s
  * quad are extracted. LCM24: 263 ms per render, mostly skipped at 0.5 fps. */
 static uint16_t preview_col_off[360];
 static uint8_t preview_col_i[360];
-static __attribute__((optimize("O2"))) void preview_render(const struct frlv_result *r,const uint8_t *acc)
+/* parts > 1 renders only strip `part` of `parts` (LCM27 rolling preview). */
+static __attribute__((optimize("O2"))) void preview_render(const struct frlv_result *r,const uint8_t *acc,unsigned part,unsigned parts)
 {
     const unsigned x0=72,y0=28,aw=r->width-x0,ah=r->height-y0;
     const int black=r->black ? (int)r->black:2048;
@@ -544,7 +572,7 @@ static __attribute__((optimize("O2"))) void preview_render(const struct frlv_res
         unsigned rx=(x0+(x*aw/sw))&~1u;
         preview_col_off[x]=(uint16_t)((rx/8)*7);preview_col_i[x]=(uint8_t)(rx%8);
     }
-    for (unsigned y=0;y<sh;y++) {
+    for (unsigned y=sh*part/parts;y<sh*(part+1)/parts;y++) {
         unsigned ry=(y0+(y*ah/sh))&~1u;
         const uint16_t *row0=(const uint16_t *)(const void *)(acc+ry*r->pitch),*row1=row0+r->pitch/2;
         uint32_t *out0=(uint32_t *)((uint8_t *)preview_yuv+2*y*preview_pitch);
@@ -561,7 +589,7 @@ static __attribute__((optimize("O2"))) void preview_render(const struct frlv_res
             uint32_t w=(uu&0xFF)|((yy&0xFF)<<8)|((vv&0xFF)<<16)|((unsigned)(yy&0xFF)<<24);
             out0[x]=w;out1[x]=w;
         }
-        if (y==sh/2) msleep(10);                         /* keep the UI responsive */
+        if (parts==1 && y==sh/2) msleep(10);            /* keep the UI responsive */
     }
 }
 /* Overwrite Canon's three LV YUV buffers with the last render. Canon refills
@@ -615,15 +643,15 @@ static unsigned resource_busy(void)
  * computing max(acc, frame) into the capture buffer must reproduce acc
  * exactly. The composite itself is never written by the engine. */
 static uint32_t *hw_geometry;
-static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned frame,uint8_t *cap_storage,uint8_t *acc_storage)
+static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned frame,uint8_t *cap_storage,uint8_t *acc_storage)
 {
-    hw.tried=1;hw.frame=frame;hw.safe=1;hw.busy=resource_busy();
+    h->tried=1;h->frame=frame;h->safe=1;h->busy=resource_busy();
     /* Resource 5 (Canon's native output route) free -> channel 5; otherwise
      * the LCM13 replacement route on channel 3, now in the idle part of a
      * slow full-res frame instead of during continuous 3 fps LV. The other
      * nine engine resources must be free in both cases. */
-    if (hw.busy==0xFFFFu || (hw.busy&0x3FE)) { hw.channel=0;return 0; }
-    hw.channel=(hw.busy&1) ? 3:5;
+    if (h->busy==0xFFFFu || (h->busy&0x3FE)) { h->channel=0;return 0; }
+    h->channel=(h->busy&1) ? 3:5;
     lc_native_set_wait_ms(600);
     lc_native_set_divert(1);
     sync_caches();                                   /* acc written through the cache */
@@ -632,28 +660,57 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
         struct lc_native_plane a,b;
         lc_frlv_plane((uint32_t)acc_storage,(uint32_t)acc|0x40000000u,r->pitch,first,rows,&a);
         lc_frlv_plane((uint32_t)cap_storage,(uint32_t)cap|0x40000000u,r->pitch,first,rows,&b);
-        hw.plane_ok[band]=lc_native_plane_ok(&a,1)|(lc_native_plane_ok(&b,1)<<1)|(lc_native_plane_ok(&b,0)<<2);
+        h->plane_ok[band]=lc_native_plane_ok(&a,1)|(lc_native_plane_ok(&b,1)<<1)|(lc_native_plane_ok(&b,0)<<2);
         struct lc_native_engine_result res;
         rec_n=0;rec_t0=(unsigned)get_us_clock();rec_on=1;
-        unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,hw.channel);
+        unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,h->channel);
         rec_on=0;
-        hw.reason[band]=reason;hw.engine_us[band]=res.elapsed_us;hw.lock[band]=res.lock;hw.setup[band]=res.setup;
-        hw.wait[band]=res.wait;memcpy(hw.completed[band],res.completed,sizeof(res.completed));
-        memcpy(hw.after[band],res.after_wait,sizeof(res.after_wait));
-        hw.route[band]=res;
-        if (!res.resume_safe) { hw.safe=0;return 1; }
+        h->reason[band]=reason;h->engine_us[band]=res.elapsed_us;h->lock[band]=res.lock;h->setup[band]=res.setup;
+        h->wait[band]=res.wait;memcpy(h->completed[band],res.completed,sizeof(res.completed));
+        memcpy(h->after[band],res.after_wait,sizeof(res.after_wait));
+        h->route[band]=res;
+        if (!res.resume_safe) { h->safe=0;return 1; }
         if (reason) return 0;
     }
     sync_caches();
     unsigned c0=(unsigned)get_us_clock();
     const uint8_t *x=(const uint8_t *)physical(cap),*y=acc;
-    hw.first_bad=~0u;
+    h->first_bad=~0u;
     for (unsigned i=0;i<r->bytes;i++) if (x[i]!=y[i]) {
-        if (!hw.mismatch_bytes) { hw.first_bad=i;hw.expected=y[i];hw.actual=x[i]; }
-        hw.mismatch_bytes++;
+        if (!h->mismatch_bytes) { h->first_bad=i;h->expected=y[i];h->actual=x[i]; }
+        h->mismatch_bytes++;
     }
-    hw.compare_us=(unsigned)get_us_clock()-c0;
+    h->compare_us=(unsigned)get_us_clock()-c0;
     return 0;
+}
+
+/* LCM27: the only verified engine output (LCM1) ran with Live View stopped,
+ * every attempt in Live View wrote nothing. After the session (zoom and
+ * hooks restored, composite still unsaved and untouched: the engine only
+ * reads the accumulator) pause Live View, run the same max job on the real
+ * buffers - on Canon's native channel 5 if resource 5 is now free - verify
+ * it byte for byte, resume Live View. Returns nonzero if DMA is uncertain. */
+static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,uint8_t *cap_storage,uint8_t *acc_storage)
+{
+    struct frlv_hw *h=&hw_paused;
+    memset(h,0,sizeof(*h));
+    if (!hw_geometry) hw_geometry=fio_malloc(128);
+    if (!hw_geometry) { h->prepare=999;return 0; }
+    h->prepare=lc_native_engine_prepare((uint32_t *)(((unsigned)hw_geometry+63)&~63u));
+    if (h->prepare) return 0;
+    NotifyBox(4000,"HW test: pausing Live View...");
+    h->lv_before=lv && !LV_PAUSED;
+    PauseLiveView();
+    for (unsigned i=0;i<40 && !LV_PAUSED;i++) msleep(50);
+    msleep(500);                                     /* let the LV pipeline drain */
+    h->paused=LV_PAUSED ? 1:0;
+    unsigned unsafe=0;
+    if (h->paused) unsafe=hw_test(h,r,cap,acc,r->merged,cap_storage,acc_storage);
+    ResumeLiveView();
+    for (unsigned i=0;i<60 && (!lv || LV_PAUSED);i++) msleep(50);
+    h->lv_after=lv && !LV_PAUSED;
+    h->close=lc_native_engine_close();
+    return unsafe || h->close;
 }
 
 static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
@@ -763,7 +820,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (hw_enable && !hw.tried && r->merged>=3 && !off && !c->lost_bands &&
             get_ms_clock()-done+800<period_ms-500) {
             NotifyBox(2000,"Testing hardware merge...");
-            if (hw_test(r,cap,acc,r->merged,cap_storage,acc_storage)) {
+            if (hw_test(&hw,r,cap,acc,r->merged,cap_storage,acc_storage)) {
                 /* The engine only ever writes the capture buffer; the
                  * accumulator stays valid and is still saved (LCM23). */
                 *hw_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
@@ -776,10 +833,21 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
          * the next frame arrives, or the next merge starts late. Estimate =
          * last measured render + copy (LCM25), FRLV_PREVIEW_MS before that. */
         unsigned preview_est=r->preview_us ? (r->preview_us+r->preview_copy_us)/1000u+20u:FRLV_PREVIEW_MS;
-        if (preview_yuv && get_ms_clock()-done+preview_est+FRLV_MARGIN_MS>period_ms) r->preview_skipped++;
+        const unsigned elapsed=get_ms_clock()-done;
+        const unsigned strip_est=(r->preview_us ? r->preview_us/1000u:FRLV_PREVIEW_MS)/FRLV_PREVIEW_PARTS+10u;
+        if (preview_yuv && elapsed+preview_est+FRLV_MARGIN_MS>period_ms) {
+            /* No time for a full preview (0.5 fps): render one strip of the
+             * screen per frame, cycling; the copy that hides Canon's frame at
+             * the next vsync puts it on screen (LCM26: 17/18 skipped). */
+            if (elapsed+strip_est+FRLV_MARGIN_MS<=period_ms) {
+                preview_render(r,acc,preview_part,FRLV_PREVIEW_PARTS);
+                preview_part=(preview_part+1)%FRLV_PREVIEW_PARTS;r->preview_strips++;
+                sync_caches();
+            } else r->preview_skipped++;
+        }
         else if (preview_yuv) {
             unsigned p0=(unsigned)get_us_clock();
-            preview_render(r,acc);sync_caches();
+            preview_render(r,acc,0,1);sync_caches();
             r->preview_us=(unsigned)get_us_clock()-p0;
             p0=(unsigned)get_us_clock();preview_show();r->preview_copy_us=(unsigned)get_us_clock()-p0;
         }
@@ -1018,6 +1086,9 @@ unhook:
 out:
     r.timer_fixes=timer_fixes;r.timer_seen_b=timer_seen_b;
     if (dma_uncertain) r.unsafe=1;
+    if (o->hw_test && r.continuous && r.merged>=2 && !r.unsafe && !hw_uncertain && alloc[0] && alloc[1] &&
+        cap && acc && !ml_shutdown_requested)
+        hw_uncertain|=paused_hw_test(&r,cap,acc,alloc[0],alloc[1]);
     /* HW-test uncertainty concerns only the capture buffer (engine output):
      * keep every buffer allocated, but the accumulator may still be saved. */
     const unsigned save_ok=!r.unsafe && (!hw_uncertain || (acc && cap && acc!=(uint8_t *)physical(cap)));
