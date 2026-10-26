@@ -24,6 +24,7 @@
 #include "lv-ring.h"
 #include "raw14-max.h"
 #include "fullres-check.h"
+#include "fullres-lv.h"
 
 extern uint32_t raw_write_chan;
 extern int raw_lv_is_enabled(void);
@@ -75,8 +76,11 @@ static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
 static CONFIG_INT("livecomp.limit",frame_limit,2);
 static CONFIG_INT("livecomp.preview",preview_interval,0);
-/* Diagnostic selection is deliberately not persisted across boots. */
+/* Task selection is deliberately not persisted across boots:
+ * 0=Live composite, 1=Full-res check (native engine), 2=Full-res readout. */
 static int fullres_check;
+static int frlv_fps,frlv_expo,frlv_inputs=1;
+static const unsigned frlv_input_counts[]={1,4,8};
 static unsigned trigger_ms;
 static const unsigned frame_limits[]={30,60,120};
 static const unsigned preview_intervals[]={1000,2000,4000};
@@ -275,6 +279,7 @@ static unsigned capture_vsync(unsigned unused)
 unsigned livecomp_lv_vsync(unsigned context)
 {
     livecomp_fullres_vsync();
+    livecomp_frlv_vsync();
     unsigned irq=cli();
     if (!armed || !session) { sei(irq);return CBR_RET_CONTINUE; }
     capture_reading++;
@@ -462,6 +467,15 @@ static void finish_session(struct lv_session *s)
 static void run(void *unused)
 {
     (void)unused;
+    if (fullres_check==2) {
+        struct lc_frlv_options o={(unsigned)frlv_fps,(unsigned)frlv_expo,
+            frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1]};
+        unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
+        NotifyBox(5000,"%s",status);
+        if (unsafe) { requested=0;attempted=1;running=0; }
+        else finish_session(NULL);
+        return;
+    }
     if (fullres_check) {
         unsigned unsafe=livecomp_fullres_check(get_ml_card(),&stop_requested,&status);
         NotifyBox(5000,"%s",status);
@@ -645,9 +659,19 @@ static struct menu_entry lv_menu[]={
      .help="Continuous light painting with LCD composite and DNG output.",
      .submenu_width=700,
      .children=(struct menu_entry[]) {
-        {.name="Task",.priv=&fullres_check,.max=1,
-         .choices=CHOICES("Live composite","Full-res check"),
-         .help="Full-res check tests native blending and memory; saves a log, not a photo."},
+        {.name="Task",.priv=&fullres_check,.max=2,
+         .choices=CHOICES("Live composite","Full-res check","Full-res readout"),
+         .help="Full-res readout: x5 full-sensor RAW test, saves LVFR DNG+LOG.",
+         .help2="Full-res check: old native-engine diagnostic (paused)."},
+        {.name="Full-res FPS",.priv=&frlv_fps,.max=2,
+         .choices=CHOICES("3 fps","1 fps","0.5 fps"),
+         .help="Full-res readout only: sensor frame rate (timer B)."},
+        {.name="Full-res exposure",.priv=&frlv_expo,.max=3,
+         .choices=CHOICES("100% of frame","50% of frame","25% of frame","12% of frame"),
+         .help="Full-res readout only: shutter as a fraction of the frame period."},
+        {.name="Full-res frames",.priv=&frlv_inputs,.max=2,
+         .choices=CHOICES("1 frame","4 frames","8 frames"),
+         .help="Full-res readout only: frames captured and max-merged into the DNG."},
         {.name="Capture limit",.priv=&frame_limit,.max=2,
          .choices=CHOICES("30 frames","60 frames","120 frames"),
          .help="Stop and save automatically at this limit. Q/SET stops earlier."},

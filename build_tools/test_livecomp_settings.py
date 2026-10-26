@@ -18,6 +18,7 @@ def main():
 #include <string.h>
 #include "lv-ring.h"
 static void livecomp_fullres_vsync(void) {}
+static void livecomp_frlv_vsync(void) {}
 #define COUNT(a) (sizeof(a)/sizeof((a)[0]))
 #define GUARD 64u
 #define LV_FRAME_CAP 120u

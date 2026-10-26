@@ -34,8 +34,9 @@ Validation
 ----------
 
 LCM8 captured 76 frames with LCD preview and DNG output on camera.
-LCM14 preserves that mode and adds a separately selected Full-res check.
-Short SET is handled on release; long SET remains available. Full-sensor readout is not enabled.
+LCM15 preserves that mode and adds Task: Full-res readout, the first
+full-sensor capture test (x5 full-res sensor mode, DNG + LOG, untested on camera).
+Short SET is handled on release; long SET remains available.
 
 Full-res check
 --------------

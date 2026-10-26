@@ -309,3 +309,60 @@ At that cadence a CPU maximum (~2 s projected, to be optimised) is sufficient,
 and the two allocations the camera actually provides are enough: one capture
 buffer merged into one accumulator during the idle part of each frame period,
 with overrun detection. See the LCM15 section for the readout gate.
+
+## LCM15: full-sensor readout gate (Task: Full-res readout)
+
+First attempt to put the sensor itself into full-resolution readout inside
+this module. Implementation: `fullres-lv.c` (camera side) and
+`fullres-regs.h` (pure register rewriting, host-tested).
+
+**Why the earlier `crop_fr` port probably could not capture.** The stock core
+has no `CONFIG_ALLOCATE_RAW_LV_BUFFER` for EOS M. At full size
+`raw_lv_realloc_buffer` hits `ASSERT(0)`, the fallback stays at Canon's
+24.5 MB default, and `raw_lv_vsync` refuses to slurp (even redirected frames)
+because 9240 x ~3500 bytes do not fit. LCM15 does not use core LV RAW at all:
+it arms `edmac_raw_slurp` itself from the module's CBR_VSYNC (which runs
+before `raw_lv_vsync`) into its own 32.5 MB buffer, with the same RAW type
+register write the core uses. Core LV RAW must stay unrequested (Global Draw
+off); the gate aborts if anything requests it.
+
+**Sensor mode.** Reference: Bilal's EOS M `CROP_PRESET_1X1` / `CROP_Full_Res`.
+Hooks on the RAM `cmos_write` (0x2998C) and `adtg_write` (0x2986C), already
+used by the stock crop_rec for EOS M, and the ROM `_engio_write` (0xFF2C19AC)
+and `_EngDrvOut` (0xFF2C1694), both named in `platform/EOSM.202/stubs.S`.
+All are fingerprinted (EngDrvOut only needs a plausible prologue and is
+optional). They only act while the gate is active AND
+`PathDriveMode->zoom == 5` (0x892E8+0x12). Values applied:
+CMOS[5]=0, CMOS[7]=0x3A0; RAW window 0x0DB20538; timers A=0x56B,
+B=0x1E03 (3 fps) or 23053 (1 fps) or 46107 (0.5 fps); HEAD3/HEAD4; ADTG
+power-save/read-out timing; shutter blanking as 100/50/25/12% of the frame
+(NRZI); C0F38024/383D4/383DC preview window.
+
+Deliberately **omitted**: EDMAC#24 redirect to 0x1595b00, EDMAC#9 RAM
+patches (0x5976C/0x5979C), C0F08184 and the HIV address hook. In the
+reference these only recover Canon's preview height and write Canon-owned
+memory; RAW capture does not depend on them. Expect a wrong/cropped LCD
+during the test.
+
+**Flow.** Movie LV x1 -> allocate 2 x 32,488,032 bytes (capture +
+accumulator; the capacity LCM9-13 measured) -> install hooks -> `set_lv_zoom(5)`
+-> verify C0F06804, compute geometry from C0F06800/04 exactly as
+`raw_lv_get_resolution` -> measure cadence -> capture N single frames
+(DMA idle, pointer, tail sentinel, guards) and merge them (memcpy, then exact
+max) -> deactivate -> `set_lv_zoom(1)` -> unhook -> save LVFR DNG/LOG. Frames
+that arrive while merging are not captured: this is a gate, not continuous
+composite. The vsync callback re-applies timer B if Canon restores it outside
+`engio_write` (counted in the log). The LOG is rewritten at every stage.
+
+**What the first run should tell us.** Whether x5 engages with the hooks,
+whether C0F06804 holds the full window, the real geometry and frame cadence,
+whether a full-size RAW frame completes into our buffer, black level / band
+means to place the active area, real full-res merge and memcpy times, and
+whether normal LV is restored. Host simulation covers control flow, refusal
+before any hook, hook-install failure, missing window, LV stall and
+uncompleted DMA (quarantine). It proves nothing about the hardware.
+
+**Next, if it passes:** continuous capture at 1 or 0.5 fps with one capture
+buffer + accumulator, merging in the idle part of each frame period (overrun
+detection, never silent skips), an LCD preview downscaled from the
+accumulator, and a faster packed-RAW14 maximum.
