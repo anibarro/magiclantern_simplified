@@ -994,3 +994,24 @@ signature-checked, no writes). Snapshots: frame 3 (Live View running) and
 after PauseLiveView, before the reference job. Logged: every locked
 resource in each state and the full Live View node list. Shows which
 hardware locks Live View holds that pausing releases.
+
+## LCM39 camera result (LVFR0000 after card cleanup)
+
+Registry: 179 resource nodes in both states. **Live View holds 64 locks,
+paused 0.** Of the engine's ten resources Live View holds only 5. Live View
+holds locks in types 0-7, B, C, E, F; the engine uses types 0, 1, 2, 3, 5,
+8. A lock powers its type's domain (FF2C5AC0 -> FF2C4BF4, refcounted
+power module per type, table FF8FFAB8). So while Live View runs the
+domains of types 4, 6, 7, B, C, E, F are powered; paused they are off -
+and register writes into an unpowered block (LCM34-38 reverse tests) do
+nothing. Paused engine exact again (117 ms); timing-generator variants
+exact again.
+
+## LCM40: power reverse test (paused)
+
+After the exact reference, for each type (4, 6, 7, B, C, E, F, then the
+extra Live View locks in the engine's own types 2, 3, 5, 0, 1): create and
+try-lock Live View's own locks of that type (minus the engine's ten) with
+Canon's functions (FF2C5848/FF2C6228), run the reference job (HW_tries
+where 0x20 + type), unlock and delete (FF2C5EB4/FF2C5A60). A type whose
+power breaks the job is the blocker.

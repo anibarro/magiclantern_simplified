@@ -205,7 +205,7 @@ struct frlv_hw { unsigned tried,frame,busy,channel,reason[2],engine_us[2],lock[2
     unsigned paused,lv_before,lv_after; };     /* LCM27: Live View paused run */
 static struct frlv_hw hw,hw_paused;   /* LCM27: second run with Live View paused */
 /* LCM28 attempt table: one row per engine job, in Live View or paused. */
-#define FRLV_TRIES 10u
+#define FRLV_TRIES 16u
 struct frlv_try { unsigned where,frame,channel,bands,busy,reason,us,completed,out_state,out_bytes,aborted,moved,mismatch_words,first_bad,safe; };
 static struct frlv_try tries[FRLV_TRIES];
 static unsigned ntries;
@@ -237,6 +237,13 @@ static unsigned tg_written[2];
 #define FRLV_RES 256u
 static uint32_t res_lv_id[FRLV_RES],res_lv_st[FRLV_RES],res_p_id[FRLV_RES],res_p_st[FRLV_RES];
 static unsigned res_lv_n,res_p_n;
+/* LCM40 power reverse test (paused): LCM39 showed Live View holds 64 Canon
+ * resources, paused 0; a lock powers its type's domain (FF2C5AC0 ->
+ * FF2C4BF4). For one type at a time, take Live View's own locks of that
+ * type (minus the engine's ten), run the reference job, release. */
+static const uint8_t pw_types[12]={4,6,7,0xb,0xc,0xe,0xf,2,3,5,0,1};
+static uint32_t pw_n[12],pw_hold[12],pw_rel[12];
+static const uint32_t engine_ids[10]={5,0x1000c,0x1000d,0x50002,0x50003,0x50006,0x80000,0x20001,0x30000,0x30001};
 /* LCM36: LCM35 showed the whole register state of Live View does not stop
  * the paused engine (all 189 values at once: exact). What runs only in
  * Live View is its activity, the obvious part being the LCD refresh. Turn
@@ -482,6 +489,9 @@ static void write_log(const struct frlv_result *r,const char *status)
         }
         t[n++]='\n';ok&=write_text(f,t,n);
     }
+    n=snprintf(t,sizeof(t),"Power_test (type:ids:hold:release; HW_tries where 0x20+type):");
+    for (unsigned k=0;k<12;k++) n+=snprintf(t+n,sizeof(t)-n," %x:%d:%x:%x",pw_types[k],pw_n[k],pw_hold[k],pw_rel[k]);
+    t[n++]='\n';ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"TG_reverse_test (HW_tries where 16 = enable bits, 15 = all 0xC0F06/07): written %d,%d\npause_ms=%d resume_ms=%d\n",
         tg_written[0],tg_written[1],pause_ms,resume_ms);
     ok&=write_text(f,t,n);
@@ -894,7 +904,25 @@ static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,u
          * put the paused values back. A group that breaks the job is what
          * blocks the engine in Live View. where 10/11/12 = A/B/C. */
         const unsigned ref_ok=ntries>before && !tries[before].reason && !tries[before].mismatch_words;
-        for (unsigned v=0;v<2 && ref_ok && snap_lv_ok && !unsafe;v++) {
+        for (unsigned k=0;k<12 && ref_ok && res_lv_n && !unsafe;k++) {
+            static uint32_t ids[16];
+            unsigned n=0;
+            for (unsigned i=0;i<res_lv_n && n<16;i++) {
+                if (!res_lv_st[i] || (res_lv_id[i]>>16)!=pw_types[k]) continue;
+                unsigned eng=0;
+                for (unsigned e=0;e<10;e++) if (res_lv_id[i]==engine_ids[e]) eng=1;
+                if (!eng) ids[n++]=res_lv_id[i];
+            }
+            pw_n[k]=n;
+            if (!n) continue;
+            uint32_t hd=0;
+            pw_hold[k]=lc_native_hold(ids,n,&hd);
+            if (pw_hold[k]) continue;
+            static struct frlv_hw pwh;
+            unsafe=hw_test(&pwh,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,0x20+pw_types[k]);
+            pw_rel[k]=lc_native_release(hd);
+        }
+        for (unsigned v=0;v<2 && ref_ok && snap_lv_ok && !unsafe && FRLV_LV_STEPS;v++) {
             static uint32_t tg_reg[64],tg_keep[64];
             unsigned nt=0;
             for (unsigned k=0;k<diff_n && nt<64;k++) {
@@ -951,7 +979,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));
     snap_lv_ok=snap_paused_ok=job_pairs=0;
-    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;tg_written[0]=tg_written[1]=0;res_lv_n=res_p_n=0;memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
+    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;tg_written[0]=tg_written[1]=0;res_lv_n=res_p_n=0;memset(pw_n,0,sizeof(pw_n));memset(pw_hold,0,sizeof(pw_hold));memset(pw_rel,0,sizeof(pw_rel));memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
     unsigned lv_tries=0,lv_step=0,lv_done=0;disp_off_ms=disp_try_frame=0;
     if (hw_enable) {
         if (!snap_lv) snap_lv=malloc(FRLV_SHADOW_WORDS*4);

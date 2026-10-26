@@ -125,4 +125,10 @@ int lc_native_snapshot(uint32_t state[12]);
 int lc_native_resources(struct lc_resource_snapshot *snapshot);
 /* LCM39: whole resource registry (id, state) - read-only diagnostic. */
 unsigned lc_native_resource_list(uint32_t *ids,uint32_t *states,unsigned max);
+/* LCM40: take an extra set of Canon resources (create + non-blocking
+ * try-lock, FF2C5848/FF2C6228) - powers their types' domains - and release
+ * it (FF2C5EB4 unlock, FF2C5A60 delete). Only while no engine job runs and
+ * Live View is paused (diagnostic). Returns 0 or LC_NATIVE_* reason. */
+unsigned lc_native_hold(const uint32_t *ids,unsigned n,uint32_t *handle);
+unsigned lc_native_release(uint32_t handle);
 #endif

@@ -201,6 +201,8 @@ static int sim_borrows,sim_returns;
 static int sim_engdrv;
 unsigned lc_native_engdrv(const uint32_t *r,const uint32_t *v,unsigned n){ (void)r;(void)v; sim_engdrv+=n; return 0; }
 unsigned lc_native_resource_list(uint32_t *ids,uint32_t *st,unsigned max){ (void)max; ids[0]=5; st[0]=LV_PAUSED ? 0:1; ids[1]=0x1000c; st[1]=0; return 2; }
+unsigned lc_native_hold(const uint32_t *ids,unsigned n,uint32_t *h){ (void)ids;(void)n; *h=1; return 0; }
+unsigned lc_native_release(uint32_t h){ (void)h; return 0; }
 unsigned lc_native_job_list(uint32_t *pairs,unsigned max){ (void)max; pairs[0]=0xC0F08000u; pairs[1]=1; return 1; }
 unsigned lc_native_borrow5(struct lc_native_borrow *b){ memset(b,0,sizeof(*b)); b->ok=1; sim_borrows++; return 0; }
 unsigned lc_native_return5(struct lc_native_borrow *b){ b->ok=0; b->restored=1; sim_returns++; return 0; }
@@ -378,6 +380,7 @@ int main(void)
     assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
     assert(!sim_borrows && !sim_returns && !sim_disp_off && !sim_engdrv);
     assert(strstr(last_log,"LV nodes 2 locked 1 | paused nodes 2 locked 0") && strstr(last_log,"Res_LV: 5:1"));
+    assert(strstr(last_log,"Power_test (type:ids:hold:release"));
     assert(strstr(last_log,"T0: 1,6,5,2,a001,ffff,") && strstr(last_log,"Reg_diff_LV_vs_paused (window C0F00000-C0F3FFFC; lv_ok 1 paused_ok 1"));
     /* Resource 5 free once paused: only the paused reference runs. */
     reset();sim_hw_busy=0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;

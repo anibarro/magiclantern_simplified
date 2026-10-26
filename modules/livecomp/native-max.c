@@ -482,3 +482,26 @@ unsigned lc_native_resource_list(uint32_t *ids,uint32_t *states,unsigned max)
     unsigned n=lc_resource_enum(read_ram_word,NULL,0x4c3f8,node_signature,ids,states,max);
     sei(irq);return n;
 }
+unsigned lc_native_hold(const uint32_t *ids,unsigned n,uint32_t *handle)
+{
+    *handle=0;
+    if (!rom_valid()) return LC_NATIVE_ROM;
+    if (running || quarantined || !n || n>16) return LC_NATIVE_ARGUMENT;
+    static uint32_t list[16];
+    for (unsigned i=0;i<n;i++) list[i]=ids[i];
+    unsigned h=((unsigned (*)(uint32_t *,unsigned))0xff2c5848)(list,n);
+    if (!h) return LC_NATIVE_RESOURCE;
+    if (((unsigned (*)(unsigned))0xff2c6228)(h)) {   /* busy: create only */
+        ((unsigned (*)(unsigned))0xff2c5a60)(h);
+        return LC_NATIVE_BUSY;
+    }
+    *handle=h;
+    return 0;
+}
+unsigned lc_native_release(uint32_t handle)
+{
+    if (!handle) return 0;
+    unsigned e=((unsigned (*)(unsigned))0xff2c5eb4)(handle) ? LC_NATIVE_UNLOCK:0;
+    if (((unsigned (*)(unsigned))0xff2c5a60)(handle)) e|=LC_NATIVE_RESOURCE;
+    return e;
+}
