@@ -20,12 +20,22 @@
 #define LC_FRR_RAW_V 0xDB2u
 #define LC_FRR_TIMER_A 0x56Bu
 #define LC_FRR_CLOCK 32000000u
-#define LC_FRR_FPS_CHOICES 3u
+#define LC_FRR_FPS_CHOICES 5u
 #define LC_FRR_EXPO_CHOICES 4u
-/* Timer B register values (timer-1) for 3, 1 and 0.5 fps with timer A 0x56B.
- * 3 fps reproduces the reference 0x1E03 exactly. DIGIC V accepts 16 bits. */
-static const uint32_t lc_frr_timer_b[LC_FRR_FPS_CHOICES]={0x1E03u,23053u,46107u};
-static const uint32_t lc_frr_fps_x1000[LC_FRR_FPS_CHOICES]={3000u,1000u,500u};
+/* Sensor timing choices (register values = timer-1). fps = 32 MHz/((A+1)(B+1)).
+ * 3 fps reproduces the reference 0x1E03. LCM15: 1 fps (B=0x5A0D) ran; the
+ * 0.5 fps run (B=0xB41B) was declared stalled by a 6 s timeout that was too
+ * short for a 2 s frame, so it is retried with scaled timeouts, alongside
+ * variants that keep B below 0x8000 and stretch timer A (line time) instead,
+ * which lengthens readout proportionally (about 150/300/450 ms). */
+struct lc_frr_timing { uint32_t timer_a,timer_b,fps_x1000; };
+static const struct lc_frr_timing lc_frr_timing[LC_FRR_FPS_CHOICES]={
+    {0x56Bu,0x1E03u,3000u},     /* reference */
+    {0x56Bu,23053u,1000u},      /* B stretched */
+    {0x56Bu,46107u,500u},       /* B stretched beyond 0x8000 */
+    {2775u,23053u,500u},        /* A x2 */
+    {4163u,23053u,333u},        /* A x3 */
+};
 static const uint32_t lc_frr_expo_pct[LC_FRR_EXPO_CHOICES]={100u,50u,25u,12u};
 
 struct lc_frr_config {
@@ -70,8 +80,9 @@ static inline void lc_frr_configure(struct lc_frr_config *c,unsigned fps_index,u
 {
     if (fps_index>=LC_FRR_FPS_CHOICES) fps_index=0;
     if (expo_index>=LC_FRR_EXPO_CHOICES) expo_index=0;
-    c->raw_h=LC_FRR_RAW_H;c->raw_v=LC_FRR_RAW_V;c->timer_a=LC_FRR_TIMER_A;
-    c->timer_b=lc_frr_timer_b[fps_index];
+    c->raw_h=LC_FRR_RAW_H;c->raw_v=LC_FRR_RAW_V;
+    c->timer_a=lc_frr_timing[fps_index].timer_a;
+    c->timer_b=lc_frr_timing[fps_index].timer_b;
     c->blanking=lc_frr_blanking(c->timer_b,lc_frr_expo_pct[expo_index]);
 }
 

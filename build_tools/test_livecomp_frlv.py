@@ -17,16 +17,29 @@ REGS_TEST = r'''
 #include <stdio.h>
 #include <string.h>
 #include "fullres-regs.h"
+#include <stdlib.h>
+#include "raw14-max.h"
 int main(void) {
+    { /* sparse max == reference max, every sample */
+        enum { B=20000 }; static uint16_t a[7*B],b[7*B],c[7*B];
+        srand(7);
+        for (int round=0;round<4;round++) {
+            for (int i=0;i<7*B;i++) { b[i]=rand(); if (!round) a[i]=c[i]=rand(); }
+            if (round==3) memcpy(b,a,sizeof(a)); /* nothing brighter */
+            lc_raw14_max(c,b,B); unsigned ch=lc_raw14_max_sparse(a,b,B);
+            assert(!memcmp(a,c,sizeof(a)) && (round<3 || ch==0));
+        }
+    }
     struct lc_frr_config c; struct lc_frr_stats st; memset(&st,0,sizeof(st));
     lc_frr_configure(&c,0,0);
     /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8). */
     assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==0x1E03);
     /* fps = 32 MHz / ((A+1)(B+1)) */
     for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {
-        double fps=32e6/((double)(LC_FRR_TIMER_A+1)*(lc_frr_timer_b[i]+1));
-        double want=lc_frr_fps_x1000[i]/1000.0;
-        assert(fps>want*0.999 && fps<want*1.001 && lc_frr_timer_b[i]<=0xFFFF);
+        const struct lc_frr_timing *t=&lc_frr_timing[i];
+        double fps=32e6/((double)(t->timer_a+1)*(t->timer_b+1));
+        double want=t->fps_x1000/1000.0;
+        assert(fps>want*0.998 && fps<want*1.002 && t->timer_b<=0xFFFF && t->timer_a>=LC_FRR_TIMER_A);
     }
     for (uint32_t v=0;v<0x10000;v+=7) assert(lc_frr_nrzi_decode(lc_frr_nrzi_encode(v))==v);
     assert(lc_frr_blanking(0x1E03,100)==10 && lc_frr_blanking(0x1E03,50)==0x1E04-0x1E04/2);
@@ -113,7 +126,8 @@ static struct card_info card={"B"};
 static unsigned now_us,zoom=1,pdm_zoom=1,raw_user,fps_now=29970,next_vsync_us;
 static uint32_t reg6800=0x10012,reg6804=0x4540298,reg6014=0x5DC;
 static patch_hook_function_cbr hooks[4];static uint32_t sites[4];static int nhooks,patch_fail_at=-1;
-static int unpatched,stall_after_zoom,no_window,dma_stuck,single_alloc,locked;
+static int unpatched,stall_after_zoom,no_window,dma_stuck,single_alloc,locked,partial_frames;
+static unsigned sim_period_us=333333;
 static uint8_t *slurp_dst;static int slurp_w,slurp_h,slurp_armed,slurp_frames;
 static unsigned allocs,frees,dma_state;
 uint32_t sim_mem(uint32_t a)
@@ -172,7 +186,8 @@ void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 static void frame(void)
 {
     if (stall_after_zoom && zoom==5) return;
-    if (slurp_armed && !dma_stuck) {
+    if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); }
+    else if (slurp_armed && !dma_stuck) {
         for (int i=0;i<slurp_w*slurp_h;i+=4096) slurp_dst[i]=(uint8_t)(slurp_frames*7+i);
         memset(slurp_dst+slurp_w*slurp_h-8,0x11,8);
         slurp_frames++;
@@ -183,7 +198,7 @@ static void frame(void)
 }
 void msleep(int ms)
 {
-    unsigned period=(zoom==5) ? 333333:33333;
+    unsigned period=(zoom==5) ? sim_period_us:33333;
     unsigned end=now_us+ms*1000;
     while (next_vsync_us<=end) { now_us=next_vsync_us; frame(); next_vsync_us+=period; }
     now_us=end;
@@ -192,7 +207,7 @@ static void reset(void)
 {
     now_us=next_vsync_us=0;zoom=pdm_zoom=1;lv_dispsize=1;raw_user=0;fps_now=29970;
     reg6800=0x10012;reg6804=0x4540298;nhooks=0;patch_fail_at=-1;unpatched=0;stall_after_zoom=0;
-    no_window=0;dma_stuck=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
+    no_window=0;dma_stuck=0;partial_frames=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
     dng_bytes=0;dng_size_ok=0;locked=0;dng_created=0;
 }
 int main(void)
@@ -233,6 +248,15 @@ int main(void)
     /* Slow mode: 0.5 fps timer and 100% exposure are what the hooks apply. */
     reset();o.fps_index=2;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && reg6014!=0x1E03);
+    /* Partial frames (idle channel, tail untouched) are retried, not merged. */
+    reset();o.fps_index=0;partial_frames=2;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && slurp_frames==4 && strstr(status,"saved"));
+    reset();partial_frames=20;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && strstr(status,"partial") && zoom==1 && unpatched==4);
+    /* Slowest timing: timeouts scale with the frame period. */
+    reset();sim_period_us=3000000;o.fps_index=4;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("slow: %s\n",status);assert(!unsafe && strstr(status,"saved"));sim_period_us=333333;
     printf("sim ok\n");return 0;
 }
 '''

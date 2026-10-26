@@ -51,7 +51,10 @@ extern void edmac_raw_slurp(void *dst,int w,int h);
 #define FRLV_RAW_TYPE 0x10u              /* src/raw.c PREFERRED_RAW_TYPE, DIGIC V */
 #define FRLV_ALLOCATION 32488032u        /* size proven twice on camera (LCM9-13) */
 #define FRLV_GUARD 64u
-#define FRLV_MAX_INPUTS 16u
+#define FRLV_MAX_INPUTS 8u
+#define FRLV_MAX_ATTEMPTS 14u        /* inputs + up to 6 partial frames */
+#define FRLV_TRACE 24u
+#define FRLV_VSYNC_RING 32u
 
 enum { FE_ROM=1,FE_STATE=2,FE_MEMORY=4,FE_HOOK=8,FE_ZOOM=16,FE_REGS=32,FE_STALL=64,
        FE_DMA=128,FE_GUARD=256,FE_SIZE=512,FE_IO=1024,FE_RESTORE=2048,FE_CANCEL=4096,
@@ -63,7 +66,8 @@ static volatile unsigned active;           /* overrides may apply */
 static volatile unsigned observing;        /* vsync bookkeeping */
 static volatile unsigned vsyncs,last_vsync_ms,max_gap_ms;
 static volatile unsigned want_capture,in_flight,capture_done;
-static volatile unsigned capture_vsync,done_state,done_pointer,done_vsync,done_ms,start_ms;
+static volatile unsigned capture_vsync,done_state,done_pointer,done_vsync,done_ms,start_ms,start_us;
+static volatile unsigned vsync_us[FRLV_VSYNC_RING];
 static volatile unsigned timer_fixes,timer_seen_b;
 static uint8_t *capture_target;            /* uncached alias */
 static uint32_t capture_pitch,capture_height;
@@ -110,7 +114,7 @@ void livecomp_frlv_vsync(void)
     if (!observing) return;
     unsigned now=get_ms_clock();
     if (vsyncs && now-last_vsync_ms>max_gap_ms) max_gap_ms=now-last_vsync_ms;
-    last_vsync_ms=now;vsyncs++;
+    last_vsync_ms=now;vsync_us[vsyncs%FRLV_VSYNC_RING]=(unsigned)get_us_clock();vsyncs++;
     if (active && zoom5()) {
         /* If Canon restored its timer B outside engio_write, reapply ours the
          * same way the core's FPS override does on this camera. Logged. */
@@ -133,18 +137,21 @@ void livecomp_frlv_vsync(void)
         want_capture=0;
         EngDrvOut(FRLV_RAW_TYPE_REG,FRLV_RAW_TYPE);
         edmac_raw_slurp((void *)physical(capture_target),capture_pitch,capture_height);
-        capture_vsync=vsyncs;start_ms=now;in_flight=1;
+        capture_vsync=vsyncs;start_ms=now;start_us=(unsigned)get_us_clock();in_flight=1;
     }
 }
 
-struct frlv_input { unsigned vsync,start_ms,done_ms,state,pointer,merge_us,tail_ok; };
+struct frlv_input { unsigned vsync,start_ms,done_ms,state,pointer,merge_us,tail_ok,changed_pct,ntrace;
+    unsigned trace_us[FRLV_TRACE],trace_off[FRLV_TRACE]; };
 struct frlv_result {
     unsigned error,stage,unsafe,rom_engdrvout,hooks;
     unsigned top_left,bottom_right,width,height,pitch,bytes;
     unsigned reg_6804,reg_6008,reg_6010,reg_6014,reg_38024,reg_6804_after;
     unsigned zoom_ms,cadence_frames,cadence_ms,max_gap;
     unsigned inputs,merged;
-    struct frlv_input in[FRLV_MAX_INPUTS];
+    struct frlv_input in[FRLV_MAX_ATTEMPTS];
+    unsigned partials,vsync_count,vsync_first;
+    unsigned vsync_us[FRLV_VSYNC_RING];
     unsigned black,ob_stdev_x10,center_mean,max_value;
     unsigned col_band[12],row_band[10];
     unsigned memcpy_us,saved,save_stage,save_size;
@@ -170,7 +177,7 @@ static void write_log(const struct frlv_result *r,const char *status)
     if (ml_shutdown_requested) return;
     FILE *f=FIO_CreateFile(r->log);
     if (!f) return;
-    static char t[1536];int ok=1;
+    static char t[2048];int ok=1;
     int n=snprintf(t,sizeof(t),LIVECOMP_BUILD_ID "\nFull-sensor LV readout gate\nStatus: %s\n"
         "Stage_error_unsafe: %d,%d,%d\n"
         "Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved\n"
@@ -208,13 +215,29 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->row_band[5],r->row_band[6],r->row_band[7],r->row_band[8],r->row_band[9],
         r->saved,r->save_stage,r->save_size,r->dng);
     ok&=write_text(f,t,n);
-    ok&=write_text(f,"Input_vsync_start_done_ms_state_pointer_tail_merge_us:\n",56);
-    for (unsigned i=0;i<r->inputs && i<FRLV_MAX_INPUTS;i++) {
+    n=snprintf(t,sizeof(t),"Partials: %d\nAttempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:\n",r->partials);
+    ok&=write_text(f,t,n);
+    for (unsigned i=0;i<r->inputs && i<FRLV_MAX_ATTEMPTS;i++) {
         const struct frlv_input *p=&r->in[i];
-        n=snprintf(t,sizeof(t),"%d,%d,%d,%d,%d,%x,%d,%d\n",i,p->vsync,p->start_ms,p->done_ms,
-            p->state,p->pointer,p->tail_ok,p->merge_us);
+        n=snprintf(t,sizeof(t),"%d,%d,%d,%d,%d,%x,%d,%d,%d\n",i,p->vsync,p->start_ms,p->done_ms,
+            p->state,p->pointer,p->tail_ok,p->merge_us,p->changed_pct);
         ok&=write_text(f,t,n);
     }
+    ok&=write_text(f,"DMA_trace_attempt: us_after_arm:bytes ...\n",42);
+    for (unsigned i=0;i<r->inputs && i<FRLV_MAX_ATTEMPTS;i++) {
+        const struct frlv_input *p=&r->in[i];
+        n=snprintf(t,sizeof(t),"T%d:",i);
+        for (unsigned k=0;k<p->ntrace && n<(int)sizeof(t)-32;k++)
+            n+=snprintf(t+n,sizeof(t)-n," %d:%d",p->trace_us[k],p->trace_off[k]);
+        t[n++]='\n';
+        ok&=write_text(f,t,n);
+    }
+    n=snprintf(t,sizeof(t),"Vsync_intervals_us (last %d):",FRLV_VSYNC_RING);
+    for (unsigned k=1;k<FRLV_VSYNC_RING && k<r->vsync_count;k++) {
+        unsigned a=(r->vsync_first+k-1)%FRLV_VSYNC_RING,b=(r->vsync_first+k)%FRLV_VSYNC_RING;
+        n+=snprintf(t+n,sizeof(t)-n," %d",r->vsync_us[b]-r->vsync_us[a]);
+    }
+    t[n++]='\n';ok&=write_text(f,t,n);
     FIO_CloseFile(f);
     (void)ok;
 }
@@ -326,7 +349,8 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     static struct frlv_result r;
     memset(&r,0,sizeof(r));memset(&stats,0,sizeof(stats));
     lc_frr_configure(&cfg,o->fps_index,o->expo_index);
-    r.fps_x1000=lc_frr_fps_x1000[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:0];
+    r.fps_x1000=lc_frr_timing[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:0].fps_x1000;
+    const unsigned period_ms=1000000u/r.fps_x1000;
     r.expo_pct=lc_frr_expo_pct[o->expo_index<LC_FRR_EXPO_CHOICES ? o->expo_index:0];
     unsigned inputs=MIN(MAX(o->inputs,1u),FRLV_MAX_INPUTS);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
@@ -396,7 +420,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     }
     r.zoom_ms=get_ms_clock()-t0;
     if (r.error) { msg="x5 zoom did not engage";goto restore; }
-    if (!wait_vsyncs(3,6000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
+    if (!wait_vsyncs(3,3*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
     r.top_left=shamem_read(0xC0F06800);r.bottom_right=shamem_read(0xC0F06804);
     r.reg_6008=shamem_read(0xC0F06008);r.reg_6010=shamem_read(0xC0F06010);
     r.reg_6014=shamem_read(0xC0F06014);r.reg_38024=shamem_read(0xC0F38024);
@@ -412,63 +436,90 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     /* Cadence over a few frames (timer B may need one frame to settle). */
     {
         unsigned frames=MAX(3u,cfg.timer_b<10000 ? 6u:3u);
-        wait_vsyncs(1,8000,cancel);
+        wait_vsyncs(1,period_ms+4000,cancel);
         unsigned v0=vsyncs,m0=get_ms_clock();max_gap_ms=0;
-        if (!wait_vsyncs(frames,frames*2500+2000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="LV stalled at full res";goto restore; }
+        if (!wait_vsyncs(frames,frames*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="LV stalled at full res";goto restore; }
         r.cadence_frames=vsyncs-v0;r.cadence_ms=get_ms_clock()-m0;r.max_gap=max_gap_ms;
     }
     r.stage=5;write_log(&r,"verified");
 
     /* 6: capture inputs. One frame per request; merges happen between. */
     msg="Full-res readout: capturing";*status=msg;
-    for (unsigned i=0;i<inputs;i++) {
+    for (unsigned attempt=0;r.merged<inputs && attempt<FRLV_MAX_ATTEMPTS;attempt++) {
         if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled()) {
             r.error|=raw_lv_is_enabled() ? FE_RAWUSER:*cancel ? FE_CANCEL:FE_STATE;
             msg=*cancel ? "Stopped by user":"Mode changed during capture";break;
         }
         memset(cap+r.bytes-8,0x5a,8);   /* uncached alias: no dirty lines */
         sync_caches();
+        struct frlv_input *p=&r.in[r.inputs++];
         capture_done=0;want_capture=1;
-        unsigned w0=get_ms_clock(),limit=3*(1000000u/r.fps_x1000)+3000;
-        while (!capture_done && get_ms_clock()-w0<limit) msleep(10);
+        unsigned w0=get_ms_clock(),limit=3*(1000000u/r.fps_x1000)+3000,last=~0u;
+        /* Sample the DMA write pointer while the frame arrives: shows when
+         * readout starts relative to the vsync and how long it lasts. */
+        while (!capture_done && get_ms_clock()-w0<limit) {
+            if (in_flight && p->ntrace<FRLV_TRACE) {
+                unsigned off=edmac_get_pointer(raw_write_chan)-physical(cap);
+                if (off!=last) {
+                    p->trace_us[p->ntrace]=(unsigned)get_us_clock()-start_us;
+                    p->trace_off[p->ntrace++]=off;last=off;
+                }
+            }
+            msleep(10);
+        }
         if (!capture_done) {
             want_capture=0;
             if (in_flight) dma_uncertain=1;
             r.error|=FE_STALL;msg="Frame not completed; see LOG";break;
         }
-        struct frlv_input *p=&r.in[r.inputs++];
         p->vsync=capture_vsync;p->start_ms=start_ms;p->done_ms=done_ms;
         p->state=done_state;p->pointer=done_pointer;
         unsigned tail=0;for (unsigned k=0;k<8;k++) if (cap[r.bytes-8+k]!=0x5a) tail=1;
         p->tail_ok=tail;
         if (done_state) {
             /* Still active one frame later: give it one more frame, else stop. */
-            wait_vsyncs(1,4000,cancel);
+            wait_vsyncs(1,period_ms+3000,cancel);
             if (edmac_get_state(raw_write_chan)) { dma_uncertain=1;r.error|=FE_DMA;msg="RAW DMA did not finish";break; }
         }
         if (!guards_ok(cap,r.bytes)) { dma_uncertain=1;r.error|=FE_GUARD;msg="Buffer guard overwritten";break; }
-        if (!tail) { r.error|=FE_DMA;msg="Frame tail not written; see LOG";break; }
+        if (!tail) {
+            /* Partial frame with an idle channel: record it and try the next
+             * frame (diagnostic gate only; continuous mode must not do this). */
+            r.partials++;
+            if (r.partials>6) { r.error|=FE_DMA;msg="Repeated partial frames; see LOG";break; }
+            write_log(&r,"partial frame");
+            continue;
+        }
         sync_caches();
         const uint8_t *src=(const uint8_t *)physical(cap);
         if (!r.merged) statistics(&r,src);
         if (acc) {
             unsigned s0=(unsigned)get_us_clock();
-            if (!r.merged) { memcpy(acc,src,r.bytes);r.memcpy_us=(unsigned)get_us_clock()-s0; }
-            else lc_raw14_max((uint16_t *)acc,(const uint16_t *)src,r.bytes/14);
+            if (!r.merged) { memcpy(acc,src,r.bytes);r.memcpy_us=(unsigned)get_us_clock()-s0;p->changed_pct=100; }
+            else {
+                unsigned blocks=r.bytes/14,changed=lc_raw14_max_sparse((uint16_t *)acc,(const uint16_t *)src,blocks);
+                p->changed_pct=(unsigned)((uint64_t)changed*100/blocks);
+            }
             p->merge_us=(unsigned)get_us_clock()-s0;
         }
         r.merged++;
         write_log(&r,"capturing");
     }
+    if (r.merged<inputs && !r.error) { r.error|=FE_DMA;msg="Too many partial frames; see LOG"; }
     if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
 
 restore:
+    {
+        unsigned c=vsyncs;r.vsync_count=MIN(c,FRLV_VSYNC_RING);
+        r.vsync_first=c>FRLV_VSYNC_RING ? c%FRLV_VSYNC_RING:0;
+        for (unsigned k=0;k<FRLV_VSYNC_RING;k++) r.vsync_us[k]=vsync_us[k];
+    }
     active=0;
     msg=r.error ? msg:"Full-res readout: restoring";*status=msg;
     /* Let any armed slurp complete before leaving the mode. */
     {
         unsigned w0=get_ms_clock();
-        while ((want_capture || in_flight) && get_ms_clock()-w0<4000) { want_capture=0;msleep(20); }
+        while ((want_capture || in_flight) && get_ms_clock()-w0<period_ms+4000) { want_capture=0;msleep(20); }
         if (in_flight || edmac_get_state(raw_write_chan)) dma_uncertain=1;
     }
     if (zoomed) {
@@ -476,6 +527,9 @@ restore:
         unsigned w0=get_ms_clock();
         while (lv && lv_dispsize!=1 && get_ms_clock()-w0<6000) msleep(50);
         if (lv && lv_dispsize!=1) r.error|=FE_RESTORE;
+        /* Canon may need a full slow frame to finish the switch back. */
+        w0=get_ms_clock();
+        while (shamem_read(0xC0F06804)==((cfg.raw_v<<16)|cfg.raw_h) && get_ms_clock()-w0<12000) msleep(50);
         wait_vsyncs(3,4000,cancel);
         r.reg_6804_after=shamem_read(0xC0F06804);
         if (r.reg_6804_after==((cfg.raw_v<<16)|cfg.raw_h)) r.error|=FE_RESTORE;
