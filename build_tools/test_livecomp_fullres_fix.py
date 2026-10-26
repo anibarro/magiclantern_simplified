@@ -113,7 +113,7 @@ ARM = r'''
 void *memcpy(void *d,const void *s,unsigned n){char*a=d;const char*b=s;while(n--)*a++=*b++;return d;}
 #include "raw14-max.h"
 static uint32_t st=3; static uint32_t rnd(void){ st=st*1664525u+1013904223u; return st>>8; }
-enum{B=6000}; static uint16_t a[7*B],b[7*B],c[7*B];
+enum{B=6000}; static uint16_t a[7*B] __attribute__((aligned(4))),b[7*B] __attribute__((aligned(4))),c[7*B];
 static void sys_exit(int code){ register int r0 asm("r0")=code; register int r7 asm("r7")=1; asm volatile("svc 0"::"r"(r0),"r"(r7)); for(;;); }
 void _start(void){
   for (int r=0;r<4;r++) {
@@ -123,6 +123,12 @@ void _start(void){
     unsigned c1=lc_raw14_max_sparse(c,b,B),c2=lc_raw14_max_fast(a,b,B);
     if (c1!=c2) sys_exit(2);
     for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(3);
+    /* LCM24 select kernel on the camera's CPU type: same result again */
+    for (int i=0;i<7*B;i++) c[i]=a[i];
+    for (int i=0;i<7*B;i++) a[i]=(uint16_t)(rnd()&0xFFFF);
+    for (int i=0;i<7*B;i++) c[i]=a[i];
+    lc_raw14_max(c,b,B); lc_raw14_max_sel((uint32_t *)(void *)a,(const uint32_t *)(const void *)b,B/2);
+    for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(4);
   }
   sys_exit(0);
 }
@@ -146,7 +152,7 @@ def main():
             print('ARM946 (qemu) merge check ok')
         else:
             print('ARM946 merge check skipped (set LIVECOMP_QEMU_ARM to run it)')
-    print('PASS: focus-pixel fix (200,942 exact positions), WB neutral mapping, compare-first merge exactness')
+    print('PASS: focus-pixel fix (200,942 exact positions), WB neutral mapping, compare-first and select merge exactness')
 
 
 if __name__ == '__main__':

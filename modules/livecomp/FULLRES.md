@@ -563,3 +563,23 @@ Conclusion: in this Live View state the engine consumes both inputs but emits
 nothing on source 1, whatever the output channel and with no competing
 listener. Native-engine attempts LCM9-LCM13 and LCM21-LCM23 produced no
 verified output.
+
+## LCM24
+
+- **Select-max CPU merge** (`lc_raw14_max_sel`, raw14-max.h): no unpack or
+  repack. Both buffers share the packed layout, so the max is a per-field
+  choice of bits; each 14-bit field is compared in place after one shift
+  (ties are harmless), a mask selects the brighter bits, and a word is
+  written only if it changed (unchanged cache lines stay clean). ARM946
+  instruction count per 16 pixels (qemu): 156 all-changed / 114 unchanged,
+  vs 239 / 194 for the LCM16-23 sparse kernel. Bit-exact against the
+  reference on host and on emulated ARM946, including ties and edge values.
+- Merge in 8 bands instead of 16 (the 10 ms scheduler ticks cost 160 ms).
+- Preview is skipped on frames where rendering it (~420 ms) would push the
+  next merge into the next readout (`Merge_kernel_bands_preview_skipped`).
+  Goal: 0.5 fps (2 s, timer A 0x56B, readout ~150 ms).
+- Engine experiment (HW test unchanged otherwise): every ENGIO register list
+  written while the band-0 job runs is recorded with its time, address and
+  first registers - Canon's own start/stop tables and anything Live View
+  writes meanwhile - to see whether Live View reprograms the engine blocks
+  (0xC0F08000/060/070, 0xC0F0D000/034) during the job.

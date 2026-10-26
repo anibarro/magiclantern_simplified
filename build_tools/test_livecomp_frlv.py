@@ -30,6 +30,18 @@ int main(void) {
             assert(!memcmp(a,c,sizeof(a)) && (round<3 || ch==0));
         }
     }
+    { /* LCM24 select max == reference max, every sample, incl. ties/edges */
+        enum { P=10000 }; static uint32_t a[7*P],b[7*P],c[7*P];
+        srand(11);
+        for (int round=0;round<4;round++) {
+            for (int i=0;i<7*P;i++) { b[i]=((uint32_t)rand()<<16)^rand(); if (!round) a[i]=c[i]=((uint32_t)rand()<<16)^rand(); }
+            if (round==2) for (int i=0;i<7*P;i++) b[i]=a[i]^(rand()&rand()&rand()&0xFFFF);
+            if (round==3) memcpy(b,a,sizeof(a));
+            lc_raw14_max((uint16_t *)c,(const uint16_t *)b,2*P);
+            unsigned ch=lc_raw14_max_sel(a,b,P);
+            assert(!memcmp(a,c,sizeof(a)) && (round<3 || ch==0));
+        }
+    }
     struct lc_frr_config c; struct lc_frr_stats st; memset(&st,0,sizeof(st));
     lc_frr_configure(&c,5,0);   /* 3 fps entry */
     /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8). */

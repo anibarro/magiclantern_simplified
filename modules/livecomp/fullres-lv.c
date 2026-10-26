@@ -85,6 +85,9 @@ static void frlv_slurp(void *dst,int pitch,int height)
 #define FRLV_TRACE 24u
 #define FRLV_VSYNC_RING 32u
 #define FRLV_CONT_MAX 999u
+#define FRLV_BANDS 8u                /* continuous merge: bands between ticks */
+#define FRLV_PREVIEW_MS 420u         /* measured render + copy, LCM23 */
+#define FRLV_MARGIN_MS 300u          /* arm delay, scheduling, late check */
 
 enum { FE_ROM=1,FE_STATE=2,FE_MEMORY=4,FE_HOOK=8,FE_ZOOM=16,FE_REGS=32,FE_STALL=64,
        FE_DMA=128,FE_GUARD=256,FE_SIZE=512,FE_IO=1024,FE_RESTORE=2048,FE_CANCEL=4096,
@@ -127,9 +130,27 @@ static void FAST adtg_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
     if (lc_frr_adtg(regs[0],(const uint32_t *)regs[1],adtg_copy,COUNT(adtg_copy),&cfg,&stats))
         regs[1]=(uint32_t)adtg_copy;
 }
+/* LCM24: every ENGIO register list written while the HW test job runs
+ * (Canon's engine start/stop tables and anything Live View writes). */
+#define FRLV_REC 24u
+#define FRLV_REC_REGS 6u
+struct frlv_rec { uint32_t us,list,n,reg[FRLV_REC_REGS],val[FRLV_REC_REGS]; };
+static struct frlv_rec rec[FRLV_REC];
+static volatile unsigned rec_on,rec_n,rec_t0;
+static void FAST engio_record(const uint32_t *list)
+{
+    if (rec_n>=FRLV_REC) { rec_n++;return; }
+    struct frlv_rec *e=&rec[rec_n++];
+    e->us=(unsigned)get_us_clock()-rec_t0;e->list=(uint32_t)list;e->n=0;
+    for (unsigned i=0;i<512 && list[2*i]!=0xFFFFFFFFu;i++) {
+        if (e->n<FRLV_REC_REGS) { e->reg[e->n]=list[2*i];e->val[e->n]=list[2*i+1]; }
+        e->n++;
+    }
+}
 static void FAST engio_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
 {
     (void)stack;(void)pc;
+    if (rec_on) engio_record((const uint32_t *)regs[0]);
     if (!active || !zoom5()) return;
     lc_frr_engio((uint32_t *)regs[0],4096,&cfg,&stats);
 }
@@ -226,7 +247,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned memcpy_us,saved,save_stage,save_size;
     unsigned fps_x1000,expo_pct,timer_fixes,timer_seen_b,pdm[6];
-    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms;
+    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
@@ -280,7 +301,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Continuous_limit_overrun_offset_missed: %d,%d,%d,%d\n"
         "Merge_max_us_sum_ms_preview_ok_render_us_copy_us: %d,%d,%d,%d,%d\n"
         "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n"
-        "Zoom_done_ms_late_frames: %d,%d\n",
+        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped: select,%d,%d\n",
         stats.cmos_calls,stats.cmos_changes,stats.adtg_calls,stats.adtg_changes,stats.blanking_seen,
         stats.engio_calls,stats.engio_changes,stats.drv_changes,stats.overflow,
         stats.orig_6804,stats.orig_timer_a,stats.orig_timer_b,stats.orig_blanking,
@@ -293,7 +314,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->continuous,r->limit,r->overrun_offset,r->missed,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
-        r->zoom_done_ms,r->late_frames);
+        r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),
         "HW_prepare_close_tried_frame_busy_channel_safe: %d,%d,%d,%d,%x,%d,%d\n"
@@ -319,6 +340,13 @@ static void write_log(const struct frlv_result *r,const char *status)
         n+=snprintf(t+n,sizeof(t)-n,"\nHW_band%d_out_before_state_addr_ptr_after_state_addr_ptr: %x,%x,%x,%x,%x,%x\n",band,
             q->before_start[8],q->before_start[10],q->before_start[11],q->after_wait[8],q->after_wait[10],q->after_wait[11]);
         ok&=write_text(f,t,n);
+    }
+    n=snprintf(t,sizeof(t),"HW_engio_lists_during_band0: %d (us:list:count reg=val ...)\n",rec_n);
+    ok&=write_text(f,t,n);
+    for (unsigned k=0;k<rec_n && k<FRLV_REC;k++) {
+        n=snprintf(t,sizeof(t),"%d:%x:%d",rec[k].us,rec[k].list,rec[k].n);
+        for (unsigned i=0;i<rec[k].n && i<FRLV_REC_REGS;i++) n+=snprintf(t+n,sizeof(t)-n," %x=%x",rec[k].reg[i],rec[k].val[i]);
+        t[n++]='\n';ok&=write_text(f,t,n);
     }
     n=snprintf(t,sizeof(t),"Write_route_idle (ch:src:state):");
     for (unsigned i=0;i<16;i++) n+=snprintf(t+n,sizeof(t)-n," %x:%x:%x",act_channels[i],act_conn[i],act_state[i]);
@@ -589,7 +617,9 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
         lc_frlv_plane((uint32_t)cap_storage,(uint32_t)cap|0x40000000u,r->pitch,first,rows,&b);
         hw.plane_ok[band]=lc_native_plane_ok(&a,1)|(lc_native_plane_ok(&b,1)<<1)|(lc_native_plane_ok(&b,0)<<2);
         struct lc_native_engine_result res;
+        rec_n=0;rec_t0=(unsigned)get_us_clock();rec_on=1;
         unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,hw.channel);
+        rec_on=0;
         hw.reason[band]=reason;hw.engine_us[band]=res.elapsed_us;hw.lock[band]=res.lock;hw.setup[band]=res.setup;
         hw.wait[band]=res.wait;memcpy(hw.completed[band],res.completed,sizeof(res.completed));
         memcpy(hw.after[band],res.after_wait,sizeof(res.after_wait));
@@ -614,7 +644,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned hw_enable,uint8_t *cap_storage,uint8_t *acc_storage)
 {
     preview_setup();r->preview_ok=preview_yuv!=NULL;
-    const unsigned end=physical(cap)+r->bytes,blocks=r->bytes/14,max_partials=2+r->limit/4;
+    const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28,max_partials=2+r->limit/4;
+    /* Readout lasts ~150 ms x (timer A / 0x56B) and ends at the next vsync. */
+    const unsigned readout_ms=150u*(cfg.timer_a+1u)/0x56Cu;
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;
@@ -674,21 +706,21 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         const uint8_t *src=(const uint8_t *)physical(cap);
         unsigned s0=(unsigned)get_us_clock(),changed=0;
         if (!r->merged) { statistics(r,src);s0=(unsigned)get_us_clock(); }
-        /* 16 bands with a scheduler tick between them keep the camera UI alive. */
-        /* LCM19 adaptive compare-first merge removed: on a frame with 73%
-         * changed blocks it took 3.5 s (worse than sparse) and overran. */
-        for (unsigned b=0;b<16;b++) {
-            unsigned b0=blocks*b/16,b1=blocks*(b+1)/16;
+        /* 8 bands with a scheduler tick between them keep the camera UI alive
+         * (LCM24: was 16; the 10 ms ticks cost 160 ms per frame). Bands are
+         * whole 2-block pairs (28 bytes, 16 pixels) for the select kernel. */
+        for (unsigned b=0;b<FRLV_BANDS;b++) {
+            unsigned b0=pairs*b/FRLV_BANDS,b1=pairs*(b+1)/FRLV_BANDS;
             /* If the next readout has already written into this band, the
              * rest of this frame is gone: stop here, keep the session going. */
             unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
-            if (off && off<=r->bytes && off>b0*14) { c->lost_bands=16-b;r->late_frames++;break; }
-            if (!r->merged) memcpy(acc+b0*14,src+b0*14,(b1-b0)*14);
-            else changed+=lc_raw14_max_sparse((uint16_t *)(acc+b0*14),(const uint16_t *)(src+b0*14),b1-b0);
+            if (off && off<=r->bytes && off>b0*28) { c->lost_bands=FRLV_BANDS-b;r->late_frames++;break; }
+            if (!r->merged) memcpy(acc+b0*28,src+b0*28,(b1-b0)*28);
+            else changed+=lc_raw14_max_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             act_sample();
             msleep(10);
         }
-        c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/blocks):100;
+        c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/pairs):100;
         c->merge_us=(unsigned)get_us_clock()-s0;
         r->merge_max_us=MAX(r->merge_max_us,c->merge_us);r->merge_sum_ms+=c->merge_us/1000;
         /* Did the next frame's readout start writing while we were reading? */
@@ -714,7 +746,11 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             write_log(r,"hw merge tested");
             continue;                                    /* preview next frame */
         }
-        if (preview_yuv) {
+        /* Preview costs ~400 ms (LCM23: render 276 + copy 112). At short
+         * periods skip it when it would push the next merge into the next
+         * readout; the composite is unaffected. */
+        if (preview_yuv && get_ms_clock()-done+FRLV_PREVIEW_MS+FRLV_MARGIN_MS>period_ms-readout_ms) r->preview_skipped++;
+        else if (preview_yuv) {
             unsigned p0=(unsigned)get_us_clock();
             preview_render(r,acc);sync_caches();
             r->preview_us=(unsigned)get_us_clock()-p0;
