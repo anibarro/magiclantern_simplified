@@ -413,6 +413,13 @@ unsigned lc_native_return5(struct lc_native_borrow *b)
     return 0;
 }
 
+unsigned lc_native_engdrv(const uint32_t *regs,const uint32_t *vals,unsigned n)
+{
+    if (!rom_valid()) return LC_NATIVE_ROM;
+    for (unsigned i=0;i<n;i++) if ((regs[i]&0xFFFFF003u)!=0xC0F08000u) return LC_NATIVE_ARGUMENT;
+    for (unsigned i=0;i<n;i++) ((void (*)(uint32_t,uint32_t))0xff2c1694)(regs[i],vals[i]);
+    return 0;
+}
 #define JOB_LIST 0x55020u
 unsigned lc_native_job_list(uint32_t *pairs,unsigned max_pairs)
 {

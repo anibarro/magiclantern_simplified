@@ -110,6 +110,9 @@ unsigned lc_native_borrow5(struct lc_native_borrow *b);
 /* LCM30: Canon's engine job configuration list (ENGIO pairs written by
  * setup FF429E68 at RAM 0x55020, seen in the LCM24 trace). Returns pairs. */
 unsigned lc_native_job_list(uint32_t *pairs,unsigned max_pairs);
+/* LCM31: write engine-area registers through Canon's EngDrvOut (FF2C1694,
+ * keeps the ENGIO shadow consistent). Only 0xC0F08000-0xC0F08FFC. */
+unsigned lc_native_engdrv(const uint32_t *regs,const uint32_t *vals,unsigned n);
 unsigned lc_native_return5(struct lc_native_borrow *b);
 /* Output on `channel`, engine resources locked with `lock_channel`'s set
  * (only channel 5 with lock 3: Live View holds resource 5). */

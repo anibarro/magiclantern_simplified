@@ -197,6 +197,8 @@ uint32_t edmac_get_length(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_flags(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_connection(uint32_t ch,uint32_t dir){ (void)ch;(void)dir; return 0; }
 static int sim_borrows,sim_returns;
+static int sim_engdrv;
+unsigned lc_native_engdrv(const uint32_t *r,const uint32_t *v,unsigned n){ (void)r;(void)v; sim_engdrv+=n; return 0; }
 unsigned lc_native_job_list(uint32_t *pairs,unsigned max){ (void)max; pairs[0]=0xC0F08000u; pairs[1]=1; return 1; }
 unsigned lc_native_borrow5(struct lc_native_borrow *b){ memset(b,0,sizeof(*b)); b->ok=1; sim_borrows++; return 0; }
 unsigned lc_native_return5(struct lc_native_borrow *b){ b->ok=0; b->restored=1; sim_returns++; return 0; }
@@ -363,16 +365,18 @@ int main(void)
     reset();sim_hw_busy=2;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
-    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_pauses=sim_resumes=0;sim_borrows=sim_returns=0;dng_size_ok=2048+bytes;
+    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_pauses=sim_resumes=0;sim_borrows=sim_returns=0;sim_engdrv=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
     /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    /* LCM30: no engine job in Live View; register-shadow snapshots in
-     * Live View (frame 3) and paused; paused job skipped here (simulated
-     * resource 5 busy). */
-    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved") && !sim_borrows);
-    assert(strstr(last_log,"Reg_diff_LV_vs_paused (lv_ok 1 paused_ok 1") && strstr(last_log,"Reg_diff_count: "));
-    assert(strstr(last_log,"T0: 1,6,5,2,a001,ffff,"));
+    /* LCM31: frames 3 and 4 borrow channel 5 and stop/restore Live View's
+     * 9 blocks (9 writes + 9 restores each); paused job skipped here
+     * (simulated resource 5 busy); register-shadow snapshots both states. */
+    printf("hw: borrows=%d returns=%d engdrv=%d\n",sim_borrows,sim_returns,sim_engdrv);
+    assert(!unsafe && sim_hw_calls==2 && sim_hw_prepared==0 && strstr(status,"saved"));
+    assert(sim_borrows==2 && sim_returns==2 && sim_engdrv==36);
+    assert(strstr(last_log,"Reg_diff_LV_vs_paused (lv_ok 1 paused_ok 1") && strstr(last_log,"LV_blocks (reg:"));
+    assert(strstr(last_log,"T0: 2,3,5,2,") && strstr(last_log,"T1: 2,4,5,2,") && strstr(last_log,"T2: 1,6,5,2,a001,ffff,"));
     assert(sim_pauses==1 && sim_resumes==1 && !LV_PAUSED && strstr(last_log,"HWP_lv_before_paused_after"));
     /* Engine left its output channel busy (now: the paused channel-5 job,
      * resource 5 free). The accumulator (never an engine target) is saved. */

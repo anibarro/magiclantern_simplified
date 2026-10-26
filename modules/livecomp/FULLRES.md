@@ -757,3 +757,29 @@ own config list (RAM 0x55020) is logged after the paused job. The log lists
 every register that differs, flagged by whether the job list rewrites it:
 differing registers the job does not rewrite are the candidates.
 No engine job runs in Live View.
+
+## LCM30 camera result (LVFR0001, 0.25 fps)
+
+7 frames, saved. Paused channel-5 reference again exact (115 ms, 0
+mismatches). Engine job config list (RAM 0x55020): 43 registers in
+0xC0F08000-0x2A4 and 0xC0F0D000-0x0AC. Register-shadow diff, Live View vs
+paused, over 1280 registers: **9 differ, none rewritten by the job**:
+
+| register | Live View | paused |
+|---|---|---|
+| C0F08020 C0F08090 C0F08130 C0F08180 C0F08540 C0F08D68 | 1 | 0x80000000 |
+| C0F083B0 C0F08598 C0F08D5C | 1 | 0 |
+
+1 = block started; 0x80000000 = Canon's stop value (the job itself writes
+it to 0xC0F08000/060/070 before starting them). Pausing Live View stops
+these 9 Live View blocks in the engine's register area; with them running,
+the engine output never reaches source 1.
+
+## LCM31
+
+Frames 3 and 4: borrow channel 5 (LCM29 procedure), set the 9 registers to
+their paused values through Canon's EngDrvOut (FF2C1694, shadow kept),
+run the full-frame job, restore Live View's 9 values (reverse order),
+return channel 5, verify byte for byte. Logged: values saved/after-restore
+per attempt and how often Live View writes each of the 9 through ENGIO
+(if it does every frame, Live View re-establishes them itself).

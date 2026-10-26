@@ -1,0 +1,85 @@
+LCM30 full-res composite
+Full-sensor LV readout gate
+Status: Full-res composite saved: 7 frames
+Stage_error_unsafe: 8,0,0
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: 250,100,1043,7813,10
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,10431043,1043,7813,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_cadence_frames_ms_max_gap_ms: 167,0,0,0
+Timer_fixes_last_seen_B: 0,7813
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 12,24
+Hook_adtg_calls_changes_blanking_seen: 79,59,24
+Hook_engio_calls_changes_drv_changes_overflow: 213,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10562
+Inputs_merged_memcpy_us: 0,7,0
+Black_OBstdev_x10_center_mean_max: 2047,392,2316,2475
+Col_band_means_16px: 2047,2047,2047,2046,2745,3435,3441,3451,3456,3465,3471,3475
+Row_band_means_8px: 2016,2058,2049,2292,2540,2553,2566,2573,2578,2586
+Saved_stage_size: 1,6,32397488
+DNG: B:/LVFR0001.DNG
+Continuous_limit_overrun_offset_missed: 1,30,0,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 1806794,10638,1,126665,112826
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 200942,1073753
+Zoom_done_ms_late_frames: 33715,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,0,0,0
+HW_prepare_close_tried_frame_busy_channel_safe: 0,0,0,0,0,0,0
+HW_band0_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band1_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band0_after_out_state_flags_addr_ptr: 0,0,0,0
+HW_compare_us_mismatch_bytes_first_expected_actual: 0,0,0,0,0
+HW_plane_ok_band0_band1: 0,0
+HW_band0_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band0_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band0_listener_ch_state_addr_ptr_before_after:
+HW_band0_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band1_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band1_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band1_listener_ch_state_addr_ptr_before_after:
+HW_band1_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band0_moved (ch:state:ptr>state:ptr): 5:0:0>0:0
+HWP_band0_moved (ch:state:ptr>state:ptr): 5:0:2009140>0:2f7ddb0
+HWP_lv_before_paused_after_prepare_close_tried_busy_channel_safe: 1,1,1,0,0,1,a000,5,1
+HWP_band0_reason_us_lock_setup_wait_completed: 0,57650,0,0,0,1/1/1
+HWP_band1_reason_us_lock_setup_wait_completed: 0,57551,0,0,0,1/1/1
+HWP_band0_out_after_state_addr_ptr_aborted: 0,2009140,2f7ddb0,0
+HWP_compare_us_mismatch_bytes_first_expected_actual: 1438996,0,-1,0,0
+HW_tries: where(0=LV,1=paused),frame,ch,bands,busy,reason,us,out_completions,out_state,out_bytes,aborted,moved_mask,mismatch_words,first_bad,safe
+T0: 1,7,5,2,a000,0,115201,2,0,32395440,0,0,0,-1,1
+HW_borrow5: reason,state,addr,ptr,flags,conn,rec1,rec2,rec3,abort_wait_us,restored,after_state,addr,ptr,flags,conn
+Job_config_list (43 pairs, reg=val): c0f08070=80000000 c0f08060=80000000 c0f08000=80000000 c0f0d000=80000000 c0f0d034=80000000 c0f08104=0 c0f0810c=3 c0f08394=0 c0f08074=20 c0f08078=0 c0f08260=1 c0f08064=20 c0f08068=0 c0f08274=1 c0f08014=3fff c0f08018=0 c0f082a0=1 c0f082a4=1 c0f0d004=1110 c0f0d00c=0 c0f0d010=0 c0f0d01c=0 c0f0d020=0 c0f0d024=0 c0f0d028=0 c0f0d030=20 c0f0d038=20 c0f0d03c=0 c0f0d064=0 c0f0d068=0 c0f0d06c=0 c0f0d070=0 c0f0d074=100 c0f0d078=1 c0f0d094=0 c0f0d098=0 c0f0d09c=0 c0f0d0a4=0 c0f0d0a8=0 c0f0d0ac=0 c0f0d02c=0 c0f0d058=0 c0f0d05c=0
+Reg_diff_LV_vs_paused (lv_ok 1 paused_ok 1; reg:lv:paused:in_job_list):
+c0f08020:1:80000000:0 c0f08090:1:80000000:0 c0f08130:1:80000000:0 c0f08180:1:80000000:0
+c0f083b0:1:0:0 c0f08540:1:80000000:0 c0f08598:1:0:0 c0f08d5c:1:0:0
+c0f08d68:1:80000000:0
+Reg_diff_count: 9
+Reg_nonzero_LV (reg:val, engine blocks only):
+c0f08020:1 c0f08024:1000 c0f08030:1000 c0f08034:1800 c0f08038:800 c0f08090:1
+c0f08094:20 c0f08130:1 c0f08134:1 c0f08138:10 c0f0814c:5 c0f08150:fff
+c0f08154:8 c0f0815c:2 c0f08160:3fff c0f08180:1 c0f08184:453 c0f08188:a1f
+c0f08194:a1f c0f08198:a1f c0f0819c:12f0 c0f081a8:1 c0f081bc:54 c0f081c4:1
+c0f081dc:a20 c0f081e0:1 c0f0820c:50f0000 c0f0828c:1 c0f082a8:1 c0f082c4:1
+c0f083b0:1 c0f083b8:1 c0f083c0:1 c0f083f0:1fff0000 c0f08420:5bf c0f08428:101
+c0f08434:a1f c0f08540:1 c0f08544:110 c0f08548:4530a1f c0f08550:7fff7fff c0f08554:7fff7fff
+c0f08558:1010101 c0f08580:11 c0f08598:1 c0f085a0:1 c0f08654:1 c0f08b50:80000000
+c0f08b5c:11 c0f08b60:3100 c0f08b64:4a5070f c0f08b68:70c004c c0f08b6c:49f001f c0f08b70:b0038
+c0f08b90:1 c0f08bf4:3210 c0f08c20:1 c0f08c84:10 c0f08d14:102 c0f08d50:1
+c0f08d5c:1 c0f08d64:80000000 c0f08d68:1 c0f08d6c:ff00000 c0f08d70:80000000 c0f08d74:80010600
+c0f08d78:80020f00 c0f08d7c:80030f00 c0f08d80:80040f00 c0f08d84:80050f00 c0f08d88:80060f00 c0f08d98:1
+c0f08d9c:fffffffc c0f08da0:fffc c0f08db4:1 c0f08db8:1
+HW_engio_lists_during_band0: 0 (us:list:count reg=val ...)
+Write_route_idle (ch:src:state): 0:2e:0 1:1b:1 2:4:1 3:0:0 4:0:0 5:2:1 6:12:0 10:28:0 11:f:1 12:0:0 13:0:0 14:0:0 15:0:0 16:0:0 20:10:0 21:27:0
+DMA_activity_samples_union_mask: 3,326 (bit i = write channel 0..6,0x10..0x16,0x20,0x21)
+Ch5_addr_len_flags_conn_state_ptr: d116000,e0020,20000040,2,1,d116000
+Ch3_addr_len_flags_conn_state_ptr: 0,0,0,0,0,0
+Activity_ms_after_vsync_mask_ptr3_ptr5:
+335:326:0:d116000 3583:226:0:d116000 3593:200:0:d1161e0 
+Partials: 1
+Attempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:
+DMA_trace_attempt: us_after_arm:bytes ...
+Vsync_intervals_us (last 32): 33322 33398 33367 33340 4494901 3999157 4000011 4000067 4000054 4000049 4000005 4000162 3999954 4000123

@@ -131,6 +131,16 @@ static void FAST adtg_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
     if (lc_frr_adtg(regs[0],(const uint32_t *)regs[1],adtg_copy,COUNT(adtg_copy),&cfg,&stats))
         regs[1]=(uint32_t)adtg_copy;
 }
+/* LCM31: the only engine-area registers that differ between Live View
+ * running and paused (LCM30, 9 of 1280; none in the job's own list). In
+ * Live View 1 (block started); paused: Canon's stop value 0x80000000, or 0. */
+#define FRLV_LVBLK 9u
+static const uint32_t lvblk_reg[FRLV_LVBLK]={0xC0F08020u,0xC0F08090u,0xC0F08130u,0xC0F08180u,
+    0xC0F083B0u,0xC0F08540u,0xC0F08598u,0xC0F08D5Cu,0xC0F08D68u};
+static const uint32_t lvblk_paused[FRLV_LVBLK]={0x80000000u,0x80000000u,0x80000000u,0x80000000u,
+    0u,0x80000000u,0u,0u,0x80000000u};
+static uint32_t lvblk_saved[2][FRLV_LVBLK],lvblk_after[2][FRLV_LVBLK];
+static unsigned lvblk_engio_seen[FRLV_LVBLK],lvblk_n;
 /* LCM24: every ENGIO register list written while the HW test job runs
  * (Canon's engine start/stop tables and anything Live View writes). */
 #define FRLV_REC 24u
@@ -152,6 +162,11 @@ static void FAST engio_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
 {
     (void)stack;(void)pc;
     if (rec_on) engio_record((const uint32_t *)regs[0]);
+    if (active) {
+        const uint32_t *l=(const uint32_t *)regs[0];
+        for (unsigned i=0;i<512 && l[2*i]!=0xFFFFFFFFu;i++)
+            for (unsigned k=0;k<FRLV_LVBLK;k++) if (l[2*i]==lvblk_reg[k]) lvblk_engio_seen[k]++;
+    }
     if (!active || !zoom5()) return;
     lc_frr_engio((uint32_t *)regs[0],4096,&cfg,&stats);
 }
@@ -412,6 +427,11 @@ static void write_log(const struct frlv_result *r,const char *status)
             q->after_state,q->after_addr,q->after_ptr,q->after_flags,q->after_conn);
         ok&=write_text(f,t,n);
     }
+    n=snprintf(t,sizeof(t),"LV_blocks (reg:engio_writes:saved0>after0:saved1>after1):");
+    for (unsigned i=0;i<FRLV_LVBLK;i++)
+        n+=snprintf(t+n,sizeof(t)-n," %x:%d:%x>%x:%x>%x",lvblk_reg[i],lvblk_engio_seen[i],
+            lvblk_saved[0][i],lvblk_after[0][i],lvblk_saved[1][i],lvblk_after[1][i]);
+    t[n++]='\n';ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Job_config_list (%d pairs, reg=val):",job_pairs);
     for (unsigned k=0;k<job_pairs;k++) {
         if (n>(int)sizeof(t)-40) { ok&=write_text(f,t,n);n=0; }
@@ -744,6 +764,10 @@ static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uin
         nborrows++;
         unsigned e=lc_native_borrow5(bw);
         if (e) { t->reason=0x10000u|e;t->safe=h->safe=e!=LC_NATIVE_STOP;return e==LC_NATIVE_STOP; }
+        /* LCM31: put Live View's 9 running blocks in their paused state. */
+        unsigned k=lvblk_n<2 ? lvblk_n:1;
+        for (unsigned i=0;i<FRLV_LVBLK;i++) lvblk_saved[k][i]=shamem_read(lvblk_reg[i]);
+        if (lc_native_engdrv(lvblk_reg,lvblk_paused,FRLV_LVBLK)) t->reason|=0x40000u;
     }
     for (unsigned band=0;band<bands;band++) {
         unsigned first,rows=lc_frlv_band(r->height,band,&first);
@@ -766,7 +790,14 @@ static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uin
         if (!res.resume_safe) { h->safe=0;t->safe=0;return 1; }
         if (reason) break;
     }
-    /* Give channel 5 back to Live View before anything slow. */
+    /* Restore Live View's blocks (reverse order), then give channel 5 back,
+     * before anything slow. */
+    if (borrow) {
+        unsigned k=lvblk_n<2 ? lvblk_n:1;
+        for (unsigned i=FRLV_LVBLK;i-->0;) lc_native_engdrv(&lvblk_reg[i],&lvblk_saved[k][i],1);
+        for (unsigned i=0;i<FRLV_LVBLK;i++) lvblk_after[k][i]=shamem_read(lvblk_reg[i]);
+        lvblk_n++;
+    }
     if (borrow && lc_native_return5(bw)) { t->reason|=0x20000u;h->safe=t->safe=0;return 1; }
     if (t->reason) return 0;
     /* Word compare (LCM27 byte loop: 3.7 s per frame). */
@@ -829,7 +860,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));nborrows=0;memset(borrows,0,sizeof(borrows));
-    snap_lv_ok=snap_paused_ok=job_pairs=0;
+    snap_lv_ok=snap_paused_ok=job_pairs=0;lvblk_n=0;
+    memset(lvblk_engio_seen,0,sizeof(lvblk_engio_seen));memset(lvblk_saved,0,sizeof(lvblk_saved));memset(lvblk_after,0,sizeof(lvblk_after));
+    unsigned lv_try=0;
     if (hw_enable) {
         hw_geometry=fio_malloc(128);
         hw.prepare=hw_geometry ? lc_native_engine_prepare((uint32_t *)(((unsigned)hw_geometry+63)&~63u)):999;
@@ -928,6 +961,18 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         /* LCM30: no engine job in Live View (LCM29: even a borrowed channel 5
          * gets no output there). Snapshot Canon's register shadow instead. */
         if (hw_enable && !snap_lv_ok && r->merged>=3) { snap_take(snap_lv);snap_lv_ok=1; }
+        /* LCM31: frames 3 and 4: borrow channel 5 and pause Live View's 9
+         * running blocks around the engine job (full frame, verified). */
+        if (hw_enable && lv_try<2 && r->merged>=3 && !off && !c->lost_bands &&
+            get_ms_clock()-done+900<period_ms-600) {
+            NotifyBox(2000,"Testing hardware merge %d/2...",lv_try+1);
+            lv_try++;
+            if (hw_test(&hw,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,2)) {
+                *hw_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
+            }
+            write_log(r,"hw merge tested");
+            continue;
+        }
         /* The preview reads only the accumulator, so it may overlap the next
          * readout (which writes the capture buffer); it must just end before
          * the next frame arrives, or the next merge starts late. Estimate =

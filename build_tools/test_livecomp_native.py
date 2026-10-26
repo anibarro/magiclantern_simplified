@@ -39,6 +39,7 @@ def main():
         '((unsigned (*)(unsigned))0x1e644)': 'mock_delete',
         '((unsigned (*)(unsigned))0xff2c5eb4)': 'mock_unlock',
         '((void (*)(unsigned))0x1ca60)': 'mock_abort',
+        '((void (*)(uint32_t,uint32_t))0xff2c1694)': 'mock_engdrv',
     }
     for old, new in calls.items():
         assert old in native
@@ -77,6 +78,8 @@ static void mock_abort(unsigned ch) {
     if (ch==5 && out_ch!=5) { aborts5++;if (ch5_abort_works) ch5_state=0;return; }
     assert(ch==out_ch);aborts++;
 }
+static uint32_t engdrv_last_reg,engdrv_last_val;static unsigned engdrv_calls;
+static void mock_engdrv(uint32_t r,uint32_t v) { engdrv_last_reg=r;engdrv_last_val=v;engdrv_calls++; }
 static int is_camera(const char *m,const char *f) { (void)m;(void)f;return camera_ok; }
 static unsigned cli(void) { return 0; }
 static void sei(unsigned x) { (void)x; }
@@ -240,6 +243,14 @@ int main(void) {
       assert(lc_native_return5(&bw)==LC_NATIVE_CONTEXT && !bw.restored && quarantined);
       assert(!lc_native_return5(&bw));            /* already returned: no-op */
     }
+    /* LCM31 EngDrvOut helper: engine area only, all-or-nothing range check. */
+    { const uint32_t ok_r[2]={0xC0F08020u,0xC0F08D68u},v[2]={0x80000000u,1u},bad_r[2]={0xC0F08020u,0xC0F06804u};
+      const uint32_t odd_r[1]={0xC0F08022u};
+      reset();engdrv_calls=0;
+      assert(!lc_native_engdrv(ok_r,v,2) && engdrv_calls==2 && engdrv_last_reg==0xC0F08D68u && engdrv_last_val==1);
+      assert(lc_native_engdrv(bad_r,v,2)==LC_NATIVE_ARGUMENT && engdrv_calls==2);
+      assert(lc_native_engdrv(odd_r,v,1)==LC_NATIVE_ARGUMENT && engdrv_calls==2);
+      rom_ok=0;assert(lc_native_engdrv(ok_r,v,2)==LC_NATIVE_ROM && engdrv_calls==2); }
     /* LCM29 job with output on channel 5, engine locked with set 3. */
     reset();out_ch=5;assert(!lc_native_engine_max_lock(&a,&b,&a,&r,5,3));
     assert(r.resume_safe && state_data[10]==5 && setups==1 && unlocks==1 && r.completed[2]==1);
