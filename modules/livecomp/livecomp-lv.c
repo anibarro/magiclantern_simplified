@@ -467,9 +467,10 @@ static void finish_session(struct lv_session *s)
 static void run(void *unused)
 {
     (void)unused;
-    if (fullres_check==2) {
+    if (fullres_check>=2) {
         struct lc_frlv_options o={(unsigned)frlv_fps,(unsigned)frlv_expo,
-            frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1]};
+            frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1],
+            fullres_check==3,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2]};
         unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
         NotifyBox(5000,"%s",status);
         if (unsafe) { requested=0;attempted=1;running=0; }
@@ -659,14 +660,14 @@ static struct menu_entry lv_menu[]={
      .help="Continuous light painting with LCD composite and DNG output.",
      .submenu_width=700,
      .children=(struct menu_entry[]) {
-        {.name="Task",.priv=&fullres_check,.max=2,
-         .choices=CHOICES("Live composite","Full-res check","Full-res readout"),
-         .help="Full-res readout: x5 full-sensor RAW test, saves LVFR DNG+LOG.",
-         .help2="Full-res check: old native-engine diagnostic (paused)."},
-        {.name="Full-res FPS",.priv=&frlv_fps,.max=4,
-         .choices=CHOICES("3 fps","1 fps","0.5 fps (B)","0.5 fps (A)","0.33 fps (A)"),
-         .help="Full-res readout only: sensor frame rate.",
-         .help2="(B): longer frame via timer B. (A): slower line clock via timer A."},
+        {.name="Task",.priv=&fullres_check,.max=3,
+         .choices=CHOICES("Live composite","Full-res check","Full-res readout","Full-res composite"),
+         .help="Full-res composite: 5208x3478 light painting at slow FPS (LVFR DNG).",
+         .help2="Readout: test capture. Check: old native-engine diagnostic."},
+        {.name="Full-res FPS",.priv=&frlv_fps,.max=6,
+         .choices=CHOICES("0.25 fps (4 s)","0.2 fps (5 s)","0.33 fps (3 s)","0.5 fps (2 s)","1 fps","3 fps","0.5 fps (A)"),
+         .help="Full-res frame rate = sub-exposure length at 100%.",
+         .help2="Composite needs merge (~2.4 s) < frame time - readout. 0.25 fps is safe."},
         {.name="Full-res exposure",.priv=&frlv_expo,.max=3,
          .choices=CHOICES("100% of frame","50% of frame","25% of frame","12% of frame"),
          .help="Full-res readout only: shutter as a fraction of the frame period."},

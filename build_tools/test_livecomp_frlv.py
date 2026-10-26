@@ -31,7 +31,7 @@ int main(void) {
         }
     }
     struct lc_frr_config c; struct lc_frr_stats st; memset(&st,0,sizeof(st));
-    lc_frr_configure(&c,0,0);
+    lc_frr_configure(&c,5,0);   /* 3 fps entry */
     /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8). */
     assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==0x1E03);
     /* fps = 32 MHz / ((A+1)(B+1)) */
@@ -104,6 +104,8 @@ int patch_hook_function(uintptr_t addr,uint32_t orig,patch_hook_function_cbr cb,
 int unpatch_memory(uintptr_t addr); void set_lv_zoom(int z);
 uint32_t shamem_read(uint32_t a); void EngDrvOut(uint32_t r,uint32_t v); void EngDrvOutLV(uint32_t r,uint32_t v);
 int edmac_get_state(uint32_t ch); uint32_t edmac_get_pointer(uint32_t ch);
+struct vram_info { uint8_t *vram; int width,pitch,height; };
+struct vram_info *get_yuv422_vram(void);
 int raw_lv_is_enabled(void); int fps_get_current_x1000(void); struct card_info *get_ml_card(void);
 void powersave_prohibit(void); void powersave_permit(void); void gui_uilock(int l);
 int raw2iso(int r);
@@ -116,7 +118,7 @@ SIM = r'''
 #include "stub.h"
 #include "camera-profile.h"
 #include "fullres-lv.h"
-struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5}; /* host: no alias bit */
+struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0}}; /* host: no alias bit, no LCD */
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
 struct lens_info_t lens_info={72,40,22,0};
 int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock;
@@ -127,6 +129,7 @@ static unsigned now_us,zoom=1,pdm_zoom=1,raw_user,fps_now=29970,next_vsync_us;
 static uint32_t reg6800=0x10012,reg6804=0x4540298,reg6014=0x5DC;
 static patch_hook_function_cbr hooks[4];static uint32_t sites[4];static int nhooks,patch_fail_at=-1;
 static int unpatched,stall_after_zoom,no_window,dma_stuck,single_alloc,locked,partial_frames;
+static int csv_written;
 static unsigned sim_period_us=333333;
 static uint8_t *slurp_dst;static int slurp_w,slurp_h,slurp_armed,slurp_frames;
 static unsigned allocs,frees,dma_state;
@@ -151,7 +154,11 @@ uint32_t shamem_read(uint32_t a){ if (a==0xC0F06800) return reg6800; if (a==0xC0
 void EngDrvOut(uint32_t r,uint32_t v){ (void)r;(void)v; }
 void EngDrvOutLV(uint32_t r,uint32_t v){ if (r==0xC0F06014) reg6014=v; }
 int edmac_get_state(uint32_t ch){ (void)ch; return dma_state; }
-uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; return slurp_dst ? (uint32_t)(uintptr_t)slurp_dst+slurp_w*slurp_h:0; }
+static int overrun_sim;
+uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; if (!slurp_dst) return 0;
+    return (uint32_t)(uintptr_t)slurp_dst+(slurp_armed ? (overrun_sim ? 9240u:0u):(uint32_t)(slurp_w*slurp_h)); }
+static struct vram_info vram={0,720,1440,480};
+struct vram_info *get_yuv422_vram(void){ return &vram; }
 void edmac_raw_slurp(void *dst,int w,int h){ slurp_dst=dst; slurp_w=w; slurp_h=h; slurp_armed=1; }
 int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){ return fps_now; }
 struct card_info *get_ml_card(void){ return &card; }
@@ -160,7 +167,7 @@ int raw2iso(int r){ return r; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
 static int dng_created,cur_dng;
-FILE *FIO_CreateFile(const char *p){ if (strstr(p,".LOG")) log_files++; cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
+FILE *FIO_CreateFile(const char *p){ if (strstr(p,".CSV")) csv_written=1; if (strstr(p,".LOG")) log_files++; cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
 int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f;(void)b; if (cur_dng) dng_bytes+=n; return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
 static unsigned dng_size_ok;
@@ -207,14 +214,14 @@ static void reset(void)
 {
     now_us=next_vsync_us=0;zoom=pdm_zoom=1;lv_dispsize=1;raw_user=0;fps_now=29970;
     reg6800=0x10012;reg6804=0x4540298;nhooks=0;patch_fail_at=-1;unpatched=0;stall_after_zoom=0;
-    no_window=0;dma_stuck=0;partial_frames=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
+    no_window=0;dma_stuck=0;partial_frames=0;overrun_sim=0;csv_written=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
     dng_bytes=0;dng_size_ok=0;locked=0;dng_created=0;
 }
 int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={0,0,4};
+    struct lc_frlv_options o={5,0,4,0,0};   /* index 5 = 3 fps */
     /* Happy path: 4 inputs, geometry from registers, restore, unhook, DNG. */
     reset();
     unsigned w=(0x538-0x12)*4,h=0xDB2-1+1,bytes=w*14/8*h;
@@ -246,17 +253,27 @@ int main(void)
     reset();single_alloc=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && slurp_frames==4 && strstr(status,"saved") && frees==allocs);
     /* Slow mode: 0.5 fps timer and 100% exposure are what the hooks apply. */
-    reset();o.fps_index=2;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    reset();o.fps_index=3;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && reg6014!=0x1E03);
     /* Partial frames (idle channel, tail untouched) are retried, not merged. */
-    reset();o.fps_index=0;partial_frames=2;dng_size_ok=2048+bytes;
+    reset();o.fps_index=5;partial_frames=2;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && slurp_frames==4 && strstr(status,"saved"));
     reset();partial_frames=20;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && strstr(status,"partial") && zoom==1 && unpatched==4);
     /* Slowest timing: timeouts scale with the frame period. */
-    reset();sim_period_us=3000000;o.fps_index=4;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    reset();sim_period_us=3000000;o.fps_index=2;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("slow: %s\n",status);assert(!unsafe && strstr(status,"saved"));sim_period_us=333333;
+    /* Continuous composite: every completed frame merged, limit, CSV, DNG. */
+    reset();sim_period_us=4000000;o.fps_index=0;o.continuous=1;o.limit=6;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("cont: %s frames=%d\n",status,slurp_frames);
+    assert(!unsafe && strstr(status,"saved") && csv_written && zoom==1 && unpatched==4 && slurp_frames>=6);
+    /* Merge overrun (next readout already writing): stop, keep the composite. */
+    reset();overrun_sim=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("overrun: %s\n",status);
+    assert(!unsafe && strstr(status,"saved") && zoom==1);
+    o.continuous=0;sim_period_us=333333;
     printf("sim ok\n");return 0;
 }
 '''
@@ -282,7 +299,7 @@ def main():
         run(REGS_TEST, 'regs', tmp)
         (tmp / 'stub.h').write_text(STUB)
         for h in ('dryos.h', 'module.h', 'lens.h', 'raw.h', 'mem.h', 'patch.h', 'edmac.h', 'fps.h',
-                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h'):
+                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h'):
             (tmp / h).write_text('#include "stub.h"\n')
         src = (MOD / 'fullres-lv.c').read_text()
         # 32-bit Canon pointers: on the 64-bit host keep addresses as uintptr_t.

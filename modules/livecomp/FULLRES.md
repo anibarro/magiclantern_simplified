@@ -366,3 +366,36 @@ uncompleted DMA (quarantine). It proves nothing about the hardware.
 buffer + accumulator, merging in the idle part of each frame period (overrun
 detection, never silent skips), an LCD preview downscaled from the
 accumulator, and a faster packed-RAW14 maximum.
+
+## LCM15/16 camera results
+
+LCM15 (LVFR0000-0003) and LCM16 (LVFR0004-0007): full-sensor readout works at
+3, 1, 0.5 (timer B 0xB41B) and 0.33 fps (timer A x3); 5280x3506 raster,
+5208x3478 active (left 72, top 28), RGGB, black 2047. The DMA trace shows the
+readout (~150 ms x A/0x56B) happens at the END of each frame period and ends
+just before the next vsync, so a slurp armed at a vsync completes at the next
+one and the buffer is free for period - readout. Vsync jitter < 0.1 ms.
+Full-res max merge: 2.2-2.5 s per frame (compute-bound; sparse store saves
+little). memcpy 0.47 s. Earlier 0.5 fps failure: my 6 s timeout, not the
+camera. Evidence: tests/livecomp/LCM15-camera, LCM16-camera.
+
+## LCM17: continuous full-res composite (Task: Full-res composite)
+
+Same entry/exit as the gate. One capture buffer + one accumulator. The slurp
+is re-armed in the same vsync that completes a frame; the worker then has
+period - readout to read the frame (first frame: memcpy; then exact max).
+After each merge it checks that the next frame's DMA has not started writing
+(pointer offset 0) and that no completion was missed; otherwise it stops and
+saves ("merge too slow"), never skipping an exposure silently. Default 0.25 fps
+(timer A x3, B 30739): 4 s frames, ~3.55 s window vs ~2.4 s merge.
+
+LCD: x5 has no display filter (zebras/filters are off in zoom without core
+LV RAW), so the module writes a 720x480 UYVY monitor render of the
+accumulator (nearest RGGB quad, fixed gains, 1/2.2 LUT) into Canon's three
+LV YUV buffers right after each vsync and after each merge. Canon's own
+(garbage) frame can flash briefly. Per-frame CSV: merge time, changed blocks,
+DMA offset after merge.
+
+Next: faster merge (word-level SWAR prototype exists but gave only ~15% fewer
+instructions; needs a better formulation or assembly) to allow 0.5 fps,
+focus-pixel removal, white balance in DNG, JPEG output.
