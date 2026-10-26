@@ -1038,3 +1038,28 @@ be reproduced or suspended without PauseLiveView. Pausing per merge costs
 ~0.2 + 0.7 s plus re-entering full-res mode - more exposure lost than the
 CPU merge, which overlaps the next exposure with no gap. The CPU path is
 the product; the engine code stays in the tree, unused, documented.
+
+## LCM41: product trim
+
+With the engine ruled out, the runtime keeps only the CPU path. Removed
+from the module: native-max.c/.h, resource-snapshot.h, fullres-check.c/.h,
+fullres-layout.h, fullres-hw.h, lv-pause-regs.h, the "Full-res check" task,
+the "HW diagnostic" menu entry and every engine/diagnostic LOG section.
+The buffers no longer reserve the engine's 4 halo rows. Task menu: Live
+composite / Full-res composite / Full-res readout. The engine experiments
+(job wrapper, router, borrow, reverse tests, registry walks) remain in the
+repository history up to commit 4af64e29f, and the evidence logs stay in
+tests/livecomp/.
+
+Product summary (EOS M 2.0.2):
+- Full-sensor x5 mode from crop_rec's CROP_Full_Res values, applied through
+  CMOS/ADTG/ENGIO/EngDrvOut hooks that are inert outside x5.
+- Slow frame timers (fullres-regs.h); default 0.4 fps (2.5 s sub-exposures).
+- Own RAW slurp on EDMAC 0x12 into a guarded 32 MB capture buffer, re-armed
+  from the worker after every frame.
+- Exact select-max merge (raw14-max.h, lc_raw14_max_sel) in 8 bands,
+  1.5-1.9 s per frame, overlapping the next exposure.
+- 360x240 accumulator preview copied over Canon's 3 LV YUV buffers; quarter
+  strips when a full preview does not fit before the next frame.
+- Missed frames counted (stop only past 2 + limit/4); partial frames merged.
+- PDAF pixel fix, WB neutral from Canon's setting, DNG + LOG + CSV.

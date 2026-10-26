@@ -2,10 +2,11 @@
 
 ## Scope and module conventions
 
-LCM13 preserves continuous Live View RAW maximum blending, LCD preview, DNG output,
-ON/OFF settings, short/long SET start/stop and reusable sessions. EOS M firmware 2.0.2
-is the only supported camera. This is an experimental module, not full-sensor
-capture or a guarantee of zero sensor dead time.
+The module provides continuous Live View RAW maximum blending (Task: Live
+composite) and a full-sensor composite (Task: Full-res composite, LCM17-LCM41,
+see FULLRES.md), with LCD preview, DNG output, ON/OFF settings, short/long SET
+start/stop and reusable sessions. EOS M firmware 2.0.2 is the only supported
+camera. This is an experimental module, not a guarantee of zero sensor dead time.
 
 The implementation follows the module boundaries described in
 [the maintainer's guidance](https://www.magiclantern.fm/forum/index.php?topic=27459.msg248987#msg248987):
@@ -19,9 +20,9 @@ The implementation follows the module boundaries described in
    combined Q/SET, absent from this core's portable translation table. It accesses
    only the shared `struct event`, with the event number selected at runtime.
 4. RAW, FPS, display and allocation services are runtime-resolved core exports.
-   No patched core or dependent modules are required. Ordinary capture uses no ROM
-   hooks. The explicit Full-res check temporarily hooks the fingerprinted native
-   engine correction-table setup; see FULLRES.md.
+   No patched core or dependent modules are required. Live composite uses no ROM
+   hooks. Full-res tasks temporarily hook four fingerprinted sensor-configuration
+   functions (CMOS, ADTG, ENGIO lists, EngDrvOut), inert outside x5; see FULLRES.md.
 5. Shared structure sizes and every accessed member offset are compared between
    the generic module and the EOS M core by the ARM ABI test. Do not enable another
    camera merely by changing the initialization guard: validate its DMA, cache,
@@ -75,12 +76,13 @@ LCM5 passed a 53-input camera session at 3 fps with 15 preview updates and a com
 DNG. LCM6 was reported to require a long SET press. LCM7 added repeat-session
 cleanup. LCM8 changes integration/portability, retaining that capture pipeline.
 LCM8 subsequently captured 76/76 inputs on camera with seven LCD updates and a
-complete DNG. Repeat-session reliability still needs confirmation. LCM9 adds
-the explicit full-resolution feasibility check documented in FULLRES.md.
+complete DNG. The full-resolution work (LCM9-LCM41) is documented in FULLRES.md:
+the full-res composite ran on camera at 0.25, 0.4 and 0.5 fps; Canon's hardware
+max engine was investigated and found unusable while Live View runs, so the
+merge is done on the CPU and the engine code was removed in LCM41.
 
-The frame limit remains 30/60/120; full-sensor capture, exact DNG white balance,
-production JPEG and longer runs remain future work. DNG metadata currently uses
-fixed daylight neutral values.
+The frame limit remains 30/60/120. The Live composite DNG uses fixed daylight
+neutral values; the full-res DNG follows Canon's WB setting.
 
 Local builds, camera images/logs, research copies and obsolete factory experiments
 are ignored. Keep only maintained implementation, executable checks and these
@@ -89,7 +91,8 @@ usage/development instructions in version control.
 ## Provenance and contribution status
 
 This implementation and its checks contain substantial code generated and guided
-by OpenAI Codex. They developed from the user's earlier Live Composite experiments
+by OpenAI Codex (Live composite, LCM1-LCM14) and Anthropic Claude (full-res
+readout and composite, LCM15-LCM41). They developed from the user's earlier Live Composite experiments
 and the ML RAW/silent/mlv_lite APIs. The factory capture/JPEG implementation is not linked or distributed. LCM9
 adapts its native maximum wrapper for the explicitly selected feasibility check;
 this does not require or start a factory capture. Source is marked GPL-2.0-or-later.
