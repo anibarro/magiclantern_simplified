@@ -35,7 +35,7 @@ static void lc_dng_scalar(struct lc_dng_builder *b,unsigned tag,unsigned type,ui
 }
 static int lc_dng_header(uint8_t *h,const struct lc_dng_metadata *m)
 {
-    if (!m->width || m->width>2048 || m->width%8 || !m->height || m->height>1200 ||
+    if (!m->width || m->width>5280 || m->width%8 || !m->height || m->height>3528 ||
         m->pitch!=m->width*14/8 || m->bytes!=m->pitch*m->height ||
         m->black>=m->white || m->white>16383 || !m->tvr || !m->fps ||
         m->active[0]>=m->active[2] || m->active[2]>m->height ||
@@ -46,8 +46,8 @@ static int lc_dng_header(uint8_t *h,const struct lc_dng_metadata *m)
     struct lc_dng_builder b={h,10,1024,1};
     lc_dng_scalar(&b,256,4,m->width);lc_dng_scalar(&b,257,4,m->height);
     lc_dng_scalar(&b,258,3,14);lc_dng_scalar(&b,259,3,1);lc_dng_scalar(&b,262,3,32803);
-    static const char desc[]="LCM8 LiveView per-pixel maximum";
-    static const char make[]="Canon",model[]="Canon EOS M",software[]="Magic Lantern LCM8";
+    static const char desc[]="LCM10 LiveView per-pixel maximum";
+    static const char make[]="Canon",model[]="Canon EOS M",software[]="Magic Lantern LCM10";
     lc_dng_entry(&b,270,2,sizeof(desc),desc,sizeof(desc));
     lc_dng_entry(&b,271,2,sizeof(make),make,sizeof(make));
     lc_dng_entry(&b,272,2,sizeof(model),model,sizeof(model));

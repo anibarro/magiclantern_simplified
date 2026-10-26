@@ -1,5 +1,5 @@
 MODULE_NAME = livecomp
-MODULE_OBJS = $(addprefix $(BUILD_DIR)/,livecomp.o livecomp-lv.o)
+MODULE_OBJS = $(addprefix $(BUILD_DIR)/,livecomp.o livecomp-lv.o native-max.o fullres-check.o)
 TOP_DIR = ../..
 MODULE_CFLAGS = -include livecomp-config.h
 include $(TOP_DIR)/modules/Makefile

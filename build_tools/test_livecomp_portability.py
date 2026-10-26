@@ -25,7 +25,8 @@ static const char *model="5D3",*fw="1.2.3";
 int is_camera(const char *m,const char *f) { return !strcmp(model,m) && !strcmp(fw,f); }
 #include "camera-profile.h"
 struct lc_camera_profile livecomp_camera;
-static unsigned initialized,polls,keys,shutdowns,last_key;
+static unsigned initialized,polls,keys,shutdowns,last_key,set_release_blocked;
+#define IS_FAKE(e) ((e)->arg == -123456)
 struct event { int type,param; void *obj; int arg; };
 static void *get_ml_card(void) { return 0; }
 static void livecomp_lv_poll(void *p) { (void)p;polls++; }
@@ -60,7 +61,7 @@ int main(void) {
         'raw_info':'buffer width height pitch frame_size bits_per_pixel black_level white_level active_area dng_active_area color_matrix1 calibration_illuminant1 cfa_pattern',
         'card_info':'drive_letter',
         'display_filter_buffers':'src_buf dst_buf',
-        'event':'param',
+        'event':'type param arg',
     }
     entries=[]
     for struct,fields in layouts.items():

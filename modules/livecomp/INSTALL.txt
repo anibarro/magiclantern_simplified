@@ -1,4 +1,4 @@
-Live Composite LCM8 - Canon EOS M firmware 2.0.2
+Live Composite LCM14 - Canon EOS M firmware 2.0.2
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
@@ -14,16 +14,17 @@ USE
 2. Set ML FPS override to 3 fps, Low light, and the slowest available shutter.
    Enable Global Draw. Disable other RAW recording/capture tools.
 3. Shoot > Live Composite: ON. Open its submenu for settings:
+   Task: Live composite (default) or Full-res check (development diagnostic).
    Capture limit: 30 / 60 / 120 frames (default 120).
    LCD refresh: every 1 / 2 / 4 seconds (default 1).
-4. Close the menu. Nothing starts until you hold Q/SET (about half a second) in normal Live View.
-5. Hold Q/SET again to stop and save, or wait for the frame limit.
+4. Close the menu. Nothing starts until you press and release SET in normal Live View.
+5. Press SET again to stop and save, or wait for the frame limit.
    LCD shows the growing composite. Every admitted RAW input is merged.
-   After saving completes, the module returns to Armed; hold SET to start again.
+   After saving completes, the module returns to Armed; press SET to start again.
 6. LVCPnnnn.DNG, LOG and CSV are saved at the card root. Each capture uses a new filename.
    Off returns Q/SET to its ordinary function.
 
-Normal photos do not trigger this version. The stock core suppresses short SET presses outside menus; use a long press.
+Normal photos do not trigger this version. Short SET acts on the physical release. Long SET also works; its synthetic and physical releases do not trigger a second action.
 The confirmed continuous path
 requires Movie Live View, so Q/SET is the explicit start-button fallback.
 The first streaming RAW frame is the base image; no mechanical photo is taken.
@@ -31,8 +32,26 @@ The input resolution is normal Live View (measured 1808x727, active 1736x697),
 not full sensor resolution. DNG output retains LCM5's fixed daylight metadata;
 exact white balance, longer captures and full resolution remain future work.
 
+FULL-RES CHECK (NOT A FULL-RES CAPTURE MODE)
+Set Canon image quality to RAW only (without JPEG) before restarting the camera.
+Select Task: Full-res check, then close the menu and press/release SET. Keep the camera
+in normal Movie Live View with other RAW tools off. The check reserves up to
+four large buffers and tests Canon's native maximum engine on synthetic
+5280x3508 RAW data while Live View runs. It never changes the sensor readout.
+LCM14 tests output DMA channel 3 with its own resource lock. LCM12 showed
+channel 6 being reconfigured during the test, so that route is no longer used.
+The check now requires reboot if a DMA destination changes unexpectedly. It first samples Canon resource availability and
+records picture quality. It saves LCFRnnnn.LOG, not a photograph. Hold SET to cancel between operations.
+Allow the check to finish and retain the log, including when it reports an
+unavailable engine or insufficient memory. No separate crop_rec module is needed.
+Select Task: Live composite to return to normal capture. The task selection
+resets to Live composite at boot. An uncertain engine/hook/buffer state requires
+reboot; successful completion or clean refusal permits another session.
+
 VALIDATION
-LCM5 capture, LCD and DNG passed a 53-frame camera run. LCM8 adds runtime camera selection and portable key handling while retaining reusable sessions. It passes host tests and standard-core import
-checks; repeated camera sessions still need confirmation.
+LCM8 captured and merged 76 frames on camera with LCD preview and a saved DNG.
+LCM14 adds destination ownership checks and tests a different output channel; its native engine has NOT yet
+been validated alongside Live View. Host tests cover error handling and full
+5280x3528 DNG output. Passing those tests does not prove hardware operation.
 If an error appears, retain the LOG/CSV/DNG. Reboot is required only when
 Status explicitly says capture ownership is uncertain. Safe failures allow retry.

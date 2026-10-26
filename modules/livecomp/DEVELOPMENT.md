@@ -2,8 +2,8 @@
 
 ## Scope and module conventions
 
-LCM8 preserves continuous Live View RAW maximum blending, LCD preview, DNG output,
-ON/OFF settings, long-SET start/stop and reusable sessions. EOS M firmware 2.0.2
+LCM13 preserves continuous Live View RAW maximum blending, LCD preview, DNG output,
+ON/OFF settings, short/long SET start/stop and reusable sessions. EOS M firmware 2.0.2
 is the only supported camera. This is an experimental module, not full-sensor
 capture or a guarantee of zero sensor dead time.
 
@@ -19,7 +19,9 @@ The implementation follows the module boundaries described in
    combined Q/SET, absent from this core's portable translation table. It accesses
    only the shared `struct event`, with the event number selected at runtime.
 4. RAW, FPS, display and allocation services are runtime-resolved core exports.
-   No patched core, ROM hooks or dependent modules are required.
+   No patched core or dependent modules are required. Ordinary capture uses no ROM
+   hooks. The explicit Full-res check temporarily hooks the fingerprinted native
+   engine correction-table setup; see FULLRES.md.
 5. Shared structure sizes and every accessed member offset are compared between
    the generic module and the EOS M core by the ARM ABI test. Do not enable another
    camera merely by changing the initialization guard: validate its DMA, cache,
@@ -39,9 +41,13 @@ the DNG, restores controls and retires the session. Safe completion returns to
 Armed. Uncertain DMA/display ownership retains memory and requires a reboot.
 Existing DNG, LOG or CSV names are all reserved when selecting the next filename.
 
-The standard EOS M core suppresses short SET presses outside its menu, so the
-documented control is a long press. Only the shutter UI lock is held during
-capture: other locks would suppress the core's synthesized Q/SET events.
+The standard EOS M core consumes idle physical Q/SET down before module dispatch,
+but forwards physical SET up. LCM10 handles that release through the raw callback
+before portable callbacks. A seen press (menu or synthetic long press) suppresses
+its physical release; synthetic releases do not clear that suppression. Existing
+capture gates prevent menu/playback/Off/half-shutter starts. This corrects the
+earlier claim that short SET was impossible with a standard module. Only the
+shutter UI lock is held; other locks suppress synthesized Q/SET events.
 
 ## Build and checks
 
@@ -68,8 +74,9 @@ These do not emulate camera DMA scheduling or establish hardware reliability.
 LCM5 passed a 53-input camera session at 3 fps with 15 preview updates and a complete
 DNG. LCM6 was reported to require a long SET press. LCM7 added repeat-session
 cleanup. LCM8 changes integration/portability, retaining that capture pipeline.
-Neither repeated camera sessions nor the LCM8 key adapter is claimed verified
-on hardware. Test two short sessions without rebooting and retain their output.
+LCM8 subsequently captured 76/76 inputs on camera with seven LCD updates and a
+complete DNG. Repeat-session reliability still needs confirmation. LCM9 adds
+the explicit full-resolution feasibility check documented in FULLRES.md.
 
 The frame limit remains 30/60/120; full-sensor capture, exact DNG white balance,
 production JPEG and longer runs remain future work. DNG metadata currently uses
@@ -83,8 +90,9 @@ usage/development instructions in version control.
 
 This implementation and its checks contain substantial code generated and guided
 by OpenAI Codex. They developed from the user's earlier Live Composite experiments
-and the ML RAW/silent/mlv_lite APIs. The retired factory implementation is not linked
-or distributed as part of this module. Source is marked GPL-2.0-or-later.
+and the ML RAW/silent/mlv_lite APIs. The factory capture/JPEG implementation is not linked or distributed. LCM9
+adapts its native maximum wrapper for the explicitly selected feasibility check;
+this does not require or start a factory capture. Source is marked GPL-2.0-or-later.
 
 The repository's `LLM_POLICY.md` excludes substantial directly generated code from
 upstream contributions. This local commit is not a claim of upstream eligibility

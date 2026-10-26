@@ -24,7 +24,7 @@ def tags(data, offset):
     return result
 
 
-def main():
+def main(width=1808,height=727):
     source = r'''
 #include <assert.h>
 #include <stdio.h>
@@ -65,10 +65,10 @@ struct lv_session {
     source += function(camera, 'save_write_all(')+function(camera, 'save_lv_dng(')
     source += r'''
 int main(int argc,char **argv) {
-    assert(argc==3);
-    struct lv_session s={0};s.info.width=1808;s.info.height=727;s.info.pitch=3164;
-    s.bytes=2300228;s.info.black_level=2048;s.info.white_level=15000;s.info.cfa_pattern=0x02010100;
-    int area[]={28,72,725,1808};memcpy(s.info.dng_active_area,area,sizeof(area));
+    assert(argc==5);
+    struct lv_session s={0};s.info.width=atoi(argv[3]);s.info.height=atoi(argv[4]);s.info.pitch=s.info.width*14/8;
+    s.bytes=s.info.pitch*s.info.height;s.info.black_level=2048;s.info.white_level=15000;s.info.cfa_pattern=0x02010100;
+    int area[]={28,72,s.info.height-2,s.info.width};memcpy(s.info.dng_active_area,area,sizeof(area));
     for (unsigned i=0;i<9;i++) { s.info.color_matrix1[2*i]=(i%4==0)?10000:0;s.info.color_matrix1[2*i+1]=10000; }
     s.info.calibration_illuminant1=21;s.frame_iso=72;s.tvr=3030;s.fps=3000;s.card=&card;
     s.accumulator=malloc(s.bytes);uint8_t *original=malloc(s.bytes);assert(s.accumulator && original);
@@ -96,14 +96,14 @@ int main(int argc,char **argv) {
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         # Independent bit-stream packing, at the camera's exact odd-height geometry.
-        pixels = 1808*727
+        pixels = width*height
         packed = b''.join(pack([((i+j)*37+13)%16384 for j in range(8)])
                           for i in range(0, pixels, 8))
         (base/'input.raw').write_bytes(packed)
         (base/'check.c').write_text(source)
         subprocess.run([os.environ.get('CC', 'cc'), '-std=c99', '-O2', '-Wall', '-Wextra', '-Werror',
                         '-I'+str(ROOT/'modules/livecomp'), str(base/'check.c'), '-o', str(base/'check')], check=True)
-        subprocess.run([str(base/'check'), str(base/'input.raw'), str(base)], check=True)
+        subprocess.run([str(base/'check'), str(base/'input.raw'), str(base), str(width), str(height)], check=True)
         data = (base/'normal.DNG').read_bytes()
         assert data == (base/'partial.DNG').read_bytes()
         assert data[:8] == b'II*\0\x08\0\0\0'
@@ -112,11 +112,11 @@ int main(int argc,char **argv) {
             kind, n, raw = main_tags[tag]
             assert n == 1
             return struct.unpack('<H' if kind == 3 else '<I', raw)[0]
-        assert scalar(256) == 1808 and scalar(257) == 727 and scalar(258) == 14
+        assert scalar(256) == width and scalar(257) == height and scalar(258) == 14
         assert scalar(259) == 1 and scalar(262) == 32803
         assert main_tags[33422][2] == bytes([0,1,1,2])
-        assert struct.unpack('<4I', main_tags[50829][2]) == (28,72,725,1808)
-        assert struct.unpack('<2I', main_tags[50720][2]) == (1736,697)
+        assert struct.unpack('<4I', main_tags[50829][2]) == (28,72,height-2,width)
+        assert struct.unpack('<2I', main_tags[50720][2]) == (width-72,height-30)
         exif = tags(data, scalar(34665))
         assert struct.unpack('<2I', exif[33434][2]) == (1000,3030)
         offset, size = scalar(273), scalar(279)
@@ -131,3 +131,4 @@ int main(int argc,char **argv) {
 
 if __name__ == '__main__':
     main()
+    main(5280,3528)

@@ -1,4 +1,4 @@
-/* GPL-2.0-or-later. LCM8 continuous LiveView RAW module, AI-assisted.
+/* GPL-2.0-or-later. LCM10 continuous LiveView RAW module, AI-assisted.
  * Uses the repository's silent/mlv_lite capture API. No sensor register patch,
  * factory job, native max engine or native JPEG decoder is used in this mode.
  * See LV_CAMERA_TEST.md: consecutive buffers do not prove zero sensor dead time.
@@ -23,6 +23,7 @@
 #include "config.h"
 #include "lv-ring.h"
 #include "raw14-max.h"
+#include "fullres-check.h"
 
 extern uint32_t raw_write_chan;
 extern int raw_lv_is_enabled(void);
@@ -74,6 +75,8 @@ static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
 static CONFIG_INT("livecomp.limit",frame_limit,2);
 static CONFIG_INT("livecomp.preview",preview_interval,0);
+/* Diagnostic selection is deliberately not persisted across boots. */
+static int fullres_check;
 static unsigned trigger_ms;
 static const unsigned frame_limits[]={30,60,120};
 static const unsigned preview_intervals[]={1000,2000,4000};
@@ -271,6 +274,7 @@ static unsigned capture_vsync(unsigned unused)
  * Cleanup disables admission, then waits for this reference before freeing. */
 unsigned livecomp_lv_vsync(unsigned context)
 {
+    livecomp_fullres_vsync();
     unsigned irq=cli();
     if (!armed || !session) { sei(irq);return CBR_RET_CONTINUE; }
     capture_reading++;
@@ -458,6 +462,13 @@ static void finish_session(struct lv_session *s)
 static void run(void *unused)
 {
     (void)unused;
+    if (fullres_check) {
+        unsigned unsafe=livecomp_fullres_check(get_ml_card(),&stop_requested,&status);
+        NotifyBox(5000,"%s",status);
+        if (unsafe) { requested=0;attempted=1;running=0; }
+        else finish_session(NULL);
+        return;
+    }
     unsigned raw_requested=0,power=0,locked=0,old_lock=0;
     struct lv_session *s=malloc(sizeof(*s));
     if (!s) { status="No session memory; retry";goto finished; }
@@ -603,7 +614,7 @@ cleanup:
     if (s->quarantined) status="LV capture uncertain; keep logs and reboot";
     else if (s->settings_failure.phase) status="LV settings changed; see LOG and retry";
     else if (s->error&E_QUEUE) status=s->saved ? "CPU fell behind; partial DNG saved":"CPU fell behind; save failed";
-    else if (!s->error) status=s->saved ? "Composite saved; hold SET for next capture":"No frames captured; hold SET to retry";
+    else if (!s->error) status=s->saved ? "Composite saved; press SET for next capture":"No frames captured; press SET to retry";
     else if (!(s->error&E_SETTINGS)) status="LV capture error; keep logs and retry";
     evidence(s);
     if (!s->quarantined && (s->error&E_IO)) status=s->saved ? "DNG saved; evidence incomplete":"Save or evidence failed; check card";
@@ -619,10 +630,10 @@ static MENU_SELECT_FUNC(toggle_enabled)
 }
 static MENU_UPDATE_FUNC(update_lv)
 {
-    MENU_SET_HELP("%s",running ? "Hold SET to stop and save the DNG.":
+    MENU_SET_HELP("%s",running ? "Press SET to stop and save the DNG.":
         attempted ? "Capture ownership uncertain. Reboot required.":
-        enabled ? "Armed. Close menu, then hold SET in Movie Live View.":
-        "Enable, close menu, then hold SET to start. Normal photos do not start capture.");
+        enabled ? "Armed. Close menu, then press SET in Movie Live View.":
+        "Enable, close menu, then press SET to start. Normal photos do not start capture.");
 }
 static MENU_UPDATE_FUNC(update_status)
 {
@@ -634,6 +645,9 @@ static struct menu_entry lv_menu[]={
      .help="Continuous light painting with LCD composite and DNG output.",
      .submenu_width=700,
      .children=(struct menu_entry[]) {
+        {.name="Task",.priv=&fullres_check,.max=1,
+         .choices=CHOICES("Live composite","Full-res check"),
+         .help="Full-res check tests native blending and memory; saves a log, not a photo."},
         {.name="Capture limit",.priv=&frame_limit,.max=2,
          .choices=CHOICES("30 frames","60 frames","120 frames"),
          .help="Stop and save automatically at this limit. Q/SET stops earlier."},
@@ -641,7 +655,7 @@ static struct menu_entry lv_menu[]={
          .choices=CHOICES("Every second","Every 2 seconds","Every 4 seconds"),
          .help="Every RAW frame is merged. First and final composites are displayed."},
         {.name="Status",.update=update_status,
-         .help="Hold SET to start/stop. After saving, hold SET for another capture."},
+         .help="Press SET to start/stop. After saving, press SET for another capture."},
         {.name="Exposure setup",
          .help="Movie M, manual ISO/WB, normal view. FPS override: 3 fps, Low light; slowest shutter."},
         {.name="Output",
