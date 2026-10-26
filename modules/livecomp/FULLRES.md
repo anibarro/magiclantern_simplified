@@ -538,3 +538,28 @@ missing output in both LCM13 and LCM22.
   Live View (LCM21/22 activity map).
 - If the HW test does leave DMA uncertain, the accumulator (never an engine
   target) is still saved; only the buffers stay pinned until reboot.
+
+## LCM23 camera result (LVFR0006-0009)
+
+0006/0007: x5 zoom did not engage (24 fps vsync, PathDriveMode 1,4,6: camera
+not in the expected photo LV mode); nothing hooked, nothing unsafe.
+0008 (9 frames) and 0009 (8 frames): composites saved, focus pixels fixed.
+HW test on frame 3, channel 3, identical in both runs:
+
+- Write sources after setup: 0:2e 1:1b 2:4 **3:1** 5:2 6:12 0x10:28 0x11:f
+  0x20:10 0x21:27 (all other channels 0). Idle window identical except ch3=0.
+  **No other channel listens on source 1** - the competing-listener
+  hypothesis is ruled out; nothing was diverted.
+- Inputs 40/41 completed, output channel 3 armed on source 1 at its own
+  address, 0 bytes written in 600 ms (reason 32 = WAIT).
+- Stuck-output abort worked: aborted=1, channel idle, context restored,
+  session continued safely (safe=1) and saved.
+- Partial frame (EDMAC abort, 55,440 bytes) again once per session (frame 8
+  in 0008, frame 5 in 0009), unrelated to the HW test timing.
+- CPU merge 2.1-2.5 s per frame almost independent of the changed fraction
+  (0-78 %): the cost is unpack/pack and memory traffic, not the writes.
+
+Conclusion: in this Live View state the engine consumes both inputs but emits
+nothing on source 1, whatever the output channel and with no competing
+listener. Native-engine attempts LCM9-LCM13 and LCM21-LCM23 produced no
+verified output.
