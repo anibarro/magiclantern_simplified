@@ -938,3 +938,34 @@ which is not visible in or controllable through the register shadow.
 Pausing Live View costs 0.2 + 0.7 s plus re-entering full-res mode per
 merge, i.e. ~1.5 s or more without exposure per frame. The CPU merge
 already fits inside the frame period with no exposure gap at 0.4-0.5 fps.
+
+## ROM study (LCM37-38, offline, ROM1 dump from the camera)
+
+- Live View x5 runs several Canon "paths" (debug strings `[PATH] LVx5_*`):
+  VramPath (display image; `(LVx5)VRAM[W]` - its buffers are Live View's
+  channel-5 addresses 0x0D119C00/0x0D116000), YuvPath, FencingPath, and
+  MEM1 (Canon's LV RAW dump: FF500180-FF5003A0 ConnectWriteEDmac(0x12, 0),
+  SetEDmac(0x12, ..., 0x20000000), StartEDmac(0x12, 2) - the same channel
+  and source ML's raw slurp uses). Per-frame statistics paths: HistLCG,
+  Flicker, ObInteg, WbInteg (AE/WB), Af, and RamClear (run by the Evf VD
+  handler around frame 4 - "evVdInterrupt LastRamClear Start", a likely
+  cause of the recurring 5th-frame abort of channel 0x12).
+- Every ConnectWriteEDmac call site in ROM decoded (channel, source):
+  **only the engine setup (FF42A04C) ever uses source 1.** Live View paths:
+  ch1 <- 27, ch2 <- 4, ch16 <- 40, ch0x12 <- 0 (per mode). No Live View
+  path competes for the engine output.
+- Resource locks enable per-type power modules (FF2C5AC0/FF2C4BF4).
+- The crash handler: Evf VD interrupt 0x6A posts EV_VD_INTERRUPT_EVF
+  (EvfState.c:504) - Live View's per-frame state machine.
+
+Working hypothesis: the engine's output stage is paced by the sensor timing
+generator (0xC0F06004 = 1 in Live View, 0 paused), the only differing
+register group never restored in the reverse tests. Fits LCM13 (trickle at
+3 fps), the idle-window zero output at 0.25 fps, and paused exactness.
+
+## LCM38: timing-generator reverse test (paused)
+
+After the exact paused reference: give 0xC0F06004/0xC0F07000 (enable bits)
+their Live View value, run the job, restore (where 16); if still exact,
+give every differing 0xC0F06/07xxx register its Live View value (where 15).
+A broken job confirms the timing generator as the gate.

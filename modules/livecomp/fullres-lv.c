@@ -223,6 +223,15 @@ static const unsigned pause_group_n[3]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC};
  * interrupt 0x6A at the next mode change); LCM36: display off gave no
  * output either. */
 #define FRLV_DISPLAY_TEST 0
+/* LCM38 timing-generator reverse test (paused only). ROM: no Live View path
+ * connects a write channel to source 1 (only the engine setup FF42A04C),
+ * Live View's register state does not break the paused engine (LCM35), but
+ * the sensor timing registers (0xC0F06xxx/07xxx) were never restored in the
+ * reverse tests. Hypothesis: with the timing generator running the engine's
+ * output stage advances only on its frame pulses (LCM13: 422 KB trickled
+ * out at 3 fps; idle window at 0.25 fps: 0 bytes). where 16 = enable bits
+ * only (0xC0F06004, 0xC0F07000), 15 = every differing 0xC0F06/07 register. */
+static unsigned tg_written[2];
 /* LCM36: LCM35 showed the whole register state of Live View does not stop
  * the paused engine (all 189 values at once: exact). What runs only in
  * Live View is its activity, the obvious part being the LCD refresh. Turn
@@ -446,8 +455,8 @@ static void write_log(const struct frlv_result *r,const char *status)
             q->flags,q->conn,q->abort_wait_us,q->restored,q->after_state,q->after_addr,pause_write_err[k],pause_bad[k]);
         ok&=write_text(f,t,n);
     }
-    n=snprintf(t,sizeof(t),"Display_off_after_frame3_ms_try_frame: %d,%d (HW_tries where 5)\npause_ms=%d resume_ms=%d\n",
-        disp_off_ms,disp_try_frame,pause_ms,resume_ms);
+    n=snprintf(t,sizeof(t),"TG_reverse_test (HW_tries where 16 = enable bits, 15 = all 0xC0F06/07): written %d,%d\npause_ms=%d resume_ms=%d\n",
+        tg_written[0],tg_written[1],pause_ms,resume_ms);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Job_config_list (%d pairs, reg=val):",job_pairs);
     for (unsigned k=0;k<job_pairs;k++) {
@@ -857,6 +866,23 @@ static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,u
          * put the paused values back. A group that breaks the job is what
          * blocks the engine in Live View. where 10/11/12 = A/B/C. */
         const unsigned ref_ok=ntries>before && !tries[before].reason && !tries[before].mismatch_words;
+        for (unsigned v=0;v<2 && ref_ok && snap_lv_ok && !unsafe;v++) {
+            static uint32_t tg_reg[64],tg_keep[64];
+            unsigned nt=0;
+            for (unsigned k=0;k<diff_n && nt<64;k++) {
+                const uint32_t reg=diff_reg[k],pg=(reg>>12)&0xFFFu;
+                if (pg!=0xF06u && pg!=0xF07u) continue;
+                if (v==0 && reg!=0xC0F06004u && reg!=0xC0F07000u) continue;
+                tg_reg[nt]=reg;tg_keep[nt]=shamem_read(reg);
+                ((void (*)(uint32_t,uint32_t))0xff2c1694)(reg,diff_lv[k]);nt++;
+            }
+            tg_written[v]=nt;
+            static struct frlv_hw tgh;
+            unsafe=hw_test(&tgh,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,16-v);
+            for (unsigned k=nt;k-->0;) ((void (*)(uint32_t,uint32_t))0xff2c1694)(tg_reg[k],tg_keep[k]);
+            const struct frlv_try *q=&tries[ntries ? ntries-1:0];
+            if (q->reason || q->mismatch_words) break;   /* broke it: no need for the wider set */
+        }
         for (unsigned g=3;g<5 && ref_ok && snap_lv_ok && !unsafe && FRLV_LV_STEPS;g++) {
             static uint32_t keep[LC_PAUSE_ABC],keep05[64],reg05[64];
             const unsigned lo=group_lo[g<4 ? g:3],hi=group_hi[g<4 ? g:3];
@@ -897,7 +923,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));
     snap_lv_ok=snap_paused_ok=job_pairs=0;
-    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
+    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;tg_written[0]=tg_written[1]=0;memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
     unsigned lv_tries=0,lv_step=0,lv_done=0;disp_off_ms=disp_try_frame=0;
     if (hw_enable) {
         if (!snap_lv) snap_lv=malloc(FRLV_SHADOW_WORDS*4);
