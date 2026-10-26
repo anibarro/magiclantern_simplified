@@ -79,7 +79,7 @@ static CONFIG_INT("livecomp.preview",preview_interval,0);
 /* Task selection is deliberately not persisted across boots:
  * 0=Live composite, 1=Full-res check (native engine), 2=Full-res readout. */
 static int fullres_check;
-static int frlv_fps,frlv_expo,frlv_inputs=1,frlv_keep_fp,frlv_no_hw;
+static int frlv_fps,frlv_expo,frlv_inputs=1,frlv_keep_fp,frlv_hw;
 static const unsigned frlv_input_counts[]={1,4,8};
 static unsigned trigger_ms;
 static const unsigned frame_limits[]={30,60,120};
@@ -470,7 +470,7 @@ static void run(void *unused)
     if (fullres_check>=2) {
         struct lc_frlv_options o={(unsigned)frlv_fps,(unsigned)frlv_expo,
             frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1],
-            fullres_check==3,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2],!frlv_keep_fp,!frlv_no_hw};
+            fullres_check==3,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2],!frlv_keep_fp,(unsigned)frlv_hw};
         unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
         NotifyBox(5000,"%s",status);
         if (unsafe) { requested=0;attempted=1;running=0; }
@@ -664,20 +664,20 @@ static struct menu_entry lv_menu[]={
          .choices=CHOICES("Live composite","Full-res check","Full-res readout","Full-res composite"),
          .help="Full-res composite: 5208x3478 light painting at slow FPS (LVFR DNG).",
          .help2="Readout: test capture. Check: old native-engine diagnostic."},
-        {.name="Full-res FPS",.priv=&frlv_fps,.max=6,
-         .choices=CHOICES("0.25 fps (4 s)","0.2 fps (5 s)","0.33 fps (3 s)","0.5 fps (2 s)","1 fps","3 fps","0.5 fps (A)"),
+        {.name="Full-res FPS",.priv=&frlv_fps,.max=7,
+         .choices=CHOICES("0.25 fps (4 s)","0.2 fps (5 s)","0.33 fps (3 s)","0.5 fps (2 s)","1 fps","3 fps","0.5 fps (A)","0.4 fps (2.5 s)"),
          .help="Full-res frame rate = sub-exposure length at 100%.",
-         .help2="Composite needs merge (~2.4 s) < frame time - readout. 0.25 fps is safe."},
+         .help2="Merge ~1.7 s. 0.4 fps: preview each frame. 0.5 fps: fewer previews."},
         {.name="Full-res exposure",.priv=&frlv_expo,.max=3,
          .choices=CHOICES("100% of frame","50% of frame","25% of frame","12% of frame"),
          .help="Full-res readout only: shutter as a fraction of the frame period."},
         {.name="Focus pixels",.priv=&frlv_keep_fp,.max=1,
          .choices=CHOICES("Fix","Keep"),
          .help="Full-res DNG: replace the EOS M focus-pixel dot grid (Fix) or keep raw."},
-        {.name="HW merge test",.priv=&frlv_no_hw,.max=1,
-         .choices=CHOICES("On","Off"),
-         .help="Full-res composite: on frame 3, test Canon's hardware max on real data.",
-         .help2="Diagnostic only; the composite is still merged by the CPU."},
+        {.name="HW merge test",.priv=&frlv_hw,.max=1,
+         .choices=CHOICES("Off","On"),
+         .help="Diagnostic: on frame 3, try Canon's hardware max on real data.",
+         .help2="LCM20-24: no output in Live View. The composite is always CPU-merged."},
         {.name="Full-res frames",.priv=&frlv_inputs,.max=2,
          .choices=CHOICES("1 frame","4 frames","8 frames"),
          .help="Full-res readout only: frames captured and max-merged into the DNG."},

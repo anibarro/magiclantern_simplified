@@ -583,3 +583,37 @@ verified output.
   first registers - Canon's own start/stop tables and anything Live View
   writes meanwhile - to see whether Live View reprograms the engine blocks
   (0xC0F08000/060/070, 0xC0F0D000/034) during the job.
+
+## LCM24 camera result (LVFR0010 0.5 fps, LVFR0011 0.25 fps)
+
+- **0.5 fps works**: 15 frames, 0 late, 0 lost bands, DNG saved. New merge
+  1.57-1.77 s per frame (LCM23 sparse kernel: 2.1-2.5 s), first frame (copy)
+  0.55 s. At 0.25 fps 1.47-1.87 s. The last band sometimes races the next
+  readout (offset after merge up to 16.5 MB) but never loses data.
+- **No live preview at 0.5 fps**: skipped on 14/15 frames (render 263 ms +
+  copy 113 ms did not fit before the next readout), so the screen kept the
+  first render.
+- Engine (0011): ENGIO lists during the job are only Canon's own config
+  (0x55020, 43 regs), start (0x55180) and stop (0x551b0) tables. **Live View
+  writes nothing during the job.** Output channel 3 again 0 bytes. With no
+  interference and no competing listener, the engine track stops here: HW
+  test kept as an Off-by-default diagnostic.
+- Partial frame (EDMAC abort at readout start) again on the **5th frame** of
+  both sessions (0.5 fps: 10 s in; 0.25 fps: 20 s in) - tied to the frame
+  count, not time.
+- 0011 ended with FE_STALL after a long SET press (the first, short press
+  was registered but its "Stopping" message was overwritten by the frame
+  counter). Composite saved.
+
+## LCM25
+
+- Preview render rewritten: column table computed once (no division per
+  pixel), only the 4 samples of each RGGB quad extracted (bit-exact vs the
+  full unpack), one UI tick instead of eight.
+- Preview deadline is the next frame's arrival, not the readout start: it
+  reads only the accumulator, so overlapping the readout (which writes the
+  capture buffer) is safe. Estimate uses the measured render+copy time.
+- Stop feedback: Q/SET also checked during the merge; once stopping, the
+  messages say so until the DNG is saved.
+- New 0.4 fps (2.5 s, timer A 0x56B, B 57635) choice. HW merge test now
+  defaults to Off.

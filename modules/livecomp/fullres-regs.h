@@ -20,7 +20,7 @@
 #define LC_FRR_RAW_V 0xDB2u
 #define LC_FRR_TIMER_A 0x56Bu
 #define LC_FRR_CLOCK 32000000u
-#define LC_FRR_FPS_CHOICES 7u
+#define LC_FRR_FPS_CHOICES 8u
 #define LC_FRR_EXPO_CHOICES 4u
 /* Sensor timing choices (register values = timer-1). fps = 32 MHz/((A+1)(B+1)).
  * LCM16 camera evidence: 3, 1, 0.5 (B=0xB41B), 0.5 (A x2) and 0.33 (A x3)
@@ -36,6 +36,7 @@ static const struct lc_frr_timing lc_frr_timing[LC_FRR_FPS_CHOICES]={
     {0x56Bu,23053u,1000u},      /* 1 fps, tested */
     {0x56Bu,0x1E03u,3000u},     /* 3 fps, reference, tested */
     {2775u,23053u,500u},        /* 0.5 fps (A x2), tested */
+    {0x56Bu,57635u,400u},       /* 0.4 fps, 2.5 s (B), readout ~150 ms (LCM25) */
 };
 static const uint32_t lc_frr_expo_pct[LC_FRR_EXPO_CHOICES]={100u,50u,25u,12u};
 

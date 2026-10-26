@@ -87,7 +87,7 @@ static void frlv_slurp(void *dst,int pitch,int height)
 #define FRLV_CONT_MAX 999u
 #define FRLV_BANDS 8u                /* continuous merge: bands between ticks */
 #define FRLV_PREVIEW_MS 420u         /* measured render + copy, LCM23 */
-#define FRLV_MARGIN_MS 300u          /* arm delay, scheduling, late check */
+#define FRLV_MARGIN_MS 80u           /* scheduling before the next vsync */
 
 enum { FE_ROM=1,FE_STATE=2,FE_MEMORY=4,FE_HOOK=8,FE_ZOOM=16,FE_REGS=32,FE_STALL=64,
        FE_DMA=128,FE_GUARD=256,FE_SIZE=512,FE_IO=1024,FE_RESTORE=2048,FE_CANCEL=4096,
@@ -516,35 +516,52 @@ static unsigned preview_w,preview_h,preview_pitch;
 /* Render the accumulator (cached, packed RAW14) into preview_yuv. Active area
  * left 72, top 28, 5208x3478 (measured, LCM15). Nearest RGGB quad sampling,
  * fixed daylight-ish gains; this is a monitor view, not a colour render. */
-static void preview_render(const struct frlv_result *r,const uint8_t *acc)
+/* Two horizontally adjacent samples (even index i = x%8) of a packed RAW14
+ * row, straight from the 16-bit words (no full 8-sample unpack). */
+static inline __attribute__((always_inline)) void preview_pair(const uint16_t *s,unsigned i,int *p0,int *p1)
 {
-    /* 360x240 samples, each written as a 2x2 block: 4x cheaper than full
-     * 720x480 sampling (LCM17: 842 ms) and plenty for a monitor view. */
+    switch (i) {
+        case 0: *p0=s[0]>>2;*p1=((s[0]&3)<<12)|(s[1]>>4);break;
+        case 2: *p0=((s[1]&15)<<10)|(s[2]>>6);*p1=((s[2]&63)<<8)|(s[3]>>8);break;
+        case 4: *p0=((s[3]&255)<<6)|(s[4]>>10);*p1=((s[4]&1023)<<4)|(s[5]>>12);break;
+        default: *p0=((s[5]&4095)<<2)|(s[6]>>14);*p1=s[6]&16383;break;
+    }
+}
+/* LCM25: 360x240 samples, each written as a 2x2 block. Column positions are
+ * computed once (no division per pixel) and only the 4 samples of each RGGB
+ * quad are extracted. LCM24: 263 ms per render, mostly skipped at 0.5 fps. */
+static uint16_t preview_col_off[360];
+static uint8_t preview_col_i[360];
+static __attribute__((optimize("O2"))) void preview_render(const struct frlv_result *r,const uint8_t *acc)
+{
     const unsigned x0=72,y0=28,aw=r->width-x0,ah=r->height-y0;
-    const unsigned black=r->black ? r->black:2048,range=15000-black;
-    const unsigned scale=(4095u<<16)/range,sw=preview_w/2,sh=preview_h/2;
+    const int black=r->black ? (int)r->black:2048;
+    const unsigned range=15000-(unsigned)black;
+    const unsigned scale=(4095u<<16)/range,sw=MIN(preview_w/2,360u),sh=preview_h/2;
     /* white balance gains (x256) = 1/AsShotNeutral */
     const int gr=(int)(256000000u/(unsigned)MAX(r->neutral[0],100000)),gb=(int)(256000000u/(unsigned)MAX(r->neutral[2],100000));
+    for (unsigned x=0;x<sw;x++) {
+        unsigned rx=(x0+(x*aw/sw))&~1u;
+        preview_col_off[x]=(uint16_t)((rx/8)*7);preview_col_i[x]=(uint8_t)(rx%8);
+    }
     for (unsigned y=0;y<sh;y++) {
         unsigned ry=(y0+(y*ah/sh))&~1u;
-        const uint8_t *row0=acc+ry*r->pitch,*row1=row0+r->pitch;
+        const uint16_t *row0=(const uint16_t *)(const void *)(acc+ry*r->pitch),*row1=row0+r->pitch/2;
         uint32_t *out0=(uint32_t *)((uint8_t *)preview_yuv+2*y*preview_pitch);
         uint32_t *out1=(uint32_t *)((uint8_t *)out0+preview_pitch);
         for (unsigned x=0;x<sw;x++) {
-            unsigned rx=(x0+(x*aw/sw))&~1u;
-            uint16_t a[8],b[8];
-            lc_raw14_unpack((const uint16_t *)(row0+(rx/8)*14),a);
-            lc_raw14_unpack((const uint16_t *)(row1+(rx/8)*14),b);
-            unsigned i=rx%8;
-            int R=((int)a[i]-(int)black)*gr/256,G=((int)a[i+1]+(int)b[i])/2-(int)black,B=((int)b[i+1]-(int)black)*gb/256;
-            unsigned rr=MIN(4095u,(unsigned)MAX(R,0)*scale>>16),gg=MIN(4095u,(unsigned)MAX(G,0)*scale>>16),
-                     bb=MIN(4095u,(unsigned)MAX(B,0)*scale>>16);
+            const unsigned o=preview_col_off[x],i=preview_col_i[x];
+            int r0,g0,g1,b1;
+            preview_pair(row0+o,i,&r0,&g0);preview_pair(row1+o,i,&g1,&b1);
+            int R=(r0-black)*gr>>8,G=((g0+g1)>>1)-black,B=(b1-black)*gb>>8;
+            unsigned rr=R>0 ? MIN(4095u,(unsigned)R*scale>>16):0,gg=G>0 ? MIN(4095u,(unsigned)G*scale>>16):0,
+                     bb=B>0 ? MIN(4095u,(unsigned)B*scale>>16):0;
             int r8=lc_gamma_lut[rr],g8=lc_gamma_lut[gg],b8=lc_gamma_lut[bb];
             int yy=(77*r8+150*g8+29*b8)>>8,uu=(-43*r8-85*g8+128*b8)>>8,vv=(128*r8-107*g8-21*b8)>>8;
             uint32_t w=(uu&0xFF)|((yy&0xFF)<<8)|((vv&0xFF)<<16)|((unsigned)(yy&0xFF)<<24);
             out0[x]=w;out1[x]=w;
         }
-        if ((y&31)==31) msleep(10);                     /* keep the UI responsive */
+        if (y==sh/2) msleep(10);                         /* keep the UI responsive */
     }
 }
 /* Overwrite Canon's three LV YUV buffers with the last render. Canon refills
@@ -645,8 +662,6 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
 {
     preview_setup();r->preview_ok=preview_yuv!=NULL;
     const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28,max_partials=2+r->limit/4;
-    /* Readout lasts ~150 ms x (timer A / 0x56B) and ends at the next vsync. */
-    const unsigned readout_ms=150u*(cfg.timer_a+1u)/0x56Cu;
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;
@@ -719,6 +734,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             else changed+=lc_raw14_max_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             act_sample();
             msleep(10);
+            /* Acknowledge Q/SET during the ~1.7 s merge too (LCM25). */
+            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping: finishing current exposure"); }
         }
         c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/pairs):100;
         c->merge_us=(unsigned)get_us_clock()-s0;
@@ -746,18 +763,27 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             write_log(r,"hw merge tested");
             continue;                                    /* preview next frame */
         }
-        /* Preview costs ~400 ms (LCM23: render 276 + copy 112). At short
-         * periods skip it when it would push the next merge into the next
-         * readout; the composite is unaffected. */
-        if (preview_yuv && get_ms_clock()-done+FRLV_PREVIEW_MS+FRLV_MARGIN_MS>period_ms-readout_ms) r->preview_skipped++;
+        /* The preview reads only the accumulator, so it may overlap the next
+         * readout (which writes the capture buffer); it must just end before
+         * the next frame arrives, or the next merge starts late. Estimate =
+         * last measured render + copy (LCM25), FRLV_PREVIEW_MS before that. */
+        unsigned preview_est=r->preview_us ? (r->preview_us+r->preview_copy_us)/1000u+20u:FRLV_PREVIEW_MS;
+        if (preview_yuv && get_ms_clock()-done+preview_est+FRLV_MARGIN_MS>period_ms) r->preview_skipped++;
         else if (preview_yuv) {
             unsigned p0=(unsigned)get_us_clock();
             preview_render(r,acc);sync_caches();
             r->preview_us=(unsigned)get_us_clock()-p0;
             p0=(unsigned)get_us_clock();preview_show();r->preview_copy_us=(unsigned)get_us_clock()-p0;
         }
-        snprintf(line,sizeof(line),"Full-res composite: %d frames",r->merged);*msg=line;
-        NotifyBox(1500,"%s",line);
+        /* Once a stop is requested, keep saying so (LCM24 replaced the
+         * "Stopping" box with the frame count, so Q/SET looked ignored). */
+        if (!cont_arm) {
+            snprintf(line,sizeof(line),"Stopping: %d frames, last exposure...",r->merged);*msg=line;
+            NotifyBox(5000,"%s",line);
+        } else {
+            snprintf(line,sizeof(line),"Full-res composite: %d frames",r->merged);*msg=line;
+            NotifyBox(1500,"%s",line);
+        }
         if (r->merged%10==1) write_log(r,"composing");
     }
     continuous=0;cont_arm=0;
