@@ -369,15 +369,17 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
     /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    /* LCM31: frames 3 and 4 borrow channel 5 and stop/restore Live View's
-     * 9 blocks (9 writes + 9 restores each); paused job skipped here
-     * (simulated resource 5 busy); register-shadow snapshots both states. */
-    printf("hw: borrows=%d returns=%d engdrv=%d\n",sim_borrows,sim_returns,sim_engdrv);
-    assert(!unsafe && sim_hw_calls==2 && sim_hw_prepared==0 && strstr(status,"saved"));
-    assert(sim_borrows==2 && sim_returns==2 && sim_engdrv==36);
-    assert(strstr(last_log,"Reg_diff_LV_vs_paused (lv_ok 1 paused_ok 1") && strstr(last_log,"LV_blocks (reg:"));
-    assert(strstr(last_log,"T0: 2,3,5,2,") && strstr(last_log,"T1: 2,4,5,2,") && strstr(last_log,"T2: 1,6,5,2,a001,ffff,"));
-    assert(sim_pauses==1 && sim_resumes==1 && !LV_PAUSED && strstr(last_log,"HWP_lv_before_paused_after"));
+    /* LCM32: no engine job in Live View; whole register-shadow window
+     * snapshotted on frame 3 and compared after the pause. Paused job
+     * skipped here (simulated resource 5 busy). */
+    printf("hw: borrows=%d engdrv=%d\n",sim_borrows,sim_engdrv);
+    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved") && !sim_borrows && !sim_engdrv);
+    assert(strstr(last_log,"Reg_diff_LV_vs_paused (window C0F00000-C0F3FFFC; lv_ok 1 paused_ok 1"));
+    assert(strstr(last_log,"T0: 1,6,5,2,a001,ffff,"));
+    /* Resource 5 free once paused: the reference job runs once. */
+    reset();sim_hw_busy=0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && sim_hw_calls==1 && strstr(status,"saved") && strstr(last_log,"T0: 1,6,5,2,a000,"));
     /* Engine left its output channel busy (now: the paused channel-5 job,
      * resource 5 free). The accumulator (never an engine target) is saved. */
     reset();sim_hw_busy=0xA000;sim_hw_calls=0;sim_hw_unsafe=1;dng_size_ok=2048+bytes;

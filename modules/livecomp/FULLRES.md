@@ -783,3 +783,37 @@ run the full-frame job, restore Live View's 9 values (reverse order),
 return channel 5, verify byte for byte. Logged: values saved/after-restore
 per attempt and how often Live View writes each of the 9 through ENGIO
 (if it does every frame, Live View re-establishes them itself).
+
+## LCM31 camera result (LVFR0002 + CRASH00.LOG)
+
+- Frame 3: borrow refused (channel 5 not armed), as in LCM29.
+- Frame 4: channel 5 borrowed, the 9 Live View registers set to their paused
+  values, engine job run: **still 0 bytes** on channel 5; registers restored
+  (1 > 1) and channel 5 returned verified. Live View continued.
+- Live View itself writes 7 of the 9 registers through ENGIO about every
+  frame (10-15 times per session): they are per-frame settings, not the
+  blocker.
+- After the session, during the DNG save: **camera crash**, ASSERT in
+  KernelDry/KerQueue.c:555 from interrupt 0x6A (message queue overflow in
+  an ISR) - almost certainly a delayed effect of restarting Live View's
+  blocks / handing channel 5 back. Black screen, battery pull. Log stops at
+  frame 4; DNG incomplete (15 MB).
+
+**Hardware engine conclusion (LCM9-LCM31):** exact and ~116 ms per full
+frame, but only with Live View paused and output on channel 5. In Live View
+no channel receives its output - other channels, a borrowed channel 5, and
+stopping the 9 differing Live View blocks all fail. Pausing Live View per
+merge would leave seconds of gap per sub-exposure, worse than the
+overlapping CPU merge. Product path: CPU merge.
+
+## LCM32: CPU product path + read-only diagnostic
+
+- Runtime: all Live View engine experiments removed (borrow, block
+  stop/restore, attempts). The native borrow/engdrv functions stay in
+  native-max.c, unit-tested but unused.
+- "HW diagnostic" (default Off) = "Register diff": the whole ENGIO shadow
+  window (FF2C1694/FF2C1730 show it is one flat 256 KB RAM copy of
+  0xC0F00000-0xC0F3FFFF, read without touching peripherals) is copied on
+  frame 3 and compared after PauseLiveView, up to 2048 differences logged
+  (flagged if the engine's job list rewrites them), then the paused
+  channel-5 reference job runs as before (5 safe runs so far).

@@ -1,0 +1,11 @@
+ASSERT: 0
+at ./KernelDry/KerQueue.c:555, **INT-6Ah**:1edd0
+lv:1 mode:3
+
+**INT-6Ah** stack: 27bee8 [177340-176f40]
+0x000A5AA8 @ dedcc:27bee8
+
+Magic Lantern version: 2026-10-23.EOSM.202
+Git commit: 142472e95 dev
+Built on 2026-10-23 17:53:57 UTC by anibarro@VR.
+Free Memory  : 228K + 3212K
