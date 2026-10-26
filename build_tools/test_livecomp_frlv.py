@@ -371,17 +371,16 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
     /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    /* LCM36: display off after frame 3, one borrowed channel-5 job on
-     * frame 4 (simulated engine: no output), display back on; paused
-     * reference skipped (simulated resource 5 busy). */
-    printf("hw: borrows=%d returns=%d disp_off=%d disp_on=%d\n",sim_borrows,sim_returns,sim_disp_off,sim_disp_on);
-    assert(!unsafe && sim_hw_calls==1 && sim_hw_prepared==0 && strstr(status,"saved") && sim_borrows==1 && sim_returns==1);
-    assert(sim_disp_off==1 && sim_disp_on>=1 && !sim_engdrv);
-    assert(strstr(last_log,"T0: 5,4,5,2,a001,") && strstr(last_log,"T1: 1,6,5,2,a001,ffff,") && strstr(last_log,"Display_off_after_frame3_ms_try_frame: "));
-    /* Resource 5 free once paused: LV attempt + paused reference. */
+    /* LCM37: no Live View engine job, no display toggling, no borrow;
+     * whole-window diff; paused reference skipped (simulated resource 5
+     * busy). */
+    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
+    assert(!sim_borrows && !sim_returns && !sim_disp_off && !sim_engdrv);
+    assert(strstr(last_log,"T0: 1,6,5,2,a001,ffff,") && strstr(last_log,"Reg_diff_LV_vs_paused (window C0F00000-C0F3FFFC; lv_ok 1 paused_ok 1"));
+    /* Resource 5 free once paused: only the paused reference runs. */
     reset();sim_hw_busy=0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && sim_hw_calls==2 && strstr(status,"saved") && strstr(last_log,"T1: 1,6,5,2,a000,"));
+    assert(!unsafe && sim_hw_calls==1 && strstr(status,"saved") && strstr(last_log,"T0: 1,6,5,2,a000,") && !sim_borrows);
     /* Engine left its output channel busy (now: the paused channel-5 job,
      * resource 5 free). The accumulator (never an engine target) is saved. */
     reset();sim_hw_busy=0xA000;sim_hw_calls=0;sim_hw_unsafe=1;dng_size_ok=2048+bytes;

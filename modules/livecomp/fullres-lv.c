@@ -218,6 +218,11 @@ static const unsigned pause_group_n[3]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC};
  * display; step B's borrow failed on frame 5 as in LCM29). Instead the
  * reverse test runs with Live View paused: see paused_hw_test. */
 #define FRLV_LV_STEPS 0
+/* LCM37: no channel-5 borrow in any build. LCM31 and LCM36 crashed after
+ * a borrowed frame-4 job (Live View's Evf task queue overflow on its VD
+ * interrupt 0x6A at the next mode change); LCM36: display off gave no
+ * output either. */
+#define FRLV_DISPLAY_TEST 0
 /* LCM36: LCM35 showed the whole register state of Live View does not stop
  * the paused engine (all 189 values at once: exact). What runs only in
  * Live View is its activity, the obvious part being the LCD refresh. Turn
@@ -995,7 +1000,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (hw_enable && snap_lv && !snap_lv_ok && r->merged>=3) { snap_take(snap_lv);snap_lv_ok=1; }
         /* LCM33: escalating Live View attempts A, A+B, A+B+C on frames
          * where channel 5 can be borrowed; stop at the first exact one. */
-        if (hw_enable && !disp_off_ms && r->merged==3) { display_off();disp_off_ms=get_ms_clock()-done; }
+        if (FRLV_DISPLAY_TEST && hw_enable && !disp_off_ms && r->merged==3) { display_off();disp_off_ms=get_ms_clock()-done; }
         if (hw_enable && disp_off_ms && !lv_done && lv_tries<2 && (r->merged==4 || r->merged==6) && !off && !c->lost_bands &&
             get_ms_clock()-done+900<period_ms-600) {
             lv_tries++;

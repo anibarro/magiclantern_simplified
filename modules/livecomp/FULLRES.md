@@ -904,3 +904,37 @@ LCD refresh (display DMA keeps running between the slow full-res frames).
 display_off() after frame 3; on frame 4 (or 6; never 5, where borrowing
 fails) one borrowed channel-5 job with no register changes; display_on().
 Paused reference after SET as before; reverse tests off.
+
+## LCM36 camera result (LVFR0008 + CRASH01.LOG)
+
+- Display turned off after frame 3 (1.9 s after frame done); frame 4:
+  channel 5 borrowed (abort 1 us), job with no register changes: **0
+  bytes** again; channel 5 returned verified. The LCD refresh is not the
+  blocker.
+- Crash right after SET: `ASSERT !IS_ERROR(TryPostEvent(..., EV_VD_INTERRUPT_EVF))`
+  at Evf/EvfState.c:504 in interrupt 0x6A. Interrupt 0x6A is Live View's
+  per-frame VD interrupt; the Evf task's queue was full, i.e. the Evf task
+  was stuck. LCM31's crash (KerQueue.c:555, also INT-6Ah) is the same
+  event. Both sessions borrowed channel 5 on frame 4 and reached the
+  session end (mode change); LCM29/33 quarantined earlier and did not
+  crash. Borrowing channel 5 leaves Live View's internal state wrong in a
+  way none of our checks see. DNG incomplete.
+
+## LCM37
+
+All Live View engine work removed from every build: no borrow, no display
+toggling, no register writes in Live View. "HW diagnostic" keeps only the
+whole-window register snapshot and the paused channel-5 reference, both
+without incident in every run.
+
+## Hardware engine: summary (LCM9-LCM36)
+
+Works, exactly and in ~116 ms per full frame, only with Live View paused
+and output on channel 5. In Live View: no output on channels 3/4/5 (5
+borrowed), with Live View's routing cleared, its blocks stopped, or the
+display off. Live View's complete register state reproduced while paused
+does not break the engine, so the blocker is Live View's running activity,
+which is not visible in or controllable through the register shadow.
+Pausing Live View costs 0.2 + 0.7 s plus re-entering full-res mode per
+merge, i.e. ~1.5 s or more without exposure per frame. The CPU merge
+already fits inside the frame period with no exposure gap at 0.4-0.5 fps.

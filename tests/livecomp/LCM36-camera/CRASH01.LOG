@@ -1,0 +1,11 @@
+ASSERT: !IS_ERROR( TryPostEvent( this->hTaskClass, this, EV_VD_INTERRUPT_EVF, NULL, 0 ) )
+at ./Evf/EvfState.c:504, **INT-6Ah**:111d0
+lv:1 mode:3
+
+**INT-6Ah** stack: 27bfa0 [177340-176f40]
+0x000A5AA8 @ dedcc:27bfa0
+
+Magic Lantern version: 2026-10-23.EOSM.202
+Git commit: 142472e95 dev
+Built on 2026-10-23 17:53:57 UTC by anibarro@VR.
+Free Memory  : 228K + 2942K
