@@ -843,3 +843,28 @@ the full-frame job, restore Live View's values in reverse order and check
 them, return channel 5, verify. Order A, then B, then C (a refused borrow
 retries the same step); stop at the first exact result. lc_native_engdrv
 now accepts 0xC0F01000-0xC0F3FFFC except EDMAC and sensor timing pages.
+
+## LCM33 camera result (LVFR0004)
+
+- Step A (frame 4): channel 5 borrowed, the 102 routing-table registers set
+  to their paused values, job run: **0 bytes** on channel 5 again; values
+  restored exactly (0 bad), channel 5 returned verified. The user saw
+  repeating text characters at the top of the screen (display routing
+  disturbed during the step).
+- Step B (frame 5): borrow abort did not idle channel 5 (20 ms) ->
+  quarantine, composite saved. Same as LCM29's frame-5 borrow: on the
+  session's 5th frame (also the frame of the recurring partial-frame abort)
+  Live View's channel 5 does not stop.
+- ROM (FF2C5AC0 / FF2C4BF4): locking a resource enables its *type's* power
+  module (reference-counted; table at FF8FFAB8), not the individual
+  channel. Locking with resource 3 vs 5 is equivalent, so the lock set is
+  not why borrowed channel 5 fails; channel 3 failing while paused is real.
+
+## LCM34: reverse test with Live View paused
+
+No Live View steps. After PauseLiveView and an exact channel-5 reference,
+each register group gets its Live View value back (from the frame-3
+snapshot) for one job, then its paused value: where 10 = routing table (A),
+11 = start/stop flags (B), 12 = 0xC0F01xxx (C). A group that breaks the
+working paused job is what blocks the engine in Live View; if none does,
+the blocker is outside the ENGIO shadow (clock/power or other state).
