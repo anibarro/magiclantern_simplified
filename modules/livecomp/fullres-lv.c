@@ -218,8 +218,17 @@ static const unsigned pause_group_n[3]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC};
  * display; step B's borrow failed on frame 5 as in LCM29). Instead the
  * reverse test runs with Live View paused: see paused_hw_test. */
 #define FRLV_LV_STEPS 0
-static const unsigned group_lo[3]={0,LC_PAUSE_A,LC_PAUSE_AB},group_hi[3]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC};
-static unsigned group_write_err[3];
+/* LCM36: LCM35 showed the whole register state of Live View does not stop
+ * the paused engine (all 189 values at once: exact). What runs only in
+ * Live View is its activity, the obvious part being the LCD refresh. Turn
+ * the display off after frame 3, run one borrowed channel-5 job (no
+ * register changes) on frame 4 or 6 (never 5: borrow fails there), turn it
+ * back on. */
+static unsigned disp_off_ms,disp_try_frame;
+/* LCM35: 3 = A+B+C together, 4 = A+B+C plus Live View's EDMAC routing
+ * (0xC0F05xxx entries of the diff). LCM34: A, B, C alone all stayed exact. */
+static const unsigned group_lo[4]={0,LC_PAUSE_A,LC_PAUSE_AB,0},group_hi[4]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC,LC_PAUSE_ABC};
+static unsigned group_write_err[5],pause_ms,resume_ms;
 static uint32_t pause_saved[LC_PAUSE_ABC];
 static struct lc_native_borrow borrows[6];
 static unsigned nborrows,pause_bad[6],pause_write_err[6];
@@ -432,8 +441,8 @@ static void write_log(const struct frlv_result *r,const char *status)
             q->flags,q->conn,q->abort_wait_us,q->restored,q->after_state,q->after_addr,pause_write_err[k],pause_bad[k]);
         ok&=write_text(f,t,n);
     }
-    n=snprintf(t,sizeof(t),"Reverse_test_groups_A_B_C (where 10/11/12 in HW_tries) n=%d,%d,%d write_err=%d,%d,%d\n",
-        group_hi[0]-group_lo[0],group_hi[1]-group_lo[1],group_hi[2]-group_lo[2],group_write_err[0],group_write_err[1],group_write_err[2]);
+    n=snprintf(t,sizeof(t),"Display_off_after_frame3_ms_try_frame: %d,%d (HW_tries where 5)\npause_ms=%d resume_ms=%d\n",
+        disp_off_ms,disp_try_frame,pause_ms,resume_ms);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Job_config_list (%d pairs, reg=val):",job_pairs);
     for (unsigned k=0;k<job_pairs;k++) {
@@ -732,7 +741,8 @@ static uint32_t *hw_geometry;
 static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned frame,
     uint8_t *cap_storage,uint8_t *acc_storage,unsigned channel,unsigned bands,unsigned where)
 {
-    const unsigned borrow=where>=2 && where<=4,npause=borrow ? pause_group_n[where-2]:0;
+    /* where 2/3/4: borrow + register group A/AB/ABC; 5: borrow only (LCM36) */
+    const unsigned borrow=where>=2 && where<=5,npause=(where>=2 && where<=4) ? pause_group_n[where-2]:0;
     struct frlv_try scratch,*t=ntries<FRLV_TRIES ? &tries[ntries++]:&scratch;
     memset(t,0,sizeof(*t));t->where=where;t->frame=frame;t->channel=channel;t->bands=bands;t->safe=1;
     h->tried=1;h->frame=frame;h->safe=1;h->busy=t->busy=resource_busy();
@@ -821,8 +831,10 @@ static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,u
     if (h->prepare) return 0;
     NotifyBox(4000,"HW test: pausing Live View...");
     h->lv_before=lv && !LV_PAUSED;
+    unsigned p0=get_ms_clock();
     PauseLiveView();
     for (unsigned i=0;i<40 && !LV_PAUSED;i++) msleep(50);
+    pause_ms=get_ms_clock()-p0;
     msleep(500);                                     /* let the LV pipeline drain */
     h->paused=LV_PAUSED ? 1:0;
     unsigned unsafe=0;
@@ -840,20 +852,31 @@ static unsigned paused_hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,u
          * put the paused values back. A group that breaks the job is what
          * blocks the engine in Live View. where 10/11/12 = A/B/C. */
         const unsigned ref_ok=ntries>before && !tries[before].reason && !tries[before].mismatch_words;
-        for (unsigned g=0;g<3 && ref_ok && snap_lv_ok && !unsafe;g++) {
-            static uint32_t keep[LC_PAUSE_ABC];
-            for (unsigned i=group_lo[g];i<group_hi[g];i++) {
+        for (unsigned g=3;g<5 && ref_ok && snap_lv_ok && !unsafe && FRLV_LV_STEPS;g++) {
+            static uint32_t keep[LC_PAUSE_ABC],keep05[64],reg05[64];
+            const unsigned lo=group_lo[g<4 ? g:3],hi=group_hi[g<4 ? g:3];
+            unsigned n05=0;
+            for (unsigned i=lo;i<hi;i++) {
                 const uint32_t reg=lc_pause_regs[i].reg,lvv=snap_lv[(reg-0xC0F00000u)/4];
                 keep[i]=shamem_read(reg);
                 if (lc_native_engdrv(&reg,&lvv,1)) group_write_err[g]++;
             }
+            if (g==4) for (unsigned k=0;k<diff_n && n05<64;k++) if ((diff_reg[k]>>12)==0xC0F05u) {
+                /* EngDrvOut directly: lc_native_engdrv refuses EDMAC pages. */
+                reg05[n05]=diff_reg[k];keep05[n05]=shamem_read(diff_reg[k]);
+                ((void (*)(uint32_t,uint32_t))0xff2c1694)(diff_reg[k],diff_lv[k]);n05++;
+            }
             static struct frlv_hw other;
             unsafe=hw_test(&other,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,10+g);
-            for (unsigned i=group_hi[g];i-->group_lo[g];) lc_native_engdrv(&lc_pause_regs[i].reg,&keep[i],1);
+            for (unsigned k=n05;k-->0;) ((void (*)(uint32_t,uint32_t))0xff2c1694)(reg05[k],keep05[k]);
+            for (unsigned i=hi;i-->lo;) lc_native_engdrv(&lc_pause_regs[i].reg,&keep[i],1);
+            group_write_err[g]|=n05<<16;
         }
     }
+    p0=get_ms_clock();
     ResumeLiveView();
     for (unsigned i=0;i<60 && (!lv || LV_PAUSED);i++) msleep(50);
+    resume_ms=get_ms_clock()-p0;
     h->lv_after=lv && !LV_PAUSED;
     h->close=lc_native_engine_close();
     return unsafe || h->close;
@@ -869,8 +892,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));
     snap_lv_ok=snap_paused_ok=job_pairs=0;
-    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
-    unsigned lv_tries=0,lv_step=0,lv_done=0;
+    nborrows=0;memset(borrows,0,sizeof(borrows));memset(group_write_err,0,sizeof(group_write_err));pause_ms=resume_ms=0;memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
+    unsigned lv_tries=0,lv_step=0,lv_done=0;disp_off_ms=disp_try_frame=0;
     if (hw_enable) {
         if (!snap_lv) snap_lv=malloc(FRLV_SHADOW_WORDS*4);
         hw_geometry=fio_malloc(128);
@@ -972,6 +995,20 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (hw_enable && snap_lv && !snap_lv_ok && r->merged>=3) { snap_take(snap_lv);snap_lv_ok=1; }
         /* LCM33: escalating Live View attempts A, A+B, A+B+C on frames
          * where channel 5 can be borrowed; stop at the first exact one. */
+        if (hw_enable && !disp_off_ms && r->merged==3) { display_off();disp_off_ms=get_ms_clock()-done; }
+        if (hw_enable && disp_off_ms && !lv_done && lv_tries<2 && (r->merged==4 || r->merged==6) && !off && !c->lost_bands &&
+            get_ms_clock()-done+900<period_ms-600) {
+            lv_tries++;
+            unsigned before=ntries;
+            unsigned bad=hw_test(&hw,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,5);
+            if (ntries>before && !(tries[ntries-1].reason&0x10000u)) { lv_done=1;disp_try_frame=r->merged; }
+            if (lv_done || lv_tries>=2 || bad) display_on();
+            if (bad) { *hw_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break; }
+            if (lv_done && !tries[ntries-1].reason && !tries[ntries-1].mismatch_words)
+                NotifyBox(8000,"HW merge WORKS with the display off!");
+            write_log(r,"hw merge tested");
+            continue;
+        }
         if (FRLV_LV_STEPS && hw_enable && !lv_done && lv_tries<6 && r->merged>=3 && !off && !c->lost_bands &&
             get_ms_clock()-done+900<period_ms-600) {
             NotifyBox(2000,"HW merge test, step %c...",'A'+lv_step);
@@ -1023,6 +1060,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (r->merged%10==1) write_log(r,"composing");
     }
     continuous=0;cont_arm=0;
+    if (disp_off_ms) display_on();
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
     if (hw_enable) { hw.close=lc_native_engine_close();if (hw.close) *hw_uncertain=1; }
 }

@@ -868,3 +868,39 @@ snapshot) for one job, then its paused value: where 10 = routing table (A),
 11 = start/stop flags (B), 12 = 0xC0F01xxx (C). A group that breaks the
 working paused job is what blocks the engine in Live View; if none does,
 the blocker is outside the ENGIO shadow (clock/power or other state).
+
+## LCM34 camera result (LVFR0005)
+
+Paused reference exact (120 ms). Reverse test, each group alone given its
+Live View value: routing A (102) 116 ms exact, start/stop B (75) 119 ms
+exact, 0xC0F01 C (12) 115 ms exact. **No single group breaks the engine.**
+
+## LCM35
+
+Same reverse test with all groups at once (where 13 = A+B+C) and with Live
+View's EDMAC routing differences added (where 14, 0xC0F05xxx, written with
+EngDrvOut directly and restored). Also timed: PauseLiveView and
+ResumeLiveView (pause_ms, resume_ms), to size the "pause Live View per
+merge" option if the blocker is not register-visible.
+
+## LCM35 camera result (LVFR0007)
+
+Paused reference exact (118 ms). All 189 registers given their Live View
+values at once: exact (116 ms). Plus Live View's EDMAC routing: exact
+(119 ms; no 0xC0F05xxx entries actually differed). **The register state of
+Live View (everything Canon's ENGIO shadow records) does not stop the
+engine.** PauseLiveView took 202 ms, ResumeLiveView 705 ms (to Live View
+running, before full-res mode is re-entered): a pause per merge would cost
+at least ~0.9 s of no exposure per frame.
+
+(Deployment note: LCM35 first failed to reach the card because the copy
+tool reused an earlier upload of the same staged file name; each build is
+now staged under its own name and read back from the card.)
+
+## LCM36: display off
+
+What runs only while Live View is active is its activity, most visibly the
+LCD refresh (display DMA keeps running between the slow full-res frames).
+display_off() after frame 3; on frame 4 (or 6; never 5, where borrowing
+fails) one borrowed channel-5 job with no register changes; display_on().
+Paused reference after SET as before; reverse tests off.
