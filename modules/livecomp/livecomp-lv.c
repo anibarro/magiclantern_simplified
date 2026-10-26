@@ -23,7 +23,6 @@
 #include "config.h"
 #include "lv-ring.h"
 #include "raw14-max.h"
-#include "fullres-check.h"
 #include "fullres-lv.h"
 
 extern uint32_t raw_write_chan;
@@ -77,9 +76,11 @@ static CONFIG_INT("livecomp.enabled",enabled,0);
 static CONFIG_INT("livecomp.limit",frame_limit,2);
 static CONFIG_INT("livecomp.preview",preview_interval,0);
 /* Task selection is deliberately not persisted across boots:
- * 0=Live composite, 1=Full-res check (native engine), 2=Full-res readout. */
-static int fullres_check;
-static int frlv_fps=7,frlv_expo,frlv_inputs=1,frlv_keep_fp,frlv_hw;
+ * 0=Live composite (LV resolution), 1=Full-res composite, 2=Full-res readout
+ * (single full-sensor frames, the building block of the composite). */
+enum { TASK_LIVE=0,TASK_FULLRES_COMPOSITE=1,TASK_FULLRES_READOUT=2 };
+static int task;
+static int frlv_fps=7,frlv_expo,frlv_inputs=1,frlv_keep_fp;
 static const unsigned frlv_input_counts[]={1,4,8};
 static unsigned trigger_ms;
 static const unsigned frame_limits[]={30,60,120};
@@ -278,7 +279,6 @@ static unsigned capture_vsync(unsigned unused)
  * Cleanup disables admission, then waits for this reference before freeing. */
 unsigned livecomp_lv_vsync(unsigned context)
 {
-    livecomp_fullres_vsync();
     livecomp_frlv_vsync();
     unsigned irq=cli();
     if (!armed || !session) { sei(irq);return CBR_RET_CONTINUE; }
@@ -467,18 +467,11 @@ static void finish_session(struct lv_session *s)
 static void run(void *unused)
 {
     (void)unused;
-    if (fullres_check>=2) {
+    if (task==TASK_FULLRES_COMPOSITE || task==TASK_FULLRES_READOUT) {
         struct lc_frlv_options o={(unsigned)frlv_fps,(unsigned)frlv_expo,
             frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1],
-            fullres_check==3,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2],!frlv_keep_fp,(unsigned)frlv_hw};
+            task==TASK_FULLRES_COMPOSITE,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2],!frlv_keep_fp};
         unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
-        NotifyBox(5000,"%s",status);
-        if (unsafe) { requested=0;attempted=1;running=0; }
-        else finish_session(NULL);
-        return;
-    }
-    if (fullres_check) {
-        unsigned unsafe=livecomp_fullres_check(get_ml_card(),&stop_requested,&status);
         NotifyBox(5000,"%s",status);
         if (unsafe) { requested=0;attempted=1;running=0; }
         else finish_session(NULL);
@@ -660,10 +653,10 @@ static struct menu_entry lv_menu[]={
      .help="Continuous light painting with LCD composite and DNG output.",
      .submenu_width=700,
      .children=(struct menu_entry[]) {
-        {.name="Task",.priv=&fullres_check,.max=3,
-         .choices=CHOICES("Live composite","Full-res check","Full-res readout","Full-res composite"),
-         .help="Full-res composite: 5208x3478 light painting at slow FPS (LVFR DNG).",
-         .help2="Readout: test capture. Check: old native-engine diagnostic."},
+        {.name="Task",.priv=&task,.max=2,
+         .choices=CHOICES("Live composite","Full-res composite","Full-res readout"),
+         .help="Live: LV-resolution composite. Full-res: 5208x3478 composite at slow FPS.",
+         .help2="Full-res readout: single full-sensor frames (1/4/8, max-merged) to DNG."},
         {.name="Full-res FPS",.priv=&frlv_fps,.max=7,
          .choices=CHOICES("0.25 fps (4 s)","0.2 fps (5 s)","0.33 fps (3 s)","0.5 fps (2 s)","1 fps","3 fps","0.5 fps (A)","0.4 fps (2.5 s)"),
          .help="Full-res frame rate = sub-exposure length at 100%.",
@@ -674,10 +667,6 @@ static struct menu_entry lv_menu[]={
         {.name="Focus pixels",.priv=&frlv_keep_fp,.max=1,
          .choices=CHOICES("Fix","Keep"),
          .help="Full-res DNG: replace the EOS M focus-pixel dot grid (Fix) or keep raw."},
-        {.name="HW diagnostic",.priv=&frlv_hw,.max=1,
-         .choices=CHOICES("Off","Register diff"),
-         .help="Read-only: compares Canon's register copies, Live View running vs paused.",
-         .help2="After SET: LV pauses ~3 s for one engine reference merge. Composite is CPU-merged."},
         {.name="Full-res frames",.priv=&frlv_inputs,.max=2,
          .choices=CHOICES("1 frame","4 frames","8 frames"),
          .help="Full-res readout only: frames captured and max-merged into the DNG."},

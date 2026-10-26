@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host checks for the LCM15 full-sensor readout gate (not hardware evidence).
+"""Host checks for the full-sensor readout and composite (not hardware evidence).
 
 1. fullres-regs.h: reference register values, NRZI, blanking, list rewriting.
 2. fullres-lv.c compiled against stub headers and a simulated camera:
@@ -116,10 +116,9 @@ int patch_hook_function(uintptr_t addr,uint32_t orig,patch_hook_function_cbr cb,
 int unpatch_memory(uintptr_t addr); void set_lv_zoom(int z);
 uint32_t shamem_read(uint32_t a); void EngDrvOut(uint32_t r,uint32_t v); void EngDrvOutLV(uint32_t r,uint32_t v);
 int edmac_get_state(uint32_t ch); uint32_t edmac_get_pointer(uint32_t ch);
-uint32_t edmac_get_address(uint32_t ch); uint32_t edmac_get_length(uint32_t ch); uint32_t edmac_get_flags(uint32_t ch); uint32_t edmac_get_connection(uint32_t ch,uint32_t dir);
+uint32_t edmac_get_address(uint32_t ch);
 struct edmac_info { unsigned off1a,off1b,off2a,off2b,off3,xa,xb,ya,yb,xn,yn; };
 #define EDMAC_2_BYTES_PER_TRANSFER 0x20000000
-#define EDMAC_DIR_WRITE 1
 void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx);
 void RegisterEDmacAbortCBR(int ch,void (*cbr)(void*),void *ctx);
 void RegisterEDmacPopCBR(int ch,void (*cbr)(void*),void *ctx);
@@ -131,7 +130,6 @@ struct vram_info *get_yuv422_vram(void);
 void NotifyBox(int ms,const char *fmt,...);
 int raw_lv_is_enabled(void); int fps_get_current_x1000(void); struct card_info *get_ml_card(void);
 void powersave_prohibit(void); void powersave_permit(void); void gui_uilock(int l);
-void PauseLiveView(void); int ResumeLiveView(void); void display_off(void); void display_on(void);
 int raw2iso(int r);
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
@@ -184,38 +182,7 @@ uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; if (!slurp_dst) return 0;
     return (uint32_t)(uintptr_t)slurp_dst+(slurp_armed ? (overrun_sim ? 9240u:0u):last_written); }
 static struct vram_info vram={0,720,1440,480};
 void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
-/* Canon engine stubs: registry busy or free, engine refuses (no DMA). */
-#include "native-max.h"
-#include "lv-pause-regs.h"
-static int sim_hw_busy=1,sim_hw_calls,sim_hw_prepared,sim_hw_unsafe,sim_hw_divert;
-void lc_native_set_divert(unsigned on){ sim_hw_divert=on; }
-int lc_native_resources(struct lc_resource_snapshot *s){ memset(s,0,sizeof(*s)); s->count=10; s->busy=sim_hw_busy; return 1; }
-unsigned lc_native_engine_prepare(uint32_t *g){ (void)g; sim_hw_prepared++; return 0; }
-unsigned lc_native_engine_close(void){ if (sim_hw_unsafe && sim_hw_calls) return LC_NATIVE_BUSY; sim_hw_prepared--; return 0; }
-void lc_native_set_wait_ms(unsigned ms){ (void)ms; }
 uint32_t edmac_get_address(uint32_t ch){ (void)ch; return 0; }
-uint32_t edmac_get_length(uint32_t ch){ (void)ch; return 0; }
-uint32_t edmac_get_flags(uint32_t ch){ (void)ch; return 0; }
-uint32_t edmac_get_connection(uint32_t ch,uint32_t dir){ (void)ch;(void)dir; return 0; }
-static int sim_borrows,sim_returns;
-static int sim_engdrv;
-unsigned lc_native_engdrv(const uint32_t *r,const uint32_t *v,unsigned n){ (void)r;(void)v; sim_engdrv+=n; return 0; }
-unsigned lc_native_resource_list(uint32_t *ids,uint32_t *st,unsigned max){ (void)max; ids[0]=5; st[0]=LV_PAUSED ? 0:1; ids[1]=0x1000c; st[1]=0; return 2; }
-unsigned lc_native_hold(const uint32_t *ids,unsigned n,uint32_t *h){ (void)ids;(void)n; *h=1; return 0; }
-unsigned lc_native_release(uint32_t h){ (void)h; return 0; }
-unsigned lc_native_job_list(uint32_t *pairs,unsigned max){ (void)max; pairs[0]=0xC0F08000u; pairs[1]=1; return 1; }
-unsigned lc_native_borrow5(struct lc_native_borrow *b){ memset(b,0,sizeof(*b)); b->ok=1; sim_borrows++; return 0; }
-unsigned lc_native_return5(struct lc_native_borrow *b){ b->ok=0; b->restored=1; sim_returns++; return 0; }
-unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
-    const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch);
-unsigned lc_native_engine_max_lock(const struct lc_native_plane *a,const struct lc_native_plane *b,
-    const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch,unsigned lock)
-{ (void)lock; return lc_native_engine_max_ch(a,b,o,r,ch); }
-unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
-    const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch)
-{ (void)a;(void)b;(void)o;(void)ch; memset(r,0,sizeof(*r)); r->resume_safe=!sim_hw_unsafe; sim_hw_calls++;
-  if (sim_hw_unsafe) { sim_hw_prepared++; return r->reason=LC_NATIVE_WAIT|LC_NATIVE_STOP; } /* quarantined: close refuses */
-  return r->reason=LC_NATIVE_BUSY; }
 struct vram_info *get_yuv422_vram(void){ return &vram; }
 static void (*sim_cb)(void*);static void *sim_cb_ctx;
 void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch; sim_cb=cbr; sim_cb_ctx=ctx; }
@@ -228,9 +195,6 @@ void StartEDmac(unsigned ch,int flags){ (void)ch;(void)flags; slurp_dst=pending_
 int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){ return fps_now; }
 struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
-static int sim_pauses,sim_resumes,sim_disp_off,sim_disp_on;
-void display_off(void){ sim_disp_off++; } void display_on(void){ sim_disp_on++; }
-void PauseLiveView(void){ sim_pauses++; LV_PAUSED=1; } int ResumeLiveView(void){ sim_resumes++; LV_PAUSED=0; return 1; }
 int raw2iso(int r){ return r; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
@@ -293,7 +257,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={5,0,4,0,0,1,1};   /* index 5 = 3 fps, fix focus pixels, hw test */
+    struct lc_frlv_options o={5,0,4,0,0,1};   /* index 5 = 3 fps, fix focus pixels */
     /* Happy path: 4 inputs, geometry from registers, restore, unhook, DNG. */
     reset();
     unsigned w=(0x538-0x12)*4,h=0xDB2-1+1,bytes=w*14/8*h;
@@ -366,33 +330,11 @@ int main(void)
       printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
       assert(!unsafe && strstr(status,"saved") && strips>=2); }
     sim_slow=1;o.fps_index=0;sim_period_us=4000000;o.limit=6;
-    /* HW merge test: registry busy -> no engine call; free -> one call. */
-    reset();sim_hw_busy=2;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    /* Normal composite end: buffers freed, nothing quarantined, LOG has no
+     * engine sections (the product build carries no engine code). */
+    reset();dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
-    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_pauses=sim_resumes=0;sim_borrows=sim_returns=0;sim_engdrv=0;sim_disp_off=sim_disp_on=0;dng_size_ok=2048+bytes;
-    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
-    /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    /* LCM37: no Live View engine job, no display toggling, no borrow;
-     * whole-window diff; paused reference skipped (simulated resource 5
-     * busy). */
-    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
-    assert(!sim_borrows && !sim_returns && !sim_disp_off && !sim_engdrv);
-    assert(strstr(last_log,"LV nodes 2 locked 1 | paused nodes 2 locked 0") && strstr(last_log,"Res_LV: 5:1"));
-    assert(strstr(last_log,"Power_test (type:ids:hold:release"));
-    assert(strstr(last_log,"T0: 1,6,5,2,a001,ffff,") && strstr(last_log,"Reg_diff_LV_vs_paused (window C0F00000-C0F3FFFC; lv_ok 1 paused_ok 1"));
-    /* Resource 5 free once paused: only the paused reference runs. */
-    reset();sim_hw_busy=0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
-    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && sim_hw_calls==1 && strstr(status,"saved") && strstr(last_log,"T0: 1,6,5,2,a000,") && !sim_borrows);
-    /* Engine left its output channel busy (now: the paused channel-5 job,
-     * resource 5 free). The accumulator (never an engine target) is saved. */
-    reset();sim_hw_busy=0xA000;sim_hw_calls=0;sim_hw_unsafe=1;dng_size_ok=2048+bytes;
-    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    printf("hw unsafe: %s calls=%d dng=%u\n",status,sim_hw_calls,dng_bytes);
-    assert(unsafe && sim_hw_calls==1 && strstr(status,"Composite saved") && dng_bytes>=bytes);
-    sim_hw_unsafe=0;sim_hw_prepared=0;
+    assert(!unsafe && strstr(status,"saved") && frees==allocs && !strstr(last_log,"HW_"));
     o.continuous=0;sim_period_us=333333;
     printf("sim ok\n");return 0;
 }
@@ -426,11 +368,6 @@ def main():
         src = src.replace('(unsigned)p&~livecomp_camera.cache_alias_mask',
                           '(uintptr_t)p&~(uintptr_t)livecomp_camera.cache_alias_mask')
         src = src.replace('static unsigned physical(', 'static uintptr_t physical(')
-        src = src.replace('cap=(uint8_t *)lc_frlv_pixels((uint32_t)alloc[0],1);',
-                          'cap=(uint8_t *)(((uintptr_t)alloc[0]+FRLV_HALO+2*FRLV_GUARD-1)&~(uintptr_t)(FRLV_GUARD-1));')
-        src = src.replace('acc=(uint8_t *)physical((void *)lc_frlv_pixels((uint32_t)alloc[1],0));',
-                          'acc=(uint8_t *)(((uintptr_t)alloc[1]+FRLV_HALO+FRLV_GUARD-1)&~(uintptr_t)(FRLV_GUARD-1));')
-        assert 'lc_frlv_pixels((uint32_t)alloc' not in src
         src = src.replace('regs[0]=(uint32_t)cmos_copy', 'regs[0]=(uint32_t)(uintptr_t)cmos_copy')
         src = src.replace('regs[1]=(uint32_t)adtg_copy', 'regs[1]=(uint32_t)(uintptr_t)adtg_copy')
         src = src.replace('#define FRLV_ALLOCATION 32488032u', '#define FRLV_ALLOCATION 32488032u\n#define LIVECOMP_BUILD_ID "LCM15 host"')

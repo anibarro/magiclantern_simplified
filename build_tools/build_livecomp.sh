@@ -9,10 +9,6 @@ python3 build_tools/test_livecomp_dng.py
 python3 build_tools/test_livecomp_trigger.py
 python3 build_tools/test_livecomp_sessions.py
 python3 build_tools/test_livecomp_portability.py
-python3 build_tools/test_livecomp_resources.py
-python3 build_tools/test_livecomp_native.py
-python3 build_tools/test_livecomp_fullres_check.py
-python3 build_tools/test_livecomp_fullres_suite.py
 python3 build_tools/test_livecomp_frlv.py
 python3 build_tools/test_livecomp_fullres_fix.py
 make -C modules/livecomp -j1 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
@@ -21,4 +17,4 @@ make -C modules/livecomp -j1 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
 make -C platform/EOSM.202 -j2 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
   build/EOSM_202.sym > "$B/lcm22-stock-core-check.log" 2>&1
 python3 build_tools/package_livecomp_standalone.py
-echo "Module-only package: $B/livecomp-LCM40-module-only.zip"
+echo "Module-only package: $B/livecomp-LCM41-module-only.zip"

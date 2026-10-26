@@ -24,7 +24,6 @@ HOST = r'''
 #include <stdlib.h>
 #include <string.h>
 #include "fullres-fix.h"
-#include "fullres-hw.h"
 static uint32_t st=7; static uint32_t rnd(void){ st=st*1664525u+1013904223u; return st>>8; }
 static int is_fp(unsigned x,unsigned y){
     if (x<LC_FP_X0||x>LC_FP_X1||y<LC_FP_Y0||y>LC_FP_Y1) return 0;
@@ -81,28 +80,6 @@ int main(void){
         lc_raw14_pack(d,va);lc_raw14_pack(d+7,va+8);lc_raw14_pack(s,vb);lc_raw14_pack(s+7,vb+8);
         uint32_t dw[7],sw[7];memcpy(dw,d,28);memcpy(sw,s,28);
         assert((lc_r14_any_brighter(dw,sw)!=0)==(v>u));
-    }
-    /* Canon engine planes from the real layout (LCM21 bug: storage not row-aligned).
-     * Allocation addresses as returned on camera (LCM13 log: 0x440000c0/0x420000c0). */
-    const uint32_t allocs[3][2]={{0x440000c0u,0x420000c0u},{0x44000000u,0x42000040u},{0x4400ff80u,0x4200a020u}};
-    for (int k=0;k<3;k++) {
-        uint32_t cap=lc_frlv_pixels(allocs[k][0],1),acc=lc_frlv_pixels(allocs[k][1],0);
-        assert(cap%64==0 && acc%64==0 && cap-allocs[k][0]>=LC_FRLV_HALO+LC_FRLV_GUARD && acc-allocs[k][1]>=LC_FRLV_HALO);
-        assert(cap+32395440u+LC_FRLV_HALO+LC_FRLV_GUARD<=allocs[k][0]+LC_FRLV_ALLOCATION);
-        assert(acc+32395440u+LC_FRLV_HALO<=allocs[k][1]+LC_FRLV_ALLOCATION);
-        unsigned total=0;
-        for (unsigned band=0;band<2;band++) {
-            unsigned first,rows=lc_frlv_band(3506,band,&first);
-            struct lc_native_plane a,b;
-            lc_frlv_plane(allocs[k][1],acc,9240,first,rows,&a);
-            lc_frlv_plane(allocs[k][0],cap,9240,first,rows,&b);
-            assert(lc_native_plane_ok(&a,1) && lc_native_plane_ok(&b,1) && lc_native_plane_ok(&b,0));
-            assert(first==total && rows<=1930 && !(rows&1));total+=rows;
-            /* the old LCM20/21 construction is rejected, as it was on camera */
-            struct lc_native_plane old={allocs[k][0],LC_FRLV_ALLOCATION,(cap+first*9240)|0x40000000u,5280,rows,9240};
-            assert(!lc_native_plane_ok(&old,1));
-        }
-        assert(total==3506);
     }
     printf("fix ok\n");return 0;
 }

@@ -1,4 +1,4 @@
-/* GPL-2.0-or-later. EOS M full-sensor Live View readout gate (LCM15). */
+/* GPL-2.0-or-later. EOS M full-sensor Live View readout and composite. */
 #ifndef LIVECOMP_FULLRES_LV_H
 #define LIVECOMP_FULLRES_LV_H
 struct card_info;
@@ -7,7 +7,6 @@ struct lc_frlv_options {
     unsigned continuous;   /* 1: full-res composite (arm every frame, merge, preview) */
     unsigned limit;        /* continuous: frames to merge before stopping */
     unsigned fix_focus_pixels; /* replace EOS M PDAF pixels before saving */
-    unsigned hw_test;          /* continuous: one Canon max-engine test on real data */
 };
 /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,
