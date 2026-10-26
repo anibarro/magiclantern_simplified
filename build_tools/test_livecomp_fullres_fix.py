@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Host checks for LCM19 full-res output fixes and the compare-first merge.
+"""Host checks for the full-res output fixes and the merge kernels.
 
 - Focus-pixel fix on a synthetic 5280x3506 packed RAW14 raster: exactly the
   24x30-tile positions are replaced by the mean of their 4 same-colour
   neighbours; every other sample is unchanged.
 - White-balance neutral table/mapping.
-- lc_raw14_max_fast == lc_raw14_max_sparse on random/edge data, and the
-  compare-first predicate is exact for every field position.
-- Optional: if LIVECOMP_QEMU_ARM points to qemu-arm, the same merge check runs
-  as ARMv5TE code on an emulated ARM946 (what the camera executes).
+- Optional: if LIVECOMP_QEMU_ARM points to qemu-arm, the sparse and select
+  merge kernels are checked against the reference maximum as ARMv5TE code on
+  an emulated ARM946 (what the camera executes). The host-side exactness
+  checks of both kernels are in test_livecomp_frlv.py.
 """
 from pathlib import Path
 import os
@@ -60,27 +60,6 @@ int main(void){
     lc_wb_neutral_for(3,0,0,0,0,n);int32_t t[3];lc_wb_neutral_for(9,3200,0,0,0,t);assert(n[0]==t[0]);
     lc_wb_neutral_for(6,0,2048,1024,1536,n);assert(n[0]==500000 && n[2]==666666);
     lc_wb_neutral_for(9,99999,0,0,0,n);lc_wb_neutral_for(1,0,0,0,0,t);assert(n[0]==t[0]);  /* invalid kelvin -> 5500 */
-    /* compare-first merge */
-    enum{B=40002}; static uint16_t x[7*B],y[7*B],z[7*B];
-    for (int r=0;r<10;r++) {
-        for (int i=0;i<B;i++) { uint16_t va[8],vb[8];
-            for (int p=0;p<8;p++) { uint16_t q=rnd()&16383,w;
-                switch (r%5) { case 0: w=rnd()&16383;break; case 1: w=q;break; case 2: w=q?q-1:0;break;
-                    case 3: q=(rnd()&1)?16383:0;w=(rnd()&1)?16383:0;break; default: w=(rnd()%40==0)?(rnd()&16383):(q?q-1:0); }
-                va[p]=q;vb[p]=w; }
-            lc_raw14_pack(x+7*i,va);lc_raw14_pack(y+7*i,vb); }
-        memcpy(z,x,sizeof x);
-        unsigned c1=lc_raw14_max_sparse(z,y,B),c2=lc_raw14_max_fast(x,y,B);
-        assert(!memcmp(x,z,sizeof x) && c1==c2);
-    }
-    for (int pos=0;pos<16;pos++) for (int u=0;u<16384;u+=97) for (int v=0;v<16384;v+=89) {
-        uint16_t va[16],vb[16],d[14],s[14];
-        for (int p=0;p<16;p++) { va[p]=rnd()&16383;vb[p]=va[p]?va[p]-1:0; }
-        va[pos]=u;vb[pos]=v;
-        lc_raw14_pack(d,va);lc_raw14_pack(d+7,va+8);lc_raw14_pack(s,vb);lc_raw14_pack(s+7,vb+8);
-        uint32_t dw[7],sw[7];memcpy(dw,d,28);memcpy(sw,s,28);
-        assert((lc_r14_any_brighter(dw,sw)!=0)==(v>u));
-    }
     printf("fix ok\n");return 0;
 }
 '''
@@ -97,11 +76,9 @@ void _start(void){
     for (int i=0;i<B;i++){ uint16_t va[8],vb[8];
       for (int p=0;p<8;p++){ uint16_t x=rnd()&16383; va[p]=x; vb[p]=(r==0)?(rnd()&16383):((rnd()&((8<<r)-1))==0)?(rnd()&16383):(x?x-1:0);} 
       lc_raw14_pack(a+7*i,va); lc_raw14_pack(b+7*i,vb); memcpy(c+7*i,a+7*i,14);}
-    unsigned c1=lc_raw14_max_sparse(c,b,B),c2=lc_raw14_max_fast(a,b,B);
-    if (c1!=c2) sys_exit(2);
+    lc_raw14_max_sparse(c,b,B); lc_raw14_max(a,b,B);
     for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(3);
-    /* LCM24 select kernel on the camera's CPU type: same result again */
-    for (int i=0;i<7*B;i++) c[i]=a[i];
+    /* select kernel on the camera's CPU type: same result as the reference */
     for (int i=0;i<7*B;i++) a[i]=(uint16_t)(rnd()&0xFFFF);
     for (int i=0;i<7*B;i++) c[i]=a[i];
     lc_raw14_max(c,b,B); lc_raw14_max_sel((uint32_t *)(void *)a,(const uint32_t *)(const void *)b,B/2);
@@ -129,7 +106,7 @@ def main():
             print('ARM946 (qemu) merge check ok')
         else:
             print('ARM946 merge check skipped (set LIVECOMP_QEMU_ARM to run it)')
-    print('PASS: focus-pixel fix (200,942 exact positions), WB neutral mapping, compare-first and select merge exactness')
+    print('PASS: focus-pixel fix (200,942 exact positions), WB neutral mapping')
 
 
 if __name__ == '__main__':
