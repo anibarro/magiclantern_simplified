@@ -501,3 +501,40 @@ Fixed plane layout (`fullres-hw.h`: storage = pixels - 4 halo rows, 4 halo
 rows also kept after the band); the exact camera argument checks now live in
 `native-max.h` and host tests build the planes from the real allocation
 addresses and also assert that the LCM21 construction is rejected.
+
+## LCM22 camera result (LVFR0005)
+
+The planes passed all checks (plane_ok 7) and the engine really ran on frame 3
+via channel 3: lock and setup returned 0, both input channels (40, 41)
+completed, but output channel 3 completed nothing. After the 600 ms wait it was
+still armed (state 1) at its programmed start 0x02009140 with the pointer
+unmoved: **0 bytes written**. Reason 96 (WAIT|STOP) -> quarantine -> the session
+stopped after 3 frames, and because DMA ownership was "uncertain" the composite
+was not saved.
+
+Same picture as LCM13 (inputs fully consumed, output 422 KB then stall), now
+with zero output in the idle window. ROM reading: Canon's setup FF429E68 always
+calls `ConnectWriteEDmac(state[10], 1)`, i.e. the engine output is source 1
+whatever the output channel. The write router (RAM 0x1C6A8) keeps one source
+register per *write channel* (0xC0F05000+4*ch, 0xC0F0501C, 0xC0F05200+...), so
+several channels can name the same source. Hypothesis: a Live View channel
+left armed on source 1 (0x01, 0x02 and 0x11 are armed through the idle window)
+competes for the engine output; this would explain consumed inputs with a
+missing output in both LCM13 and LCM22.
+
+## LCM23
+
+- Router evidence: the source of all 16 write channels in the idle window
+  (`Write_route_idle`) and again after engine setup, plus every other channel
+  on source 1 with its state, address and pointer before and after the job.
+- Divert (on by default in the HW test): other listeners of source 1 are moved
+  to an unused source (lowest >= 3 nobody names) with Canon's
+  ConnectWriteEDmac just before StartEDmac, and restored right after the wait
+  (~1 s before the next readout). Restore is verified; a failed restore
+  quarantines (reboot).
+- Stuck output recovery: if only channel 3 is still armed and still holds our
+  own start address, it is aborted (AbortEDmac, RAM 0x1CA60) and the session
+  continues instead of being quarantined. Channel 3 is never configured by
+  Live View (LCM21/22 activity map).
+- If the HW test does leave DMA uncertain, the accumulator (never an engine
+  target) is still saved; only the buffers stay pinned until reboot.

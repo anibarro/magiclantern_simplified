@@ -1,0 +1,4 @@
+seq,done_ms,merge_us,changed_pct,dma_offset_after_merge,partial_bytes_plus1,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_calls,adtg_calls,lost_bands,busy_after_vsync,busy_idle
+1,40304,1266912,100,0,0,43768,1,3954437,32395440,37,12,0,a001,a001
+2,44304,2309509,51,0,0,153106,1,3845033,32395440,19,6,0,a001,a001
+3,48304,2339329,47,0,0,140435,1,3857677,32395440,19,6,0,a001,a001

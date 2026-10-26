@@ -36,6 +36,7 @@ def main():
         '((void (*)(unsigned))0x1cb3c)': 'mock_unregister',
         '((unsigned (*)(unsigned))0x1e644)': 'mock_delete',
         '((unsigned (*)(unsigned))0xff2c5eb4)': 'mock_unlock',
+        '((void (*)(unsigned))0x1ca60)': 'mock_abort',
     }
     for old, new in calls.items():
         assert old in native
@@ -56,6 +57,13 @@ static unsigned fail_resource,fail_resource_delete,resources_deleted;
 static void (*callbacks[3])(void *);
 static unsigned forwarded[3],trace_reads,addresses[3],waited,displaced,pre_busy;
 static unsigned busy_channel,missing_table,locks,unlocks,setups,stops,deletes;
+#define EDMAC_DIR_WRITE 1
+static unsigned conn_reg[64],foreign_ch,foreign_armed,fail_restore,out_stuck,abort_ignored,aborts,conn_during_wait;
+static unsigned edmac_get_connection(unsigned ch,unsigned dir) { assert(dir==EDMAC_DIR_WRITE && ch<64);return conn_reg[ch]; }
+static void ConnectWriteEDmac(unsigned ch,unsigned s) {
+    assert(ch<64 && ch!=3);if (fail_restore && s==1) return;conn_reg[ch]=s;
+}
+static void mock_abort(unsigned ch) { assert(ch==3);aborts++; }
 static int is_camera(const char *m,const char *f) { (void)m;(void)f;return camera_ok; }
 static unsigned cli(void) { return 0; }
 static void sei(unsigned x) { (void)x; }
@@ -63,7 +71,11 @@ static unsigned get_us_clock(void) { static unsigned t;return t+=100; }
 static unsigned patch_hook_function(unsigned a,unsigned b,void *c,const char *d)
 { (void)a;(void)b;(void)c;(void)d;return 0; }
 static unsigned unpatch_memory(unsigned x) { (void)x;return 0; }
-static unsigned edmac_get_state(unsigned x) { return x==40 ? (waited ? busy_channel:pre_busy):0; }
+static unsigned edmac_get_state(unsigned x) {
+    if (x==40) return waited ? busy_channel:pre_busy;
+    if (x==3) return waited && out_stuck && (!aborts || abort_ignored);
+    return foreign_ch && x==foreign_ch ? foreign_armed:0;
+}
 static unsigned channel_slot(unsigned ch) {
     assert(ch==40 || ch==41 || ch==3);return ch==40 ? 0:ch==41 ? 1:2;
 }
@@ -73,8 +85,8 @@ static void mock_complete_a(void *ctx) { assert(ctx==NULL);forwarded[0]++; }
 static void mock_complete_b(void *ctx) { assert(ctx==NULL);forwarded[1]++; }
 static void mock_complete_out(void *ctx) { assert(ctx==NULL);forwarded[2]++; }
 static unsigned edmac_get_flags(unsigned ch) { trace_reads++;return 100+channel_slot(ch); }
-static unsigned edmac_get_address(unsigned ch) { return waited && displaced && ch==3 ? 0x0d2dec00:addresses[channel_slot(ch)]; }
-static unsigned edmac_get_pointer(unsigned ch) { return addresses[channel_slot(ch)]+(waited ? 128:0); }
+static unsigned edmac_get_address(unsigned ch) { if (foreign_ch && ch==foreign_ch) return 0x0d119c00;return waited && displaced && ch==3 ? 0x0d2dec00:addresses[channel_slot(ch)]; }
+static unsigned edmac_get_pointer(unsigned ch) { if (foreign_ch && ch==foreign_ch) return 0x0d119c00;return addresses[channel_slot(ch)]+(waited ? 128:0); }
 static unsigned mock_create_resource(uint32_t *ids,unsigned count) {
     assert(count==10 && ids[0]==3 && ids[1]==0x1000c && ids[9]==0x30001);
     return fail_resource ? 0:789;
@@ -89,6 +101,7 @@ static void mock_start(unsigned a,unsigned b) { assert(a==3 || a==40 || a==41);(
 static void mock_engio(unsigned x) { (void)x; }
 static unsigned mock_wait(unsigned a,unsigned b,unsigned c)
 { assert(a==456 && b==7 && c==5000);
+  conn_during_wait=foreign_ch ? conn_reg[foreign_ch]:0;
   waited=1;callbacks[0](NULL);callbacks[1](NULL);if(!fail_wait)callbacks[2](NULL);
   return fail_wait; }
 static void mock_unregister(unsigned x) { callbacks[channel_slot(x)]=NULL;stops++; }
@@ -100,6 +113,7 @@ static unsigned mock_setup(uint32_t *job) {
     assert(job[2]==10 && job[6]==0x8888dddd && job[9]==job[0]);
     assert(state_data[10]==3 && state_data[1]==123);
     waited=0;addresses[0]=(job[0]&~0x40000000u)-9240;addresses[1]=(job[1]&~0x40000000u)-9240;addresses[2]=job[9]&~0x40000000u;
+    conn_reg[3]=1;                           /* FF429E68: ConnectWriteEDmac(out,1) */
     setups++;table_calls=missing_table ? 0:1;return fail_setup;
 }
 static void reset(void) {
@@ -112,6 +126,8 @@ static void reset(void) {
     camera_ok=rom_ok=1;fail_lock=fail_event=fail_setup=fail_wait=fail_delete=fail_unlock=0;
     bad_snapshot=change_context=fail_resource=fail_resource_delete=resources_deleted=0;
     busy_channel=missing_table=locks=unlocks=setups=stops=deletes=0;
+    memset(conn_reg,0,sizeof(conn_reg));foreign_ch=foreign_armed=fail_restore=out_stuck=abort_ignored=aborts=conn_during_wait=0;
+    lc_native_set_divert(1);
     assert(lc_native_engine_prepare((void *)0x41000000)==0);
 }
 int main(void) {
@@ -177,6 +193,29 @@ int main(void) {
     bad=a;bad.height=1932;assert(!plane_valid(&bad,1));
     bad=a;bad.pixels+=14;assert(!plane_valid(&bad,1)); /* word alignment */
     bad=a;bad.bytes=LC_FR_PITCH*4;assert(!plane_valid(&bad,1));
+    /* LCM23 router: register map from RAM 0x1C6A8. */
+    assert(lc_native_write_route_reg(3)==0xC0F0500C && lc_native_write_route_reg(16)==0xC0F0501C);
+    assert(lc_native_write_route_reg(0x12)==0xC0F05204 && lc_native_write_route_reg(0x20)==0xC0F05218);
+    { uint32_t c[16]={0};c[1]=1;c[5]=2;c[2]=3;assert(lc_native_free_source(c)==4); }
+    reset();assert(!lc_native_engine_max(&a,&b,&a,&r));
+    assert(r.out_conn==1 && !r.listeners && !r.diverted && !r.aborted);
+    /* Live View channel 2 armed on source 1: moved away for the job only. */
+    reset();foreign_ch=2;conn_reg[2]=1;foreign_armed=1;conn_reg[5]=2;
+    assert(!lc_native_engine_max(&a,&b,&a,&r));
+    assert(r.listeners==1 && r.lst_ch[0]==2 && r.lst_state[0]==1 && r.diverted==1 && r.divert_source==3);
+    assert(conn_during_wait==3 && conn_reg[2]==1 && r.route_restored && r.resume_safe);
+    reset();foreign_ch=2;conn_reg[2]=1;lc_native_set_divert(0);
+    assert(!lc_native_engine_max(&a,&b,&a,&r) && r.listeners==1 && !r.diverted && conn_during_wait==1);
+    reset();foreign_ch=0x11;conn_reg[0x11]=1;fail_restore=1;
+    assert(lc_native_engine_max(&a,&b,&a,&r)&LC_NATIVE_ROUTE);
+    assert(!r.resume_safe && quarantined && !r.route_restored);
+    /* Output stuck at our own address (LCM22): aborted, session continues. */
+    reset();fail_wait=9;out_stuck=1;r.aborted=99;
+    assert(lc_native_engine_max(&a,&b,&a,&r)==LC_NATIVE_WAIT);
+    assert(r.aborted==1 && aborts==1 && r.resume_safe && deletes==1 && unlocks==1 && !quarantined);
+    reset();fail_wait=9;out_stuck=1;abort_ignored=1;
+    assert(lc_native_engine_max(&a,&b,&a,&r)&LC_NATIVE_STOP);
+    assert(r.aborted==3 && !r.resume_safe && quarantined && !deletes && !unlocks);
     return 0;
 }
 '''
@@ -188,7 +227,7 @@ int main(void) {
                         '-Wno-pointer-to-int-cast','-Wno-int-to-pointer-cast',
                         '-I'+str(MOD),str(p/'check.c'),'-o',str(p/'check')],check=True)
         subprocess.run([str(p/'check')],check=True)
-    print('PASS: native job bounds, nonblocking busy, event/setup/wait failures, restore/unlock, DMA quarantine; hardware accuracy untested')
+    print('PASS: native job bounds, write-source router divert/restore, stuck-output abort, nonblocking busy, event/setup/wait failures, restore/unlock, DMA quarantine; hardware accuracy untested')
 
 
 if __name__ == '__main__':

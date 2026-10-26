@@ -26,6 +26,8 @@ static unsigned OUTPUT_CHANNEL=DEFAULT_OUTPUT_CHANNEL;
 /* Completion wait; the engine needs ~60 ms per band, 5 s was the synthetic check. */
 static unsigned wait_ms=5000;
 void lc_native_set_wait_ms(unsigned ms) { if (!running) wait_ms=ms ? ms:5000; }
+static unsigned divert_on;
+void lc_native_set_divert(unsigned on) { if (!running) divert_on=on; }
 
 /* Observe completion without changing Canon's event notification. Each channel
  * owns its counter; no file I/O, allocation or waiting occurs in callbacks. */
@@ -48,6 +50,52 @@ static void trace_dma(uint32_t trace[12])
 }
 
 static uint32_t physical(uint32_t address) { return lc_native_physical(address); }
+
+/* LCM23 write-source router (see native-max.h). Register reads only, done
+ * while the engine resources are held, like trace_dma. */
+static void route_scan(struct lc_native_engine_result *r)
+{
+    r->out_conn=edmac_get_connection(OUTPUT_CHANNEL,EDMAC_DIR_WRITE);
+    for (unsigned i=0;i<LC_NATIVE_WRITE_CHANNELS;i++) {
+        unsigned ch=lc_native_write_channels[i];
+        r->conn[i]=edmac_get_connection(ch,EDMAC_DIR_WRITE);
+        if (ch==OUTPUT_CHANNEL || r->conn[i]!=LC_NATIVE_ENGINE_SOURCE) continue;
+        if (r->listeners<LC_NATIVE_MAX_LISTENERS) {
+            unsigned k=r->listeners;
+            r->lst_ch[k]=ch;r->lst_state[k]=edmac_get_state(ch);
+            r->lst_addr[k]=edmac_get_address(ch);r->lst_ptr0[k]=edmac_get_pointer(ch);
+        }
+        r->listeners++;
+    }
+}
+/* Point every other listener of source 1 at a source nobody uses, so only
+ * our output channel can take the engine output. Canon's ConnectWriteEDmac
+ * writes the route register through EngDrvOut (shadow kept consistent). The
+ * diverted channels are Canon's and are restored right after the wait, long
+ * before the next sensor readout (job ~120 ms, readout ~1 s later). */
+static unsigned route_divert(struct lc_native_engine_result *r)
+{
+    if (!divert_on || !r->listeners) return 0;
+    if (r->listeners>LC_NATIVE_MAX_LISTENERS) return LC_NATIVE_ROUTE;
+    r->divert_source=lc_native_free_source(r->conn);
+    if (!r->divert_source) return LC_NATIVE_ROUTE;
+    for (unsigned k=0;k<r->listeners;k++) {
+        ConnectWriteEDmac(r->lst_ch[k],r->divert_source);
+        r->diverted|=1u<<k;
+        if (edmac_get_connection(r->lst_ch[k],EDMAC_DIR_WRITE)!=r->divert_source) return LC_NATIVE_ROUTE;
+    }
+    return 0;
+}
+static unsigned route_restore(struct lc_native_engine_result *r)
+{
+    unsigned ok=1;
+    for (unsigned k=0;k<LC_NATIVE_MAX_LISTENERS;k++) if (r->diverted&(1u<<k)) {
+        ConnectWriteEDmac(r->lst_ch[k],LC_NATIVE_ENGINE_SOURCE);
+        if (edmac_get_connection(r->lst_ch[k],EDMAC_DIR_WRITE)!=LC_NATIVE_ENGINE_SOURCE) ok=0;
+    }
+    r->route_restored=ok;
+    return ok;
+}
 static int ram(uint32_t address,unsigned bytes) { return lc_native_ram(address,bytes); }
 static unsigned hash(const volatile uint8_t *p,unsigned bytes)
 {
@@ -129,7 +177,8 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     if (!installed || running || quarantined || !plane_valid(a,1) || !plane_valid(b,1) ||
         !plane_valid(out,0) || a->height!=b->height || a->height!=out->height)
         return r->reason=LC_NATIVE_ARGUMENT;
-    unsigned bytes=out->height*out->pitch;
+    unsigned bytes=out->height*out->pitch,route_bad=0;
+    const uint32_t out_start=physical(out->pixels);
     if ((overlap(out->pixels,bytes,a->storage,a->bytes) && physical(out->pixels)!=physical(a->pixels)) ||
         (overlap(out->pixels,bytes,b->storage,b->bytes) && physical(out->pixels)!=physical(b->pixels)) ||
         overlap((unsigned)private_geometry,64,a->storage,a->bytes) ||
@@ -189,12 +238,20 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
         if (physical(r->before_start[4*i+2])!=starts[i] || r->before_start[4*i])
             goto ownership_lost;
     }
+    route_scan(r);
+    if (route_divert(r)) {
+        r->reason|=LC_NATIVE_ROUTE;
+        if (!route_restore(r)) route_bad=1;
+        goto stop;                                   /* nothing started yet */
+    }
     ((void (*)(unsigned,unsigned))0x1c914)(OUTPUT_CHANNEL,0);
     ((void (*)(unsigned))0xff2c19ac)(0x55180);
     ((void (*)(unsigned,unsigned))0x1c914)(40,2);
     ((void (*)(unsigned,unsigned))0x1c914)(41,4);
     r->wait=((unsigned (*)(unsigned,unsigned,unsigned))0x1e7d4)(state[2],7,wait_ms);
     trace_dma(r->after_wait);
+    for (unsigned k=0;k<r->listeners && k<LC_NATIVE_MAX_LISTENERS;k++) r->lst_ptr1[k]=edmac_get_pointer(r->lst_ch[k]);
+    if (r->diverted && !route_restore(r)) route_bad=1;
     r->table_calls=table_calls;r->table_error=table_error;
     for (unsigned i=0;i<3;i++) r->completed[i]=completed[i];
     if (r->wait) r->reason|=LC_NATIVE_WAIT;
@@ -211,6 +268,19 @@ stop:
     /* Read DMA state only while our acquired engine resources keep it powered.
      * Never perform these reads in an ordinary passive capture observer. */
     r->channels[0]=edmac_get_state(40);r->channels[1]=edmac_get_state(41);r->channels[2]=edmac_get_state(OUTPUT_CHANNEL);
+    /* LCM22: inputs completed, output channel 3 still armed at our own start
+     * address with nothing written. Channel 3 is never configured by Live
+     * View (LCM21/22 activity map), so the stuck transfer is ours: abort it
+     * (AbortEDmac, RAM 0x1CA60: writes 3 to the channel's control register)
+     * instead of quarantining the whole session. */
+    if (r->channels[2] && !r->channels[0] && !r->channels[1] && OUTPUT_CHANNEL==3 &&
+        physical(edmac_get_address(OUTPUT_CHANNEL))==out_start) {
+        ((void (*)(unsigned))0x1ca60)(OUTPUT_CHANNEL);
+        unsigned t0=(unsigned)get_us_clock();
+        while (edmac_get_state(OUTPUT_CHANNEL) && (unsigned)get_us_clock()-t0<20000u) continue;
+        r->channels[2]=edmac_get_state(OUTPUT_CHANNEL);
+        r->aborted=r->channels[2] ? 3:1;
+    }
     if (r->channels[0] || r->channels[1] || r->channels[2]) {
         r->reason|=LC_NATIVE_STOP;r->resume_safe=0;quarantined=1;goto done;
     }
@@ -237,6 +307,7 @@ ownership_lost:
     r->reason|=LC_NATIVE_OWNERSHIP;r->resume_safe=0;quarantined=1;
     r->table_calls=table_calls;r->table_error=table_error;
 done:
+    if (route_bad) { r->reason|=LC_NATIVE_ROUTE;r->resume_safe=0;quarantined=1; }
     if (!quarantined) {
         r->resource_delete=((unsigned (*)(unsigned))0xff2c5a60)(resource);
         if (r->resource_delete) {

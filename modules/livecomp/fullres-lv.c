@@ -177,7 +177,8 @@ void livecomp_frlv_vsync(void)
 }
 
 struct frlv_hw { unsigned tried,frame,busy,channel,reason[2],engine_us[2],lock[2],setup[2],wait[2],
-    completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe,plane_ok[2]; };
+    completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe,plane_ok[2];
+    struct lc_native_engine_result route[2]; }; /* LCM23: router evidence per band */
 static struct frlv_hw hw;
 /* Write-channel activity over one full frame period (frame 2 -> 3): when is
  * each EDMAC write channel busy, and what are channels 3/5 doing. */
@@ -186,6 +187,7 @@ static const uint8_t act_channels[16]={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x10,0
 struct frlv_act { uint16_t ms,mask;uint32_t ptr3,ptr5; };
 static struct frlv_act act[FRLV_ACT];
 static unsigned act_n,act_on,act_t0,act_last_mask,act_union,act_info5[6],act_info3[6];
+static unsigned act_conn[16],act_state[16];   /* write sources in the idle window */
 static void act_sample(void)
 {
     if (!act_on || act_n>=FRLV_ACT) return;
@@ -196,6 +198,13 @@ static void act_sample(void)
     if (act_n && mask==act_last_mask && p5==act[act_n-1].ptr5 && p3==act[act_n-1].ptr3) return;
     act[act_n++]=(struct frlv_act){(uint16_t)(get_ms_clock()-act_t0),(uint16_t)mask,p3,p5};
     act_last_mask=mask;
+}
+static void act_routes(void)
+{
+    for (unsigned i=0;i<16;i++) {
+        act_conn[i]=edmac_get_connection(act_channels[i],EDMAC_DIR_WRITE);
+        act_state[i]=edmac_get_state(act_channels[i]);
+    }
 }
 static void act_config(unsigned ch,unsigned *o)
 {
@@ -298,6 +307,22 @@ static void write_log(const struct frlv_result *r,const char *status)
         hw.after[0][8],hw.after[0][9],hw.after[0][10],hw.after[0][11],
         hw.compare_us,hw.mismatch_bytes,hw.first_bad,hw.expected,hw.actual,hw.plane_ok[0],hw.plane_ok[1]);
     ok&=write_text(f,t,n);
+    for (unsigned band=0;band<2;band++) {
+        const struct lc_native_engine_result *q=&hw.route[band];
+        n=snprintf(t,sizeof(t),"HW_band%d_outconn_listeners_divert_src_mask_restored_aborted: %x,%d,%d,%x,%d,%d\n"
+            "HW_band%d_conn_after_setup (ch:src):",band,q->out_conn,q->listeners,q->divert_source,q->diverted,
+            q->route_restored,q->aborted,band);
+        for (unsigned i=0;i<LC_NATIVE_WRITE_CHANNELS;i++) n+=snprintf(t+n,sizeof(t)-n," %x:%x",lc_native_write_channels[i],q->conn[i]);
+        n+=snprintf(t+n,sizeof(t)-n,"\nHW_band%d_listener_ch_state_addr_ptr_before_after:",band);
+        for (unsigned k=0;k<q->listeners && k<LC_NATIVE_MAX_LISTENERS;k++)
+            n+=snprintf(t+n,sizeof(t)-n," %x:%x:%x:%x:%x",q->lst_ch[k],q->lst_state[k],q->lst_addr[k],q->lst_ptr0[k],q->lst_ptr1[k]);
+        n+=snprintf(t+n,sizeof(t)-n,"\nHW_band%d_out_before_state_addr_ptr_after_state_addr_ptr: %x,%x,%x,%x,%x,%x\n",band,
+            q->before_start[8],q->before_start[10],q->before_start[11],q->after_wait[8],q->after_wait[10],q->after_wait[11]);
+        ok&=write_text(f,t,n);
+    }
+    n=snprintf(t,sizeof(t),"Write_route_idle (ch:src:state):");
+    for (unsigned i=0;i<16;i++) n+=snprintf(t+n,sizeof(t)-n," %x:%x:%x",act_channels[i],act_conn[i],act_state[i]);
+    t[n++]='\n';ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"DMA_activity_samples_union_mask: %d,%x (bit i = write channel 0..6,0x10..0x16,0x20,0x21)\n"
         "Ch5_addr_len_flags_conn_state_ptr: %x,%x,%x,%x,%x,%x\nCh3_addr_len_flags_conn_state_ptr: %x,%x,%x,%x,%x,%x\n"
         "Activity_ms_after_vsync_mask_ptr3_ptr5:\n",
@@ -555,6 +580,7 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
     if (hw.busy==0xFFFFu || (hw.busy&0x3FE)) { hw.channel=0;return 0; }
     hw.channel=(hw.busy&1) ? 3:5;
     lc_native_set_wait_ms(600);
+    lc_native_set_divert(1);
     sync_caches();                                   /* acc written through the cache */
     for (unsigned band=0;band<2;band++) {
         unsigned first,rows=lc_frlv_band(r->height,band,&first);
@@ -567,6 +593,7 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
         hw.reason[band]=reason;hw.engine_us[band]=res.elapsed_us;hw.lock[band]=res.lock;hw.setup[band]=res.setup;
         hw.wait[band]=res.wait;memcpy(hw.completed[band],res.completed,sizeof(res.completed));
         memcpy(hw.after[band],res.after_wait,sizeof(res.after_wait));
+        hw.route[band]=res;
         if (!res.resume_safe) { hw.safe=0;return 1; }
         if (reason) return 0;
     }
@@ -583,7 +610,7 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
 }
 
 static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
-    const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms,
+    const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned *hw_uncertain,unsigned period_ms,
     unsigned hw_enable,uint8_t *cap_storage,uint8_t *acc_storage)
 {
     preview_setup();r->preview_ok=preview_yuv!=NULL;
@@ -622,7 +649,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         seen=frames_done;
         unsigned state=done_state,pointer=done_pointer,done=done_ms;
         if (act_on) act_on=0;                            /* frame 3 arrived: map complete */
-        if (r->merged==1 && !act_n) { act_union=0;act_t0=done;act_on=1;act_config(5,act_info5);act_config(3,act_info3); }
+        if (r->merged==1 && !act_n) { act_union=0;act_t0=done;act_on=1;act_config(5,act_info5);act_config(3,act_info3);act_routes(); }
         unsigned d_kind=done_cb_kind,d_after=done_cb_after,d_ptr=done_cb_ptr,d_arm=done_arm_after_vsync,d_engio=done_engio,d_adtg=done_adtg;
         preview_show();                                  /* hide Canon's new frame */
         if (state) { cont_arm=0;*dma_uncertain=1;r->error|=FE_DMA;*msg="RAW DMA did not finish";break; }
@@ -680,7 +707,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             get_ms_clock()-done+800<period_ms-500) {
             NotifyBox(2000,"Testing hardware merge...");
             if (hw_test(r,cap,acc,r->merged,cap_storage,acc_storage)) {
-                *dma_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
+                /* The engine only ever writes the capture buffer; the
+                 * accumulator stays valid and is still saved (LCM23). */
+                *hw_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
             }
             write_log(r,"hw merge tested");
             continue;                                    /* preview next frame */
@@ -697,7 +726,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     }
     continuous=0;cont_arm=0;
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
-    if (hw_enable) { hw.close=lc_native_engine_close();if (hw.close) *dma_uncertain=1; }
+    if (hw_enable) { hw.close=lc_native_engine_close();if (hw.close) *hw_uncertain=1; }
 }
 
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *o,
@@ -714,7 +743,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
-    unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0;
+    unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0,hw_uncertain=0;
     const char *msg="Full-res readout: checking";
     *status=msg;
     want_capture=in_flight=capture_done=0;timer_fixes=0;
@@ -811,7 +840,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     msg="Full-res readout: capturing";*status=msg;
     if (r.continuous) {
         if (!acc) { r.error|=FE_MEMORY;msg="Composite needs two full-size buffers";goto restore; }
-        continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o->hw_test,alloc[0],alloc[1]);
+        continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,&hw_uncertain,period_ms,o->hw_test,alloc[0],alloc[1]);
         if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
         *status=msg;
         goto restore;
@@ -919,10 +948,14 @@ unhook:
 out:
     r.timer_fixes=timer_fixes;r.timer_seen_b=timer_seen_b;
     if (dma_uncertain) r.unsafe=1;
+    /* HW-test uncertainty concerns only the capture buffer (engine output):
+     * keep every buffer allocated, but the accumulator may still be saved. */
+    const unsigned save_ok=!r.unsafe && (!hw_uncertain || (acc && cap && acc!=(uint8_t *)physical(cap)));
+    if (hw_uncertain) r.unsafe=1;
     /* With a single allocation, the last captured frame is the output. */
     if (!acc && cap && !r.unsafe) acc=(uint8_t *)physical(cap);
     else if (!r.unsafe && alloc[0]) { fio_free(alloc[0]);alloc[0]=NULL;cap=NULL; }
-    if (acc && r.merged && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
+    if (acc && r.merged && save_ok && !ml_shutdown_requested && get_ml_card()==card &&
         !(r.error&(FE_GUARD|FE_SIZE|FE_REGS)) && (r.continuous || !(r.error&FE_DMA))) {
         if (o->fix_focus_pixels && r.width==5280) {
             unsigned f0=(unsigned)get_us_clock();
@@ -938,7 +971,7 @@ out:
     if (!r.unsafe) for (unsigned i=0;i<2;i++) if (alloc[i]) fio_free(alloc[i]);
     if (locked) gui_uilock(old_lock);
     if (power) powersave_permit();
-    if (r.unsafe) msg="Full-res: ownership uncertain; keep LOG, reboot";
+    if (r.unsafe) msg=r.saved ? "Composite saved; HW test left DMA busy: reboot":"Full-res: ownership uncertain; keep LOG, reboot";
     else if (!r.error) msg=r.saved ? "Full-res DNG saved; see LVFR LOG":"Full-res: no frame saved";
     else if (r.saved) msg=r.continuous ? "Composite saved; stopped early, see LOG":"Full-res DNG saved with warnings; see LOG";
     if (r.continuous && r.saved && !r.error && !r.unsafe) {

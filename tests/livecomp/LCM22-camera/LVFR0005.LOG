@@ -1,0 +1,44 @@
+LCM22 full-res composite
+Full-sensor LV readout gate
+Status: Full-res: ownership uncertain; keep LOG, reboot
+Stage_error_unsafe: 7,128,1
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: 250,100,1043,7813,10
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,10431043,1043,7813,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_cadence_frames_ms_max_gap_ms: 165,0,0,0
+Timer_fixes_last_seen_B: 0,7813
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 8,16
+Hook_adtg_calls_changes_blanking_seen: 55,43,16
+Hook_engio_calls_changes_drv_changes_overflow: 140,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,1019f
+Inputs_merged_memcpy_us: 0,3,0
+Black_OBstdev_x10_center_mean_max: 2047,472,3649,4913
+Col_band_means_16px: 2047,2047,2048,2047,2789,3593,3621,3647,3669,3686,3708,3724
+Row_band_means_8px: 2018,2060,2049,3421,4849,4912,4965,5040,5150,5244
+Saved_stage_size: 0,0,0
+DNG: B:/LVFR0005.DNG
+Continuous_limit_overrun_offset_missed: 1,30,0,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 2339329,5914,1,263852,109392
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 0,0
+Zoom_done_ms_late_frames: 23965,0
+HW_prepare_close_tried_frame_busy_channel_safe: 0,4,1,3,a001,3,0
+HW_band0_reason_us_lock_setup_wait_completed: 96,598568,0,0,9,1/1/0
+HW_band1_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band0_after_out_state_flags_addr_ptr: 1,20000000,2009140,2009140
+HW_compare_us_mismatch_bytes_first_expected_actual: 0,0,0,0,0
+HW_plane_ok_band0_band1: 7,0
+DMA_activity_samples_union_mask: 3,326 (bit i = write channel 0..6,0x10..0x16,0x20,0x21)
+Ch5_addr_len_flags_conn_state_ptr: d119c00,e0020,20000040,2,1,d119c00
+Ch3_addr_len_flags_conn_state_ptr: 0,0,0,0,0,0
+Activity_ms_after_vsync_mask_ptr3_ptr5:
+286:326:0:d119c00 3601:226:0:d119c00 3611:200:0:d119de0 
+Partials: 0
+Attempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:
+DMA_trace_attempt: us_after_arm:bytes ...
+Vsync_intervals_us (last 32): 33340 4528274 3999369 3999967 4000110 4000070 3999987

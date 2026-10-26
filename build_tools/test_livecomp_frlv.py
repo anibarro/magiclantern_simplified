@@ -107,6 +107,7 @@ int edmac_get_state(uint32_t ch); uint32_t edmac_get_pointer(uint32_t ch);
 uint32_t edmac_get_address(uint32_t ch); uint32_t edmac_get_length(uint32_t ch); uint32_t edmac_get_flags(uint32_t ch); uint32_t edmac_get_connection(uint32_t ch,uint32_t dir);
 struct edmac_info { unsigned off1a,off1b,off2a,off2b,off3,xa,xb,ya,yb,xn,yn; };
 #define EDMAC_2_BYTES_PER_TRANSFER 0x20000000
+#define EDMAC_DIR_WRITE 1
 void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx);
 void RegisterEDmacAbortCBR(int ch,void (*cbr)(void*),void *ctx);
 void RegisterEDmacPopCBR(int ch,void (*cbr)(void*),void *ctx);
@@ -172,10 +173,11 @@ static struct vram_info vram={0,720,1440,480};
 void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
 /* Canon engine stubs: registry busy or free, engine refuses (no DMA). */
 #include "native-max.h"
-static int sim_hw_busy=1,sim_hw_calls,sim_hw_prepared;
+static int sim_hw_busy=1,sim_hw_calls,sim_hw_prepared,sim_hw_unsafe,sim_hw_divert;
+void lc_native_set_divert(unsigned on){ sim_hw_divert=on; }
 int lc_native_resources(struct lc_resource_snapshot *s){ memset(s,0,sizeof(*s)); s->count=10; s->busy=sim_hw_busy; return 1; }
 unsigned lc_native_engine_prepare(uint32_t *g){ (void)g; sim_hw_prepared++; return 0; }
-unsigned lc_native_engine_close(void){ sim_hw_prepared--; return 0; }
+unsigned lc_native_engine_close(void){ if (sim_hw_unsafe) return LC_NATIVE_BUSY; sim_hw_prepared--; return 0; }
 void lc_native_set_wait_ms(unsigned ms){ (void)ms; }
 uint32_t edmac_get_address(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_length(uint32_t ch){ (void)ch; return 0; }
@@ -183,7 +185,9 @@ uint32_t edmac_get_flags(uint32_t ch){ (void)ch; return 0; }
 uint32_t edmac_get_connection(uint32_t ch,uint32_t dir){ (void)ch;(void)dir; return 0; }
 unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
     const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch)
-{ (void)a;(void)b;(void)o;(void)ch; memset(r,0,sizeof(*r)); r->resume_safe=1; sim_hw_calls++; return r->reason=LC_NATIVE_BUSY; }
+{ (void)a;(void)b;(void)o;(void)ch; memset(r,0,sizeof(*r)); r->resume_safe=!sim_hw_unsafe; sim_hw_calls++;
+  if (sim_hw_unsafe) { sim_hw_prepared++; return r->reason=LC_NATIVE_WAIT|LC_NATIVE_STOP; } /* quarantined: close refuses */
+  return r->reason=LC_NATIVE_BUSY; }
 struct vram_info *get_yuv422_vram(void){ return &vram; }
 static void (*sim_cb)(void*);static void *sim_cb_ctx;
 void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch; sim_cb=cbr; sim_cb_ctx=ctx; }
@@ -320,7 +324,14 @@ int main(void)
     reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d\n",status,sim_hw_calls);
-    assert(!unsafe && sim_hw_calls==1 && sim_hw_prepared==0 && strstr(status,"saved"));
+    assert(!unsafe && sim_hw_calls==1 && sim_hw_prepared==0 && strstr(status,"saved") && sim_hw_divert==1);
+    /* LCM22 camera case: engine left its output channel busy. The session
+     * stops, but the accumulator (never an engine target) is still saved. */
+    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;sim_hw_unsafe=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("hw unsafe: %s\n",status);
+    assert(unsafe && sim_hw_calls==1 && strstr(status,"Composite saved") && dng_bytes>=bytes);
+    sim_hw_unsafe=0;sim_hw_prepared=0;
     o.continuous=0;sim_period_us=333333;
     printf("sim ok\n");return 0;
 }
