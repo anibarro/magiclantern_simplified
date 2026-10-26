@@ -178,6 +178,29 @@ void livecomp_frlv_vsync(void)
 struct frlv_hw { unsigned tried,frame,busy,channel,reason[2],engine_us[2],lock[2],setup[2],wait[2],
     completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe; };
 static struct frlv_hw hw;
+/* Write-channel activity over one full frame period (frame 2 -> 3): when is
+ * each EDMAC write channel busy, and what are channels 3/5 doing. */
+#define FRLV_ACT 160u
+static const uint8_t act_channels[16]={0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x20,0x21};
+struct frlv_act { uint16_t ms,mask;uint32_t ptr3,ptr5; };
+static struct frlv_act act[FRLV_ACT];
+static unsigned act_n,act_on,act_t0,act_last_mask,act_union,act_info5[6],act_info3[6];
+static void act_sample(void)
+{
+    if (!act_on || act_n>=FRLV_ACT) return;
+    unsigned mask=0;
+    for (unsigned i=0;i<16;i++) if (edmac_get_state(act_channels[i])) mask|=1u<<i;
+    unsigned p3=edmac_get_pointer(3),p5=edmac_get_pointer(5);
+    act_union|=mask;
+    if (act_n && mask==act_last_mask && p5==act[act_n-1].ptr5 && p3==act[act_n-1].ptr3) return;
+    act[act_n++]=(struct frlv_act){(uint16_t)(get_ms_clock()-act_t0),(uint16_t)mask,p3,p5};
+    act_last_mask=mask;
+}
+static void act_config(unsigned ch,unsigned *o)
+{
+    o[0]=edmac_get_address(ch);o[1]=edmac_get_length(ch);o[2]=edmac_get_flags(ch);
+    o[3]=edmac_get_connection(ch,1);o[4]=edmac_get_state(ch);o[5]=edmac_get_pointer(ch);
+}
 struct frlv_input { unsigned vsync,start_ms,done_ms,state,pointer,merge_us,tail_ok,changed_pct,ntrace;
     unsigned trace_us[FRLV_TRACE],trace_off[FRLV_TRACE]; };
 struct frlv_result {
@@ -274,6 +297,18 @@ static void write_log(const struct frlv_result *r,const char *status)
         hw.after[0][8],hw.after[0][9],hw.after[0][10],hw.after[0][11],
         hw.compare_us,hw.mismatch_bytes,hw.first_bad,hw.expected,hw.actual);
     ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"DMA_activity_samples_union_mask: %d,%x (bit i = write channel 0..6,0x10..0x16,0x20,0x21)\n"
+        "Ch5_addr_len_flags_conn_state_ptr: %x,%x,%x,%x,%x,%x\nCh3_addr_len_flags_conn_state_ptr: %x,%x,%x,%x,%x,%x\n"
+        "Activity_ms_after_vsync_mask_ptr3_ptr5:\n",
+        act_n,act_union,act_info5[0],act_info5[1],act_info5[2],act_info5[3],act_info5[4],act_info5[5],
+        act_info3[0],act_info3[1],act_info3[2],act_info3[3],act_info3[4],act_info3[5]);
+    ok&=write_text(f,t,n);
+    for (unsigned i=0;i<act_n;i+=4) {
+        n=0;
+        for (unsigned k=i;k<act_n && k<i+4;k++)
+            n+=snprintf(t+n,sizeof(t)-n,"%d:%x:%x:%x ",act[k].ms,act[k].mask,act[k].ptr3,act[k].ptr5);
+        t[n++]='\n';ok&=write_text(f,t,n);
+    }
     n=snprintf(t,sizeof(t),"Partials: %d\nAttempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:\n",r->partials);
     ok&=write_text(f,t,n);
     for (unsigned i=0;i<r->inputs && i<FRLV_MAX_ATTEMPTS;i++) {
@@ -512,8 +547,13 @@ static uint32_t *hw_geometry;
 static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned frame,uint8_t *cap_storage,uint8_t *acc_storage)
 {
     hw.tried=1;hw.frame=frame;hw.safe=1;hw.busy=resource_busy();
-    if (hw.busy==0xFFFFu || (hw.busy&0x3FF)) { hw.channel=0;return 0; }    /* busy: diagnostic only */
-    hw.channel=5;
+    /* Resource 5 (Canon's native output route) free -> channel 5; otherwise
+     * the LCM13 replacement route on channel 3, now in the idle part of a
+     * slow full-res frame instead of during continuous 3 fps LV. The other
+     * nine engine resources must be free in both cases. */
+    if (hw.busy==0xFFFFu || (hw.busy&0x3FE)) { hw.channel=0;return 0; }
+    hw.channel=(hw.busy&1) ? 3:5;
+    lc_native_set_wait_ms(600);
     sync_caches();                                   /* acc written through the cache */
     const unsigned rows[2]={1754,r->height-1754},start[2]={0,1754};
     for (unsigned band=0;band<2;band++) {
@@ -521,7 +561,7 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
         struct lc_native_plane b={(uint32_t)cap_storage,FRLV_ALLOCATION,(uint32_t)cap+start[band]*r->pitch,5280,rows[band],r->pitch};
         a.pixels|=0x40000000u;b.pixels|=0x40000000u;
         struct lc_native_engine_result res;
-        unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,5);
+        unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,hw.channel);
         hw.reason[band]=reason;hw.engine_us[band]=res.elapsed_us;hw.lock[band]=res.lock;hw.setup[band]=res.setup;
         hw.wait[band]=res.wait;memcpy(hw.completed[band],res.completed,sizeof(res.completed));
         memcpy(hw.after[band],res.after_wait,sizeof(res.after_wait));
@@ -548,7 +588,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     const unsigned end=physical(cap)+r->bytes,blocks=r->bytes/14,max_partials=2+r->limit/4;
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
-    memset(&hw,0,sizeof(hw));
+    memset(&hw,0,sizeof(hw));act_on=0;act_n=0;
     if (hw_enable) {
         hw_geometry=fio_malloc(128);
         hw.prepare=hw_geometry ? lc_native_engine_prepare((uint32_t *)(((unsigned)hw_geometry+63)&~63u)):999;
@@ -567,6 +607,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         }
         w0=get_ms_clock();
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
+            act_sample();
             if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping: finishing current exposure"); }
             if (ml_shutdown_requested) cont_arm=0;
             msleep(10);
@@ -578,6 +619,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (frames_done!=seen+1) { r->missed+=frames_done-seen-1;r->error|=FE_DMA;*msg="Merge too slow: frame missed";cont_arm=0;break; }
         seen=frames_done;
         unsigned state=done_state,pointer=done_pointer,done=done_ms;
+        if (act_on) act_on=0;                            /* frame 3 arrived: map complete */
+        if (r->merged==1 && !act_n) { act_union=0;act_t0=done;act_on=1;act_config(5,act_info5);act_config(3,act_info3); }
         unsigned d_kind=done_cb_kind,d_after=done_cb_after,d_ptr=done_cb_ptr,d_arm=done_arm_after_vsync,d_engio=done_engio,d_adtg=done_adtg;
         preview_show();                                  /* hide Canon's new frame */
         if (state) { cont_arm=0;*dma_uncertain=1;r->error|=FE_DMA;*msg="RAW DMA did not finish";break; }
@@ -613,6 +656,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             if (off && off<=r->bytes && off>b0*14) { c->lost_bands=16-b;r->late_frames++;break; }
             if (!r->merged) memcpy(acc+b0*14,src+b0*14,(b1-b0)*14);
             else changed+=lc_raw14_max_sparse((uint16_t *)(acc+b0*14),(const uint16_t *)(src+b0*14),b1-b0);
+            act_sample();
             msleep(10);
         }
         c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/blocks):100;

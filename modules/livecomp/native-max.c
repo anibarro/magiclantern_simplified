@@ -23,6 +23,9 @@ static volatile unsigned running,table_calls,table_error;
 /* Output write channel/resource of the current job: 5 = Canon's own route
  * (proved in the LCM1 factory composite), 3 = the LCM13 replacement. */
 static unsigned OUTPUT_CHANNEL=DEFAULT_OUTPUT_CHANNEL;
+/* Completion wait; the engine needs ~60 ms per band, 5 s was the synthetic check. */
+static unsigned wait_ms=5000;
+void lc_native_set_wait_ms(unsigned ms) { if (!running) wait_ms=ms ? ms:5000; }
 
 /* Observe completion without changing Canon's event notification. Each channel
  * owns its counter; no file I/O, allocation or waiting occurs in callbacks. */
@@ -206,7 +209,7 @@ unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     ((void (*)(unsigned))0xff2c19ac)(0x55180);
     ((void (*)(unsigned,unsigned))0x1c914)(40,2);
     ((void (*)(unsigned,unsigned))0x1c914)(41,4);
-    r->wait=((unsigned (*)(unsigned,unsigned,unsigned))0x1e7d4)(state[2],7,5000);
+    r->wait=((unsigned (*)(unsigned,unsigned,unsigned))0x1e7d4)(state[2],7,wait_ms);
     trace_dma(r->after_wait);
     r->table_calls=table_calls;r->table_error=table_error;
     for (unsigned i=0;i<3;i++) r->completed[i]=completed[i];

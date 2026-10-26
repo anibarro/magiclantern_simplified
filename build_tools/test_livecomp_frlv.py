@@ -104,6 +104,7 @@ int patch_hook_function(uintptr_t addr,uint32_t orig,patch_hook_function_cbr cb,
 int unpatch_memory(uintptr_t addr); void set_lv_zoom(int z);
 uint32_t shamem_read(uint32_t a); void EngDrvOut(uint32_t r,uint32_t v); void EngDrvOutLV(uint32_t r,uint32_t v);
 int edmac_get_state(uint32_t ch); uint32_t edmac_get_pointer(uint32_t ch);
+uint32_t edmac_get_address(uint32_t ch); uint32_t edmac_get_length(uint32_t ch); uint32_t edmac_get_flags(uint32_t ch); uint32_t edmac_get_connection(uint32_t ch,uint32_t dir);
 struct edmac_info { unsigned off1a,off1b,off2a,off2b,off3,xa,xb,ya,yb,xn,yn; };
 #define EDMAC_2_BYTES_PER_TRANSFER 0x20000000
 void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx);
@@ -175,6 +176,11 @@ static int sim_hw_busy=1,sim_hw_calls,sim_hw_prepared;
 int lc_native_resources(struct lc_resource_snapshot *s){ memset(s,0,sizeof(*s)); s->count=10; s->busy=sim_hw_busy; return 1; }
 unsigned lc_native_engine_prepare(uint32_t *g){ (void)g; sim_hw_prepared++; return 0; }
 unsigned lc_native_engine_close(void){ sim_hw_prepared--; return 0; }
+void lc_native_set_wait_ms(unsigned ms){ (void)ms; }
+uint32_t edmac_get_address(uint32_t ch){ (void)ch; return 0; }
+uint32_t edmac_get_length(uint32_t ch){ (void)ch; return 0; }
+uint32_t edmac_get_flags(uint32_t ch){ (void)ch; return 0; }
+uint32_t edmac_get_connection(uint32_t ch,uint32_t dir){ (void)ch;(void)dir; return 0; }
 unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
     const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch)
 { (void)a;(void)b;(void)o;(void)ch; memset(r,0,sizeof(*r)); r->resume_safe=1; sim_hw_calls++; return r->reason=LC_NATIVE_BUSY; }
@@ -308,10 +314,10 @@ int main(void)
     printf("overrun: %s\n",status);
     assert(!unsafe && strstr(status,"saved") && zoom==1);
     /* HW merge test: registry busy -> no engine call; free -> one call. */
-    reset();sim_hw_busy=1;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    reset();sim_hw_busy=2;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
-    reset();sim_hw_busy=0;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    reset();sim_hw_busy=1|0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d\n",status,sim_hw_calls);
     assert(!unsafe && sim_hw_calls==1 && sim_hw_prepared==0 && strstr(status,"saved"));

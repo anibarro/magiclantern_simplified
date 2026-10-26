@@ -35,6 +35,7 @@ unsigned lc_native_engine_max(const struct lc_native_plane *a,
 unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
     const struct lc_native_plane *b,const struct lc_native_plane *out,
     struct lc_native_engine_result *r,unsigned channel);
+void lc_native_set_wait_ms(unsigned ms);
 int lc_native_snapshot(uint32_t state[12]);
 int lc_native_resources(struct lc_resource_snapshot *snapshot);
 #endif

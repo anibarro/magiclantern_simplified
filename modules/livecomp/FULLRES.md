@@ -461,3 +461,23 @@ DNG correct. Two findings:
   to the LOG. The composite is never written by the engine. Buffers now keep 4
   halo rows before the pixels, as the engine requires.
 - Fixed: per-frame CSV fields were not cleared between sessions.
+
+## LCM20 camera result
+
+16 frames merged (CPU), DNG saved, no late frames. HW test **not attempted**:
+Canon resource 5 (native output write channel) was busy in every frame, both
+right after the vsync and in the idle window (busy mask 0xa001: 10 resources,
+bit0 = id 5). Live View keeps resource 5 permanently in x5 full-res too, as in
+normal LV (LCM10). The 6-row aborted frame was frame 5 again (fourth session
+in a row), ~32 s after the zoom.
+
+## LCM21
+
+- HW test falls back to the LCM13 replacement route (output on write channel 3,
+  private resource set) when only resource 5 is busy. In LCM13 (continuous 3 fps
+  normal LV) channel 3 wrote 422 KB then stalled; now the job runs in the idle
+  ~1.5 s window of a 4 s full-res frame. Completion wait 600 ms (was 5 s).
+- DMA activity map over one full frame period (frame 2 -> 3): state of all 16
+  EDMAC write channels, plus channel 3 and 5 pointers and configuration, so the
+  next step (e.g. borrowing channel 5 while Live View is not using it) is based
+  on measured activity.
