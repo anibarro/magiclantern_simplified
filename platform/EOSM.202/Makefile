@@ -51,5 +51,17 @@ $(BUILD_DIR)/xpan-live-native.o: $(SRC_DIR)/xpan-live-neutral.inc $(SRC_DIR)/xpa
 # The 1000-node colour-table preparation is the only hot loop; keep the rest
 # of Magic Lantern at its usual size-oriented -Os.
 $(addprefix $(BUILD_DIR)/,xpan-native-table.o xpan-cube.o xpan-lut.o): CFLAGS += -O2
+
+# Card data, packaged as ML/XPAN/ in magiclantern.zip:
+#   data/XPAN/*.CUBE   Cineon tone bases (photo +1/+2 EV, Live View)
+#   data/XPAN/*.BIN    WMARK.BIN (watermark), GRAIN.BIN (Canon grain texture)
+#   data/XPAN/LUTS/    user looks (*.cube); the folder is created even if empty
+# Rebuilt on every zip so files removed from the repository leave the card too.
+XPAN_DATA_DIR = $(TOP_DIR)/data/XPAN
+zip_contents:: $(ZIP_DIR) | $(BUILD_DIR)
+	rm -rf $(ZIP_DIR)/ML/XPAN
+	mkdir -p $(ZIP_DIR)/ML/XPAN/LUTS
+	$(CP) $(XPAN_DATA_DIR)/*.CUBE $(XPAN_DATA_DIR)/*.BIN $(ZIP_DIR)/ML/XPAN/
+	find $(XPAN_DATA_DIR)/LUTS -maxdepth 1 -type f -iname '*.cube' -exec $(CP) {} $(ZIP_DIR)/ML/XPAN/LUTS/ \;
 endif
 .DEFAULT_GOAL := $(BUILD_DIR)/cam_complete

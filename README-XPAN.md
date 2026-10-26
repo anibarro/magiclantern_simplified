@@ -51,16 +51,24 @@ Movie mode:
 
 ## Card layout
 
+The XPan build puts everything in `magiclantern.zip`. Each file comes from
+`data/XPAN/` in the repository:
+
 ```
-ML/XPAN/CINEON7.CUBE       tone base for +1 EV headroom   (data/XPAN)
-ML/XPAN/CINEON7_2EV.CUBE   tone base for +2 EV headroom   (data/XPAN)
-ML/XPAN/CINEONLV.CUBE      Live View tone base, 17^3      (data/XPAN)
-ML/XPAN/LUTS/*.CUBE        your looks
-ML/XPAN/WMARK.BIN          optional logo (extras/XPan_tools/xpan_watermark.py)
+ML/XPAN/CINEON7.CUBE       tone base for +1 EV headroom
+ML/XPAN/CINEON7_2EV.CUBE   tone base for +2 EV headroom
+ML/XPAN/CINEONLV.CUBE      Live View tone base, 17^3
+ML/XPAN/WMARK.BIN          watermark logo (from extras/XPan_tools)
+ML/XPAN/GRAIN.BIN          grain texture for Grain type = Canon
+ML/XPAN/LUTS/              your looks: every *.cube in data/XPAN/LUTS/
 ```
 
-Files are read once, when the feature is first used; restart the camera after
-copying new ones.
+`ML/XPAN/LUTS/` is created even when the repository folder holds no looks.
+The camera reads these files once, when a feature first needs them, so
+restart it after copying new ones (or use *Refresh Cube list* for looks).
+
+`GRAIN.BIN` is the 20 KB seed/offset texture of Canon's own grain filter,
+captured once on an EOS M. Grain type *Film* does not use it.
 
 ## Building
 
@@ -74,9 +82,8 @@ RUN_XPAN_BUILD.cmd                         # Windows, through WSL
 ```
 
 This is `make -C platform/EOSM.202 XPAN=y CONFIG_QEMU=n` with a separate
-build directory (`platform/EOSM.202/build_xpan`). Copy the contents of
-`build_xpan/magiclantern.zip` to the card, then the `data/XPAN` files to
-`ML/XPAN/`.
+build directory (`platform/EOSM.202/build_xpan`). Unzip
+`build_xpan/magiclantern.zip` to the root of the card.
 
 Without `XPAN=y` an EOS M build keeps only the basic 65:24 framing overlay
 and HUD (Shoot > XPan); the native look, JPEG crop, grain and watermark are
@@ -84,9 +91,12 @@ behind `CONFIG_XPAN`. Other cameras are unaffected (`CONFIG_EOSM`).
 
 ## Tools
 
-* `extras/XPan_tools/xpan_watermark.py`: converts a PNG with transparency
-  into `WMARK.BIN` (both sizes, BT.601 YCbCr + alpha, pixel pairs).
-  `python xpan_watermark.py logo.png --preview`.
+* `extras/XPan_tools/`: watermark source. `logo.png` is the PNG (with
+  transparency) and `xpan_watermark.py` converts it into `WMARK.BIN`
+  (386 and 776 px wide, BT.601 YCbCr + alpha, pixel pairs). `run.bat` (or
+  `python xpan_watermark.py logo.png --out ../../data/XPAN/WMARK.BIN --preview`)
+  rewrites `data/XPAN/WMARK.BIN`, so the next build packages the new logo.
+  Requires `pip install pillow numpy`.
 * `build_tools/xpan_cineon_base_v7.py`: regenerates the Cineon tone bases from
   the calibration model in `build_tools/*.npy`:
 

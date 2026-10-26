@@ -83,3 +83,7 @@ syntax: regexp
 platform/*/build*/
 modules/**/build*/
 platform/*/*.log
+# XPan card data is tracked despite the *.bin rule (case-insensitive on Windows)
+!data/XPAN/*.BIN
+extras/XPan_tools/*_preview.png
+data/XPAN/*_preview.png
