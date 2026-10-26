@@ -518,7 +518,7 @@ void xpan_native_look_menu_sanitize(void);   /* xpan-workflow.inc */
 #endif
 void xpan_menu_mode_visibility(void)
 {
-    static const char *const movie_rows[]={"Custom LUT","Cube file","Cube strength","Tone base"};
+    static const char *const movie_rows[]={"Custom LUT","Cube file","Cube strength","Tone base","Refresh Cube list"};
     /* Stored values from older builds must be valid before any row is drawn. */
     if (xpan_photo_theme<0 || xpan_photo_theme>3) xpan_photo_theme=0;
     if (xpan_grid_mode<0 || xpan_grid_mode>1) xpan_grid_mode=1;   /* old Square/3rds -> 3rds */
