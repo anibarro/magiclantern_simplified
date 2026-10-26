@@ -10,8 +10,11 @@ import shutil
 def main():
     args = parse_args()
     if shutil.which("git"):
-        status = subprocess.run(["git", "status"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if "not a git repository" in status.stdout.decode("utf8"):
+        # Only the revision and branch are needed. Avoid walking every untracked
+        # camera build, ROM dump and card image just to identify the repository.
+        repository = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if repository.returncode != 0 or repository.stdout.strip() != "true":
             print("unofficial: not a git repo", end='')
         else:
             short_hash = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"]).strip().decode("utf8")

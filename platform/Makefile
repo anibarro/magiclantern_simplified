@@ -62,7 +62,7 @@ BUILD_DATE = $(call eval_once,BUILD_DATE,$(shell LC_TIME=EN date +'%Y-%m-%d'))
 VERSION = $(BUILD_DATE).$(MODEL).$(FW_VERSION)
 
 # Location of files to turn into zip:
-ZIP_DIR = build/zip
+ZIP_DIR = $(BUILD_DIR)/zip
 ZIP_MODULES_DIR = $(ZIP_DIR)/ML/modules
 # All modules go here before placing in zip file hierarchy,
 # for any post-module-build but per-cam, pre-zip processing:
@@ -200,9 +200,10 @@ $(ML_PLATFORM_TARGETS): %: $(BUILD_DIR)/platform_modules_complete | $(BUILD_DIR)
 	$(MAKE) -C $(subst /$(BUILD_DIR)/cam_complete,,$*)
 	$(CP) $(subst /cam_complete,/magiclantern.zip,$*) $(BUILD_DIR)/magiclantern.$(BUILD_DATE).$(subst /build/cam_complete,,$*).zip
 
-$(BUILD_DIR)/magiclantern.zip: zip_contents | $(BUILD_DIR)
+$(BUILD_DIR)/magiclantern.zip: zip_contents $(PLATFORM_DIR)/Makefile $(BUILD_TOOLS_DIR)/verify_zip_firmware.py | $(BUILD_DIR)
 	cd $(BUILD_DIR)/zip; zip -z ../../$@.tmp < ../../$(SRC_DIR)/zip.txt  -r .
 	$(MV) $@.tmp $@
+	$(PYTHON) $(BUILD_TOOLS_DIR)/verify_zip_firmware.py $@ $(BUILD_DIR)/magiclantern.bin
 
 # Create the directory structure of the output dir
 ifeq ($(IS_PLATFORM_LEVEL_BUILD), true)
@@ -560,7 +561,8 @@ ML_LIBC = $(BUILD_DIR)/dietlibc.a \
           $(BUILD_DIR)/newlib-libm.a \
           $(BUILD_DIR)/gcc-libgcc.a
 AFLAGS =
-INCLUDE_ARGS = -I. -Iinclude -Ibuild -I$(SRC_DIR)
+# Keep the autoexec shim paired with the firmware from this selected build tree.
+INCLUDE_ARGS = -I. -Iinclude -I$(BUILD_DIR) -I$(SRC_DIR)
 
 # FIXME can we have the versioned zip depend on magiclantern.zip
 # and something like the tcc_status trick?
@@ -578,7 +580,7 @@ $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(CDEPS_FLAGS) -c -o $@ $< $(INCLUDE_ARGS) $(LFLAGS)
 
-$(BUILD_DIR)/reboot.o: $(SRC_DIR)/reboot.c $(BUILD_DIR)/version.bin $(BUILD_DIR)/magiclantern.bin | $(BUILD_DIR)
+$(BUILD_DIR)/reboot.o: $(SRC_DIR)/reboot.c ../Makefile $(BUILD_DIR)/version.bin $(BUILD_DIR)/magiclantern.bin | $(BUILD_DIR)
 
 # include ML version, camera, firmware, some git info, build date
 # (this will need moving / updating for universal autoexec,
@@ -637,8 +639,9 @@ $(BUILD_DIR)/autoexec: $(ML_REBOOT_OBJ) | $(BUILD_DIR)
 	$(LD) -o $@ -e _start -N -Ttext $(AUTOEXEC_BASE) $^ --cref -Map=$(BUILD_DIR)/autoexec.map
 
 $(BUILD_DIR)/autoexec.bin: $(BUILD_DIR)/autoexec $(BUILD_DIR)/xor_chk | $(BUILD_DIR)
-	$(OBJCOPY) -O binary $< $@; \
-	$(BUILD_DIR)/xor_chk $@
+	$(OBJCOPY) -O binary $< $@ && \
+	$(BUILD_DIR)/xor_chk $@ && \
+	$(PYTHON) $(BUILD_TOOLS_DIR)/verify_embedded_firmware.py $@ $(BUILD_DIR)/magiclantern.bin
 
 $(BUILD_DIR)/%.sym: $(BUILD_DIR)/% | $(BUILD_DIR)
 	$(READELF) -sW $< | $(GREP) GLOBAL | $(GREP) -v " UND " | $(GREP) -E 'FUNC|OBJECT|ABS|NOTYPE' | $(AWK) "{print \$$2 \" \" \$$8;}" | $(GREP) -v '^ ' | $(GREP) -v __config_ | $(GREP) -v -E ' _[a-zA-Z]' | sort > $@.tmp

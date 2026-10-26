@@ -361,7 +361,11 @@ extern int is_camera(const char *model, const char *version);
 extern int get_digic_version(void);
 
 #ifdef MODULE
-#include "build/module_strings.h"
+#ifndef MODULE_STRINGS_HEADER
+// Preserve the traditional path for standalone module builds.
+#define MODULE_STRINGS_HEADER "build/module_strings.h"
+#endif
+#include MODULE_STRINGS_HEADER
 #endif
 
 #endif

@@ -77,3 +77,9 @@ developer_guide/developer_guide.html
 developer_guide/developer_guide.pdf
 
 syntax: regexp
+!.gitattributes
+
+# Per-configuration build trees (BUILD_DIR=build_xpan, build_qemu, ...)
+platform/*/build*/
+modules/**/build*/
+platform/*/*.log

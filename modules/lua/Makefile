@@ -49,7 +49,8 @@ $(shell mkdir -p $(BUILD_DIR)/dietlibc)
 # fixme: how to implement this in a cleaner way?
 $(BUILD_DIR)/lua.sym: $(BUILD_DIR)/lua.mo
 	$(READELF) -sW $< | grep GLOBAL | grep -v UND | grep -v COM | grep -v "__module_.*$(MODULE_NAME)" | $(AWK) "{print \$$8;}" | sort > localsyms
-	$(OBJCOPY) $(BUILD_DIR)/lua.mo $(BUILD_DIR)/lua.mo --localize-symbols localsyms
+	# Repeated builds may already have localized every global symbol.
+	@if test -s localsyms; then $(OBJCOPY) $(BUILD_DIR)/lua.mo $(BUILD_DIR)/lua.mo --localize-symbols localsyms; fi
 	rm -f localsyms
 	$(READELF) -sW $< | grep GLOBAL | grep -v UND | grep -v COM | grep -v "__module_.*$(MODULE_NAME)" | $(AWK) "{print \$$2 \" \" \$$8;}" | sort > $@ && cat $@
 

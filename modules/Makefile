@@ -162,7 +162,8 @@ endif
 # modules will be loaded (heap) are further than 32MB from ML or DryOS code.  E.g. on
 # 200D, heap tends to be 0xbb_0000 and stubs are 0xe000_0000 or 0xdf00_0000, too far.
 MODULE_CFLAGS += -I../../src/
-CFLAGS += -mlong-calls -DMODULE -DMODULE_NAME=$(MODULE_NAME) -DCONFIG_MAGICLANTERN $(MODULE_CFLAGS) -I.
+# Point module code at the selected build directory's generated strings header.
+CFLAGS += -mlong-calls -DMODULE -DMODULE_NAME=$(MODULE_NAME) -DCONFIG_MAGICLANTERN -DMODULE_STRINGS_HEADER=\"$(BUILD_DIR)/module_strings.h\" $(MODULE_CFLAGS) -I.
 
 $(BUILD_DIR)/module_strings.h: $(BUILD_DIR)/README.rst | $(BUILD_DIR)
 	$(PYTHON) $(MODULES_DIR)/readme2modulestrings.py > $@.tmp
