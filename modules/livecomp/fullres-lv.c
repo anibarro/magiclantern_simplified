@@ -37,6 +37,7 @@
 #include "notify_box.h"
 #include "fullres-fix.h"
 #include "native-max.h"
+#include "fullres-hw.h"
 
 extern int raw_lv_is_enabled(void);
 extern uint32_t raw_write_chan;
@@ -176,7 +177,7 @@ void livecomp_frlv_vsync(void)
 }
 
 struct frlv_hw { unsigned tried,frame,busy,channel,reason[2],engine_us[2],lock[2],setup[2],wait[2],
-    completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe; };
+    completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe,plane_ok[2]; };
 static struct frlv_hw hw;
 /* Write-channel activity over one full frame period (frame 2 -> 3): when is
  * each EDMAC write channel busy, and what are channels 3/5 doing. */
@@ -290,12 +291,12 @@ static void write_log(const struct frlv_result *r,const char *status)
         "HW_band0_reason_us_lock_setup_wait_completed: %d,%d,%x,%x,%x,%d/%d/%d\n"
         "HW_band1_reason_us_lock_setup_wait_completed: %d,%d,%x,%x,%x,%d/%d/%d\n"
         "HW_band0_after_out_state_flags_addr_ptr: %x,%x,%x,%x\n"
-        "HW_compare_us_mismatch_bytes_first_expected_actual: %d,%d,%d,%x,%x\n",
+        "HW_compare_us_mismatch_bytes_first_expected_actual: %d,%d,%d,%x,%x\nHW_plane_ok_band0_band1: %x,%x\n",
         hw.prepare,hw.close,hw.tried,hw.frame,hw.busy,hw.channel,hw.safe,
         hw.reason[0],hw.engine_us[0],hw.lock[0],hw.setup[0],hw.wait[0],hw.completed[0][0],hw.completed[0][1],hw.completed[0][2],
         hw.reason[1],hw.engine_us[1],hw.lock[1],hw.setup[1],hw.wait[1],hw.completed[1][0],hw.completed[1][1],hw.completed[1][2],
         hw.after[0][8],hw.after[0][9],hw.after[0][10],hw.after[0][11],
-        hw.compare_us,hw.mismatch_bytes,hw.first_bad,hw.expected,hw.actual);
+        hw.compare_us,hw.mismatch_bytes,hw.first_bad,hw.expected,hw.actual,hw.plane_ok[0],hw.plane_ok[1]);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"DMA_activity_samples_union_mask: %d,%x (bit i = write channel 0..6,0x10..0x16,0x20,0x21)\n"
         "Ch5_addr_len_flags_conn_state_ptr: %x,%x,%x,%x,%x,%x\nCh3_addr_len_flags_conn_state_ptr: %x,%x,%x,%x,%x,%x\n"
@@ -555,11 +556,12 @@ static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned
     hw.channel=(hw.busy&1) ? 3:5;
     lc_native_set_wait_ms(600);
     sync_caches();                                   /* acc written through the cache */
-    const unsigned rows[2]={1754,r->height-1754},start[2]={0,1754};
     for (unsigned band=0;band<2;band++) {
-        struct lc_native_plane a={(uint32_t)acc_storage,FRLV_ALLOCATION,(uint32_t)acc+start[band]*r->pitch,5280,rows[band],r->pitch};
-        struct lc_native_plane b={(uint32_t)cap_storage,FRLV_ALLOCATION,(uint32_t)cap+start[band]*r->pitch,5280,rows[band],r->pitch};
-        a.pixels|=0x40000000u;b.pixels|=0x40000000u;
+        unsigned first,rows=lc_frlv_band(r->height,band,&first);
+        struct lc_native_plane a,b;
+        lc_frlv_plane((uint32_t)acc_storage,(uint32_t)acc|0x40000000u,r->pitch,first,rows,&a);
+        lc_frlv_plane((uint32_t)cap_storage,(uint32_t)cap|0x40000000u,r->pitch,first,rows,&b);
+        hw.plane_ok[band]=lc_native_plane_ok(&a,1)|(lc_native_plane_ok(&b,1)<<1)|(lc_native_plane_ok(&b,0)<<2);
         struct lc_native_engine_result res;
         unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,hw.channel);
         hw.reason[band]=reason;hw.engine_us[band]=res.elapsed_us;hw.lock[band]=res.lock;hw.setup[band]=res.setup;
@@ -743,9 +745,10 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     }
     if (!alloc[0]) { r.error|=FE_MEMORY;msg="No full-size buffer available";goto out; }
     /* Halo rows before the pixels (Canon engine input), then guards. */
-    cap=(uint8_t *)(((unsigned)alloc[0]+FRLV_HALO+2*FRLV_GUARD-1)&~(FRLV_GUARD-1));
-    if (alloc[1]) acc=(uint8_t *)physical((void *)(((unsigned)alloc[1]+FRLV_HALO+FRLV_GUARD-1)&~(FRLV_GUARD-1)));
-    unsigned capacity=FRLV_ALLOCATION-FRLV_HALO-3*FRLV_GUARD;
+    cap=(uint8_t *)lc_frlv_pixels((uint32_t)alloc[0],1);
+    if (alloc[1]) acc=(uint8_t *)physical((void *)lc_frlv_pixels((uint32_t)alloc[1],0));
+    /* halo before and after (engine input bands), guards around */
+    unsigned capacity=FRLV_ALLOCATION-2*FRLV_HALO-3*FRLV_GUARD;
     memset(cap-FRLV_GUARD,0x5a,FRLV_GUARD);
     r.stage=2;write_log(&r,"allocated");
 

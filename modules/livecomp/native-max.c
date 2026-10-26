@@ -47,13 +47,8 @@ static void trace_dma(uint32_t trace[12])
     }
 }
 
-static uint32_t physical(uint32_t address) { return address&~0x40000000u; }
-static int ram(uint32_t address,unsigned bytes)
-{
-    unsigned p=physical(address);
-    return bytes && bytes<0x10000000u && !(address&3) &&
-        p>=0x10000u && p<=0x10000000u-bytes;
-}
+static uint32_t physical(uint32_t address) { return lc_native_physical(address); }
+static int ram(uint32_t address,unsigned bytes) { return lc_native_ram(address,bytes); }
 static unsigned hash(const volatile uint8_t *p,unsigned bytes)
 {
     unsigned h=2166136261u;
@@ -109,18 +104,7 @@ unsigned lc_native_engine_close(void)
     if (installed && unpatch_memory(TABLE_SITE)) return LC_NATIVE_TABLE;
     installed=0; private_geometry=NULL; return 0;
 }
-static int plane_valid(const struct lc_native_plane *p,int input)
-{
-    if (!p || p->width!=5280 || p->pitch!=9240 || !p->height ||
-        p->height>1930 || (p->height&1) || !ram(p->storage,p->bytes) ||
-        !(p->pixels&0x40000000u)) return 0;
-    unsigned lo=physical(p->storage),start=physical(p->pixels);
-    unsigned halo=input ? 4*p->pitch:0;
-    unsigned length=p->height*p->pitch;
-    return ram(p->pixels,length) && start>=lo+halo && start<=lo+p->bytes &&
-        !((start-lo)%p->pitch) &&
-        length+halo<=lo+p->bytes-start;
-}
+static int plane_valid(const struct lc_native_plane *p,int input) { return lc_native_plane_ok(p,input); }
 static int overlap(unsigned a,unsigned na,unsigned b,unsigned nb)
 {
     a=physical(a);b=physical(b);return a<b+nb && b<a+na;

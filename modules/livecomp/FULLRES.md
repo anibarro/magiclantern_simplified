@@ -481,3 +481,23 @@ in a row), ~32 s after the zoom.
   EDMAC write channels, plus channel 3 and 5 pointers and configuration, so the
   next step (e.g. borrowing channel 5 while Live View is not using it) is based
   on measured activity.
+
+## LCM21 camera result
+
+22 frames merged, DNG saved. HW test on channel 3 refused immediately with
+LC_NATIVE_ARGUMENT: my plane construction used the allocation start as plane
+storage, but the wrapper requires the band to start a whole number of rows
+after storage (the halo + guard offset is not). Nothing ran on the engine.
+DMA activity map: during the whole idle window write channels 0x01, 0x02, 0x05
+and 0x11 are *armed* (state 1, pointer at start; channel 5 at 0x0D119C00,
+length 0xE0020, connection 2) and only move when the next readout arrives, and
+0x12 is our armed RAW slurp. So channel 5 is not free to borrow in the idle
+window: Canon keeps it armed for the next frame. Channel 3 was idle (and
+unconfigured) the whole time - consistent with using it for the engine.
+
+## LCM22
+
+Fixed plane layout (`fullres-hw.h`: storage = pixels - 4 halo rows, 4 halo
+rows also kept after the band); the exact camera argument checks now live in
+`native-max.h` and host tests build the planes from the real allocation
+addresses and also assert that the LCM21 construction is rejected.

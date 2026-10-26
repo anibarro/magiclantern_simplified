@@ -354,9 +354,11 @@ def main():
         src = src.replace('(unsigned)p&~livecomp_camera.cache_alias_mask',
                           '(uintptr_t)p&~(uintptr_t)livecomp_camera.cache_alias_mask')
         src = src.replace('static unsigned physical(', 'static uintptr_t physical(')
-        src = src.replace('a.pixels|=0x40000000u;b.pixels|=0x40000000u;', '')
-        src = src.replace('(uint8_t *)(((unsigned)alloc[0]', '(uint8_t *)(((uintptr_t)alloc[0]')
-        src = src.replace('(void *)(((unsigned)alloc[1]', '(void *)(((uintptr_t)alloc[1]')
+        src = src.replace('cap=(uint8_t *)lc_frlv_pixels((uint32_t)alloc[0],1);',
+                          'cap=(uint8_t *)(((uintptr_t)alloc[0]+FRLV_HALO+2*FRLV_GUARD-1)&~(uintptr_t)(FRLV_GUARD-1));')
+        src = src.replace('acc=(uint8_t *)physical((void *)lc_frlv_pixels((uint32_t)alloc[1],0));',
+                          'acc=(uint8_t *)(((uintptr_t)alloc[1]+FRLV_HALO+FRLV_GUARD-1)&~(uintptr_t)(FRLV_GUARD-1));')
+        assert 'lc_frlv_pixels((uint32_t)alloc' not in src
         src = src.replace('regs[0]=(uint32_t)cmos_copy', 'regs[0]=(uint32_t)(uintptr_t)cmos_copy')
         src = src.replace('regs[1]=(uint32_t)adtg_copy', 'regs[1]=(uint32_t)(uintptr_t)adtg_copy')
         src = src.replace('#define FRLV_ALLOCATION 32488032u', '#define FRLV_ALLOCATION 32488032u\n#define LIVECOMP_BUILD_ID "LCM15 host"')

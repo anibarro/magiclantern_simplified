@@ -8,6 +8,27 @@
 struct lc_native_plane {
     uint32_t storage,bytes,pixels,width,height,pitch;
 };
+/* Pure argument checks shared with the host tests (no hardware access).
+ * Input planes need 4 halo rows before AND after the band inside storage;
+ * the band must start a whole number of rows after the storage start. */
+static inline uint32_t lc_native_physical(uint32_t address) { return address&~0x40000000u; }
+static inline int lc_native_ram(uint32_t address,unsigned bytes)
+{
+    unsigned p=lc_native_physical(address);
+    return bytes && bytes<0x10000000u && !(address&3) && p>=0x10000u && p<=0x10000000u-bytes;
+}
+static inline int lc_native_plane_ok(const struct lc_native_plane *p,int input)
+{
+    if (!p || p->width!=5280 || p->pitch!=9240 || !p->height ||
+        p->height>1930 || (p->height&1) || !lc_native_ram(p->storage,p->bytes) ||
+        !(p->pixels&0x40000000u)) return 0;
+    unsigned lo=lc_native_physical(p->storage),start=lc_native_physical(p->pixels);
+    unsigned halo=input ? 4*p->pitch:0;
+    unsigned length=p->height*p->pitch;
+    return lc_native_ram(p->pixels,length) && start>=lo+halo && start<=lo+p->bytes &&
+        !((start-lo)%p->pitch) &&
+        length+halo<=lo+p->bytes-start;
+}
 struct lc_native_engine_result {
     uint32_t reason,lock,setup,wait,event_delete,unlock,elapsed_us;
     uint32_t output_channel,resource_delete;
