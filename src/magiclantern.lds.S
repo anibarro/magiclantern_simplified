@@ -34,7 +34,9 @@ SECTIONS
 #else
     . = RESTARTSTART;
 #endif
-    .text : {
+    /* Keep the loader's exact destination. An aligned LUT in .rodata must not
+     * round up this section's start; its own alignment is handled below. */
+    .text . : {
         _text_start = .;
         *(.text)
         _text_end = .;
@@ -51,6 +53,14 @@ SECTIONS
         *(.rodata)
         _rodata_end = .;
     }
+
+    /* reboot.c copies the flat binary to this fixed address, then jumps there.
+     * A shifted link address produces a valid checksum but unbootable code. */
+#if defined(POSITION_INDEPENDENT)
+    ASSERT(_text_start == 0xE0000000, "ML entry moved from the relocation base")
+#else
+    ASSERT(_text_start == RESTARTSTART, "ML entry moved from the loader destination")
+#endif
 
     _data_start = .;
 

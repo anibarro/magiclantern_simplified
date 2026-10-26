@@ -300,6 +300,8 @@ NSTUB(   0x205CC,  vsnprintf)                  // 205CC
 /** Unused stubs or porting notes **/
 ///NSTUB(0xFF4C3BC0,  CreateDialogBox)
 ///NSTUB(0xFF4C2B88,  DeleteDialogBox)
+// Legacy encoder label is incorrect for the supplied 2.0.2 ROM: this is inside LVRCE code.
+// ENCODE_StartEncodeJpeg candidate is 0xFF199C90; its stateful context/ABI remains unverified.
 ///NSTUB(0xFF19991C,  ENCODE_StartEncodeJpeg)
 ///NSTUB(0xFF346824,  FIO_SeekFile)
 ///NSTUB(0xFF0D783C,  GUI_ChangeMode)

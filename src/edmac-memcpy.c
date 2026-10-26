@@ -9,6 +9,9 @@
 
 static struct semaphore *edmac_memcpy_sem = NULL; /* to allow only one memcpy running at a time */
 static struct semaphore *edmac_read_done_sem = NULL; /* to know when memcpy is finished */
+#ifdef CONFIG_XPAN
+static struct semaphore *edmac_write_done_sem = NULL; /* strict saved-photo copies */
+#endif
 
 /* pick some free (check using debug menu) EDMAC channels write: 0x00-0x06, 0x10-0x16, 0x20-0x21. read: 0x08-0x0D, 0x18-0x1D,0x28-0x2B */
 #if defined(CONFIG_5D2) || defined(CONFIG_50D)
@@ -74,6 +77,9 @@ static void edmac_memcpy_init()
 {
     edmac_memcpy_sem = create_named_semaphore("edmac_memcpy_sem", SEM_CREATE_UNLOCKED);
     edmac_read_done_sem = create_named_semaphore("edmac_read_done_sem", SEM_CREATE_LOCKED);
+#ifdef CONFIG_XPAN
+    edmac_write_done_sem = create_named_semaphore("edmac_write_done_sem", SEM_CREATE_LOCKED);
+#endif
     
     /* lookup the edmac channel indices for reslock */
     int read_edmac_index = edmac_channel_to_index(edmac_read_chan);
@@ -103,6 +109,11 @@ static void edmac_read_complete_cbr(void *ctx)
 
 static void edmac_write_complete_cbr(void * ctx)
 {
+}
+
+int edmac_memcpy_res_lock_checked(void)
+{
+    return resLock && !(LockEngineResources(resLock)&1);
 }
 
 void edmac_memcpy_res_lock()
@@ -372,6 +383,83 @@ void* edmac_memcpy(void* dst, void* src, size_t length)
     edmac_memcpy_finish();
     return ans;
 }
+
+
+/* Preview frames must never publish a half-written buffer after a DMA timeout. */
+int edmac_memcpy_checked(void* dst, void* src, size_t length, int timeout_ms)
+{
+    if (!length || timeout_ms <= 0 || !edmac_memcpy_start(dst, src, length)) return 0;
+    int result = take_semaphore(edmac_read_done_sem, timeout_ms);
+    if (result)
+    {
+        AbortEDmac(edmac_read_chan);
+        AbortEDmac(edmac_write_chan);
+        /* Abort callbacks may signal completion; do not leave a stale signal for the next frame. */
+        while (take_semaphore_now(edmac_read_done_sem) == 0) { }
+    }
+    edmac_copy_rectangle_adv_cleanup();
+    return result == 0;
+}
+
+#ifdef CONFIG_XPAN
+static void edmac_checked_read_cbr(void *ctx)
+{
+    /* A read callback alone does not establish destination completion. */
+}
+
+static void edmac_checked_write_cbr(void *ctx)
+{
+    give_semaphore(edmac_write_done_sem);
+}
+
+static unsigned edmac_checked_width(size_t length)
+{
+    /* EOS M SetEDmac clears xb bit0. The generic square-root divider could
+     * choose odd widths and silently lose one byte per row (test55). Use full
+     *16-byte rows, with xb<=65520 and yb<=32767, matching Canon's field masks.
+     * Noise fragments fit one row; larger image interiors use an exact divisor. */
+    if (!length || length%16) return 0;
+    for (unsigned width=MIN(length,65520u);width>=16;width-=16)
+        if (length%width==0 && length/width<=32768) return width;
+    return 0;
+}
+
+int edmac_memcpy_write_checked(void* dst, void* src, size_t length, int timeout_ms,
+                              uint32_t status[7])
+{
+    /* Keep the older preview/general copier unchanged. The grain caller owns
+     * the resource lock and needs a write-complete fence between every noise
+     * fragment, filter read and image publication. Never use a CPU fallback. */
+    unsigned blocksize=edmac_checked_width(length);
+    uint32_t expected_read=((uint32_t)src&0x1fffffffu)+length;
+    uint32_t expected_write=((uint32_t)dst&0x1fffffffu)+length;
+    if (status) {
+        status[0]=(uint32_t)-2; status[1]=status[2]=0;
+        status[3]=expected_read; status[4]=expected_write;
+        status[5]=blocksize; status[6]=blocksize ? length/blocksize:0;
+    }
+    if (!blocksize || (((uint32_t)src|(uint32_t)dst)&15) ||
+        timeout_ms<=0 || !edmac_write_done_sem) return 0;
+    while (take_semaphore_now(edmac_write_done_sem)==0) { }
+    if (!edmac_copy_rectangle_cbr_start(dst,src,blocksize,0,0,blocksize,0,0,
+        blocksize,length/blocksize,edmac_checked_read_cbr,edmac_checked_write_cbr,NULL)) return 0;
+    int result=take_semaphore(edmac_write_done_sem,timeout_ms);
+    uint32_t read_end=edmac_get_pointer(edmac_read_chan);
+    uint32_t write_end=edmac_get_pointer(edmac_write_chan);
+    /* Abort/pop callbacks share the low-level API. A wake-up is successful only
+     * if BOTH hardware pointers reached the exact requested end addresses. */
+    int ok=!result && read_end==expected_read && write_end==expected_write;
+    if (status) {
+        status[0]=result; status[1]=read_end; status[2]=write_end;
+    }
+    if (!ok) {
+        AbortEDmac(edmac_read_chan); AbortEDmac(edmac_write_chan);
+    }
+    edmac_copy_rectangle_adv_cleanup();
+    while (take_semaphore_now(edmac_write_done_sem)==0) { }
+    return ok;
+}
+#endif // CONFIG_XPAN
 
 #endif // CONFIG_EDMAC_MEMCPY
 

@@ -13,6 +13,12 @@
 // edmac memcpy funcs.
 
 void* edmac_memcpy(void* dst, void* src, size_t length);
+/* Return success only after a bounded DMA copy completes; abort on timeout. */
+int edmac_memcpy_checked(void* dst, void* src, size_t length, int timeout_ms);
+/* Grain capture requires destination completion before reusing buffers. Status:
+ * wait result, actual read/write end, expected read/write end, width/height. */
+int edmac_memcpy_write_checked(void* dst, void* src, size_t length, int timeout_ms,
+                              uint32_t status[7]);
 void* edmac_memset(void* dst, int value, size_t length);
 uint32_t edmac_find_divider(size_t length, size_t transfer_size);
 
@@ -33,6 +39,8 @@ void edmac_copy_rectangle_finish();
 
 /* Lock/unlock engine resources used by edmac_memcpy (only if ported for your camera) */
 void edmac_memcpy_res_lock();
+/* Report lock failure before a caller starts a hardware transfer. */
+int edmac_memcpy_res_lock_checked(void);
 void edmac_memcpy_res_unlock();
 
 /* pulls the raw data from EDMAC without Canon's lv_save_raw (for raw backend) */

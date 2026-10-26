@@ -176,6 +176,10 @@ static int FAST stateobj_lv_spy(struct state_object * self, int x, int input, in
     #ifdef CONFIG_CAN_REDIRECT_DISPLAY_BUFFER_EASILY
     if (self == DISPLAY_STATE && input == INPUT_ENABLE_IMAGE_PHYSICAL_SCREEN_PARAMETER)
     {
+        /* EOS M 2.0.2 input 26 selects the image; input 27 commits it to LCD DMA.
+         * Its action at FF12B1CC calls FF129BB4, which consumes the pointer at
+         * 0x3E768. Redirect BEFORE that action: changing it afterward only changes
+         * the software pointer while the LCD continues scanning Canon's image. */
         #ifdef FEATURE_HDR_VIDEO
         if (hdr_kill_flicker() == CBR_RET_CONTINUE)
         #endif

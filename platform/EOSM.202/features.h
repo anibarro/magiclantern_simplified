@@ -1,4 +1,6 @@
 #include "all_features.h"
+/* Permit only XPan's explicitly allowlisted aspect-ratio and image-quality property writes. */
+#define CONFIG_EOSM_XPAN_PROPERTY_CHANGE
 /* Can't Be Implemented */
 #undef FEATURE_FORCE_LIVEVIEW // Already Live View
 #undef FEATURE_MLU // No Mirror

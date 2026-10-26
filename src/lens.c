@@ -2316,6 +2316,23 @@ void SW2(int v, int wait)
 
 /** exposure primitives (the "clean" way, via properties) */
 
+static int lens_wait_ready_for_exposure(void)
+{
+#ifdef CONFIG_EOSM
+    if (gui_menu_shown() && !is_movie_mode())
+    {
+        /* An Expo edit is not a capture: ML's dialog may hold the ICU UI lock
+         * or report no burst slots. Never wait64 seconds for those capture-only
+         * conditions from a menu callback. Busy/review/half-press means no edit. */
+        return !ml_shutdown_requested && !sensor_cleaning && !PLAY_OR_QR_MODE &&
+            !get_halfshutter_pressed() && job_state_ready_to_take_pic();
+    }
+#endif
+    /* Keep the existing capture/bracketing wait outside EOS M photo menus. */
+    lens_wait_readytotakepic(64);
+    return !ml_shutdown_requested;
+}
+
 static int prop_set_rawaperture(unsigned aperture)
 {
     // Canon likes only numbers in 1/3 or 1/2-stop increments
@@ -2326,7 +2343,7 @@ static int prop_set_rawaperture(unsigned aperture)
         return 0;
     }
 
-    lens_wait_readytotakepic(64);
+    if (!lens_wait_ready_for_exposure()) return 0;
     aperture = COERCE(aperture, lens_info.raw_aperture_min, lens_info.raw_aperture_max);
     prop_request_change_wait(PROP_APERTURE, &aperture, 4, 200);
     return lens_info.raw_aperture == aperture;
@@ -2369,7 +2386,7 @@ static int prop_set_rawshutter(unsigned shutter)
     if (shutter < 16) return 0;
     if (shutter > FASTEST_SHUTTER_SPEED_RAW) return 0;
     
-    lens_wait_readytotakepic(64);
+    if (!lens_wait_ready_for_exposure()) return 0;
 
     int s0 = shutter;
     prop_request_change_wait( PROP_SHUTTER, &shutter, 4, 100);
@@ -2413,7 +2430,7 @@ static int prop_set_rawshutter_approx(unsigned shutter)
 
 static int prop_set_rawiso(unsigned iso)
 {
-    lens_wait_readytotakepic(64);
+    if (!lens_wait_ready_for_exposure()) return 0;
     if (iso) iso = COERCE(iso, MIN_ISO, MAX_ISO); // ISO 100-25600
     prop_request_change_wait( PROP_ISO, &iso, 4, 100);
     return lens_info.raw_iso == iso;

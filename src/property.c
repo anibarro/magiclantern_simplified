@@ -18,6 +18,7 @@
 
 #include "dryos.h"
 #include "property.h"
+#include "propvalues.h"   /* lv, RECORDING (XPan movie crop guard) */
 #include "bmp.h"
 
 #ifdef CONFIG_DIGIC_678X
@@ -320,7 +321,35 @@ static int is_prop_allowed(uint32_t property)
 #else
 static int is_prop_allowed(uint32_t property)
 {
+#ifdef CONFIG_EOSM
+    /* Share the EOS M restriction between asynchronous writes and acknowledged
+     * writes. A denied request must not wait for a reply that cannot arrive.
+     * Restore the standard lens.c Expo setters as well as XPan's base settings;
+     * remote shutter, lens drive and unrelated properties stay excluded. */
+    switch (property)
+    {
+        case PROP_PIC_QUALITY: case PROP_PIC_QUALITY2: case PROP_PIC_QUALITY3:
+        case PROP_IMAGE_ASPECT_RATIO: case PROP_PICTURE_STYLE:
+        case PROP_PICSTYLE_SETTINGS_NEUTRAL: case PROP_ALO:
+        case PROP_XPAN_COLOR_SPACE:
+        case PROP_SHUTTER: case PROP_APERTURE: case PROP_ISO: case PROP_AE:
+        case PROP_WB_MODE_LV: case PROP_WB_KELVIN_LV:
+        case PROP_WB_MODE_PH: case PROP_WB_KELVIN_PH:
+        case PROP_WBS_GM: case PROP_WBS_BA:
+        case PROP_DRIVE: case PROP_METERING_MODE: case PROP_AF_MODE: /* XPan HUD */
+        case PROP_SHOOTING_MODE: case PROP_LV_AFFRAME: /* XPan touch AF */
+        case PROP_LV_DISPSIZE: /* XPan SET zoom: 1x / 5x / 10x, same values as Canon */
+            return 1;
+        case PROP_VIDEO_MODE:
+            /* Movie crop mode (1:1 1080p, crop-mode-hack.c): only in movie
+             * Live View and never while recording. */
+            return is_movie_mode() && lv && !RECORDING;
+        default:
+            return 0;
+    }
+#else
     return 1;
+#endif
 }
 #endif
 
@@ -348,7 +377,12 @@ static int is_prop_allowed(uint32_t property)
 
 void prop_request_change(unsigned property, const void* addr, size_t len)
 {
-#ifdef CONFIG_PROP_REQUEST_CHANGE
+#if defined(CONFIG_PROP_REQUEST_CHANGE) || defined(CONFIG_EOSM_XPAN_PROPERTY_CHANGE)
+
+#ifdef CONFIG_EOSM
+    /* Use the same decision as prop_request_change_wait, before any waits. */
+    if (!is_prop_allowed(property)) return;
+#endif
 
     #if defined(CONFIG_40D)
     if (property != PROP_AFPOINT) {

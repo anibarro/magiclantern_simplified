@@ -83,11 +83,77 @@ volatile PROP_INT(PROP_LV_DISPSIZE, lv_dispsize);
 volatile PROP_INT(PROP_LIVE_VIEW_VIEWTYPE, _expsim);
 volatile PROP_INT(PROP_EFIC_TEMP, efic_temp);
 volatile PROP_INT(PROP_GUI_STATE, gui_state);
-#ifdef CONFIG_DIGIC_678X
+#ifdef CONFIG_EOSM
+/* Do not infer JPEG/RAW from zero-initialized storage before Canon reports quality. */
+volatile uint32_t pic_quality;
+/* A nonzero initialized sentinel distinguishes this state from uncleared camera memory. */
+volatile int xpan_pic_quality_valid = -1;
+/* Keep all three Canon readbacks separate; the shared pic_quality remains the active UI value. */
+volatile uint32_t xpan_pic_quality1, xpan_pic_quality2, xpan_pic_quality3;
+volatile int xpan_pic_quality1_valid = -1;
+volatile int xpan_pic_quality2_valid = -1;
+volatile int xpan_pic_quality3_valid = -1;
+static void _prop_handler_xpan_pic_quality();
+REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY, _prop_handler_xpan_pic_quality, sizeof(uint32_t));
+void REQUIRES(PropMgrTask) _prop_handler_xpan_pic_quality(
+    unsigned property, void *token, uint32_t *buf, unsigned len)
+{
+    if (len >= sizeof(uint32_t))
+    {
+        xpan_pic_quality1 = buf[0];
+        xpan_pic_quality1_valid = 1;
+        pic_quality = buf[0];
+        xpan_pic_quality_valid = 1;
+    }
+}
+#elif defined(CONFIG_DIGIC_678X)
     // confirmed 750D, 200D, R
     volatile PROP_INT(PROP_PIC_QUALITY2, pic_quality);
 #else
     volatile PROP_INT(PROP_PIC_QUALITY, pic_quality);
+#endif
+#ifdef CONFIG_EOSM
+/* The EOS M ROM exposes all three image-quality aliases; register each so ML can validate and write it safely. */
+static void _prop_handler_xpan_pic_quality2();
+REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY2, _prop_handler_xpan_pic_quality2, sizeof(uint32_t));
+void REQUIRES(PropMgrTask) _prop_handler_xpan_pic_quality2(
+    unsigned property, void *token, uint32_t *buf, unsigned len)
+{
+        xpan_pic_quality2_valid = 1;
+        xpan_pic_quality2 = buf[0];
+        /* Keep the XPan UI in sync when this firmware reports the secondary PICQ alias. */
+        pic_quality = buf[0];
+        xpan_pic_quality_valid = 1;
+}
+
+static void _prop_handler_xpan_pic_quality3();
+REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY3, _prop_handler_xpan_pic_quality3, sizeof(uint32_t));
+void REQUIRES(PropMgrTask) _prop_handler_xpan_pic_quality3(
+    unsigned property, void *token, uint32_t *buf, unsigned len)
+{
+        xpan_pic_quality3_valid = 1;
+        xpan_pic_quality3 = buf[0];
+        /* Keep capture detection in sync when Canon reports PICQ through alias 3. */
+        pic_quality = buf[0];
+        xpan_pic_quality_valid = 1;
+}
+
+/* Cache Canon's storage aspect so the photo UI can independently keep Live View full-width. */
+volatile uint32_t xpan_image_aspect_ratio;
+/* Trust the aspect only after its Canon property handler has supplied a real value. */
+volatile int xpan_image_aspect_ratio_valid = -1;
+static void _prop_handler_xpan_image_aspect_ratio();
+REGISTER_PROP_HANDLER_EX(PROP_IMAGE_ASPECT_RATIO, _prop_handler_xpan_image_aspect_ratio, sizeof(uint32_t));
+void REQUIRES(PropMgrTask) _prop_handler_xpan_image_aspect_ratio(
+    unsigned property, void *token, uint32_t *buf, unsigned len)
+{
+    if (len >= sizeof(uint32_t))
+    {
+        xpan_image_aspect_ratio = buf[0];
+        xpan_image_aspect_ratio_valid = 1;
+    }
+}
+
 #endif
 volatile PROP_INT(PROP_AVAIL_SHOT, avail_shot);
 #if defined(CONFIG_DIGIC_8X)
