@@ -1,0 +1,123 @@
+LCM32 full-res composite
+Full-sensor LV readout gate
+Status: Full-res composite saved: 8 frames
+Stage_error_unsafe: 8,0,0
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: 400,100,56b,e123,10
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,56b056b,56b,e123,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_cadence_frames_ms_max_gap_ms: 164,0,0,0
+Timer_fixes_last_seen_B: 0,e123
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 13,26
+Hook_adtg_calls_changes_blanking_seen: 85,63,26
+Hook_engio_calls_changes_drv_changes_overflow: 232,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10562
+Inputs_merged_memcpy_us: 0,8,0
+Black_OBstdev_x10_center_mean_max: 2047,380,2144,2184
+Col_band_means_16px: 2047,2046,2047,2047,2209,2378,2383,2387,2391,2394,2398,2401
+Row_band_means_8px: 2037,2051,2048,2195,2342,2346,2348,2347,2348,2348
+Saved_stage_size: 1,6,32397488
+DNG: B:/LVFR0003.DNG
+Continuous_limit_overrun_offset_missed: 1,30,0,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 1858783,12828,1,133475,113145
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 200942,1064326
+Zoom_done_ms_late_frames: 52575,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,0,0,0
+HW_prepare_close_tried_frame_busy_channel_safe: 0,0,0,0,0,0,0
+HW_band0_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band1_reason_us_lock_setup_wait_completed: 0,0,0,0,0,0/0/0
+HW_band0_after_out_state_flags_addr_ptr: 0,0,0,0
+HW_compare_us_mismatch_bytes_first_expected_actual: 0,0,0,0,0
+HW_plane_ok_band0_band1: 0,0
+HW_band0_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band0_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band0_listener_ch_state_addr_ptr_before_after:
+HW_band0_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band1_outconn_listeners_divert_src_mask_restored_aborted: 0,0,0,0,0,0
+HW_band1_conn_after_setup (ch:src): 0:0 1:0 2:0 3:0 4:0 5:0 6:0 10:0 11:0 12:0 13:0 14:0 15:0 16:0 20:0 21:0
+HW_band1_listener_ch_state_addr_ptr_before_after:
+HW_band1_out_before_state_addr_ptr_after_state_addr_ptr: 0,0,0,0,0,0
+HW_band0_moved (ch:state:ptr>state:ptr): 5:0:0>0:0
+HWP_band0_moved (ch:state:ptr>state:ptr): 5:0:2009140>0:2f7ddb0
+HWP_lv_before_paused_after_prepare_close_tried_busy_channel_safe: 1,1,1,0,0,1,a000,5,1
+HWP_band0_reason_us_lock_setup_wait_completed: 0,57769,0,0,0,1/1/1
+HWP_band1_reason_us_lock_setup_wait_completed: 0,57596,0,0,0,1/1/1
+HWP_band0_out_after_state_addr_ptr_aborted: 0,2009140,2f7ddb0,0
+HWP_compare_us_mismatch_bytes_first_expected_actual: 1436364,0,-1,0,0
+HW_tries: where(0=LV,1=paused),frame,ch,bands,busy,reason,us,out_completions,out_state,out_bytes,aborted,moved_mask,mismatch_words,first_bad,safe
+T0: 1,8,5,2,a000,0,115365,2,0,32395440,0,0,0,-1,1
+Job_config_list (43 pairs, reg=val): c0f08070=80000000 c0f08060=80000000 c0f08000=80000000 c0f0d000=80000000 c0f0d034=80000000 c0f08104=0 c0f0810c=3 c0f08394=0 c0f08074=20 c0f08078=0 c0f08260=1 c0f08064=20 c0f08068=0 c0f08274=1 c0f08014=3fff c0f08018=0 c0f082a0=1 c0f082a4=1 c0f0d004=1110 c0f0d00c=0 c0f0d010=0 c0f0d01c=0 c0f0d020=0 c0f0d024=0 c0f0d028=0 c0f0d030=20 c0f0d038=20 c0f0d03c=0 c0f0d064=0 c0f0d068=0 c0f0d06c=0 c0f0d070=0 c0f0d074=100 c0f0d078=1 c0f0d094=0 c0f0d098=0 c0f0d09c=0 c0f0d0a4=0 c0f0d0a8=0 c0f0d0ac=0 c0f0d02c=0 c0f0d058=0 c0f0d05c=0
+Reg_diff_LV_vs_paused (window C0F00000-C0F3FFFC; lv_ok 1 paused_ok 1; total 227, listed 227; reg:lv:paused:in_job_list):
+c0f01000:2405b6e7:8400:0 c0f01004:240536e7:400:0 c0f01008:1:0:0 c0f0100c:3ff:3:0
+c0f01030:f9fe0:0:0 c0f01034:f9fe0:0:0 c0f01040:14f9c0:14e9c0:0 c0f01044:1000:0:0
+c0f01048:fff:3ff:0 c0f0104c:fff:3ff:0 c0f01050:20fc:0:0 c0f01054:3fff:0:0
+c0f02000:1:80000000:0 c0f02100:1:80000000:0 c0f02154:1:0:0 c0f0215c:1:80000000:0
+c0f02160:1:80000000:0 c0f0219c:0:80000000:0 c0f021a0:1:80000000:0 c0f021a4:1:0:0
+c0f02200:0:80000000:0 c0f02300:0:80000000:0 c0f02700:0:80000000:0 c0f02800:0:80000000:0
+c0f03008:1:0:0 c0f03010:80130000:0:0 c0f03014:80160002:0:0 c0f03018:80150002:0:0
+c0f03020:80130002:0:0 c0f03030:80130004:0:0 c0f03038:80050000:0:0 c0f0303c:80060000:0:0
+c0f03064:80150004:0:0 c0f03068:80160004:0:0 c0f03070:800b0000:0:0 c0f030cc:0:1:0
+c0f030d0:0:1:0 c0f030d4:0:1:0 c0f030e0:0:1:0 c0f030e4:0:1:0
+c0f030e8:0:1:0 c0f030ec:0:1:0 c0f03614:800f0000:0:0 c0f03618:800f0002:0:0
+c0f0361c:800f0004:0:0 c0f03620:800f0006:0:0 c0f03688:0:1:0 c0f03800:80150000:0:0
+c0f03804:80160000:0:0 c0f03808:80000000:0:0 c0f03810:80150004:0:0 c0f03814:80160004:0:0
+c0f03818:80170000:0:0 c0f03820:80150008:0:0 c0f03824:80160008:0:0 c0f03828:80170004:0:0
+c0f03848:80000004:0:0 c0f0384c:80000006:0:0 c0f03860:8015000c:0:0 c0f03864:8016000c:0:0
+c0f03868:80000008:0:0 c0f0386c:8000000a:0:0 c0f03870:8000000c:0:0 c0f03874:8000000e:0:0
+c0f03878:80000010:0:0 c0f0387c:80000012:0:0 c0f03880:8015000e:0:0 c0f03884:8016000e:0:0
+c0f03888:80000014:0:0 c0f0388c:80000016:0:0 c0f038ac:801c0000:0:0 c0f038b0:801d0000:0:0
+c0f038b4:801e0000:0:0 c0f038b8:801f0000:0:0 c0f038bc:80200000:0:0 c0f038c0:80210000:0:0
+c0f038c4:80220000:0:0 c0f038e4:80230000:0:0 c0f038e8:80240000:0:0 c0f038ec:80250000:0:0
+c0f038f0:801c0004:0:0 c0f038f4:801d0004:0:0 c0f038f8:801e0004:0:0 c0f038fc:801f0004:0:0
+c0f03900:80200004:0:0 c0f03904:80210004:0:0 c0f03908:80220004:0:0 c0f03934:80280000:0:0
+c0f0393c:80250004:0:0 c0f03950:80260000:0:0 c0f03954:80270000:0:0 c0f03958:80280002:0:0
+c0f0395c:80260002:0:0 c0f03960:80270002:0:0 c0f03964:80230004:0:0 c0f03968:80240004:0:0
+c0f0396c:0:1:0 c0f039c0:0:1:0 c0f039c4:0:1:0 c0f039c8:0:1:0
+c0f039dc:0:1:0 c0f039e0:0:1:0 c0f039e4:0:1:0 c0f039e8:0:1:0
+c0f039ec:0:1:0 c0f039f0:0:1:0 c0f039f4:0:1:0 c0f039f8:0:1:0
+c0f039fc:0:1:0 c0f03a00:0:1:0 c0f03a04:0:1:0 c0f03a08:0:1:0
+c0f03a0c:0:1:0 c0f03a10:0:1:0 c0f03a14:0:1:0 c0f03a18:0:1:0
+c0f03a1c:0:1:0 c0f03a20:0:1:0 c0f03a24:0:1:0 c0f03a28:0:1:0
+c0f03a2c:0:1:0 c0f03a30:0:1:0 c0f03a34:0:1:0 c0f03a38:0:1:0
+c0f03a3c:0:1:0 c0f03a40:0:1:0 c0f04100:1:4:0 c0f04104:20000000:0:0
+c0f04108:6000080:63cc080:0 c0f04200:1:4:0 c0f04204:20000000:0:0 c0f04208:f5e7800:f9f7800:0
+c0f04508:d116000:d119c00:0 c0f04800:1:4:0 c0f04804:40010000:0:0 c0f04900:1:4:0
+c0f04904:40010000:0:0 c0f06004:1:0:0 c0f06008:56b056b:20f020f:0 c0f0600c:56b056b:20f020f:0
+c0f06010:56b:20f:0 c0f06014:e123:7e5:0 c0f06804:db20538:4a601d4:0 c0f06824:56a:206:0
+c0f06828:56a:206:0 c0f0682c:56a:206:0 c0f06830:56a:206:0 c0f07000:1:0:0
+c0f07010:0:3fff:0 c0f0704c:c:0:0 c0f07138:c:0:0 c0f0714c:c:0:0
+c0f08020:1:80000000:0 c0f08090:1:80000000:0 c0f08130:1:80000000:0 c0f08180:1:80000000:0
+c0f083b0:1:0:0 c0f08540:1:80000000:0 c0f08598:1:0:0 c0f08d5c:1:0:0
+c0f08d68:1:80000000:0 c0f0907c:1:0:0 c0f0b118:1:0:0 c0f10040:1:80000000:0
+c0f1005c:1:80000000:0 c0f11004:1:0:0 c0f11028:1:0:0 c0f111c0:0:1:0
+c0f11440:0:1:0 c0f11444:1:0:0 c0f11580:0:1:0 c0f11584:1:0:0
+c0f118d0:0:1:0 c0f118d4:1:0:0 c0f11a80:0:1:0 c0f11a84:1:0:0
+c0f11ac0:0:1:0 c0f11ac4:1:0:0 c0f11b80:0:1:0 c0f11b84:1:0:0
+c0f11bc0:0:1:0 c0f11bc4:1:0:0 c0f1a000:0:1:0 c0f1a004:1:0:0
+c0f26100:1:4:0 c0f26104:20000080:0:0 c0f26108:756668:756924:0 c0f26200:1:4:0
+c0f26204:20000000:0:0 c0f26800:1:4:0 c0f26804:40020000:0:0 c0f2c004:1:80000000:0
+c0f2f908:8:a:0 c0f2f90c:8:a:0 c0f2f910:8:a:0 c0f2f914:8:a:0
+c0f2f918:8:a:0 c0f2f91c:8:a:0 c0f2f920:8:a:0 c0f2f924:8:a:0
+c0f30108:d492d80:d492000:0 c0f30a04:40000:0:0 c0f30a08:d2faf5c:d342f5c:0 c0f30b04:70000:0:0
+c0f30b08:d343980:d38b980:0 c0f35040:1:0:0 c0f37270:1:80000000:0 c0f37450:1:80000000:0
+c0f37a60:1:80000000:0 c0f37ab8:1:80000000:0 c0f37b7c:1:80000000:0 c0f38004:1:80000000:0
+c0f38008:1:0:0 c0f38060:1:0:0 c0f38100:1:0:0 c0f38310:1:80000000:0
+c0f38328:1:80000000:0 c0f38330:1:80000000:0 c0f38800:1:0:0 c0f38904:1:80000000:0
+c0f38918:1:80000000:0 c0f3891c:1:80000000:0 c0f3a000:1:80000000:0 c0f3b000:0:80000000:0
+c0f3b014:0:1:0 c0f3b01c:1:0:0 c0f3d000:0:80000000:0
+HW_engio_lists_during_band0: 0 (us:list:count reg=val ...)
+Write_route_idle (ch:src:state): 0:2e:0 1:1b:1 2:4:1 3:0:0 4:0:0 5:2:1 6:12:0 10:28:0 11:f:1 12:0:0 13:0:0 14:0:0 15:0:0 16:0:0 20:10:0 21:27:0
+DMA_activity_samples_union_mask: 3,326 (bit i = write channel 0..6,0x10..0x16,0x20,0x21)
+Ch5_addr_len_flags_conn_state_ptr: d116000,e0020,20000040,2,1,d116000
+Ch3_addr_len_flags_conn_state_ptr: 0,0,0,0,0,0
+Activity_ms_after_vsync_mask_ptr3_ptr5:
+335:326:0:d116000 2358:226:0:d116000 2372:200:0:d1161e0 
+Partials: 1
+Attempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:
+DMA_trace_attempt: us_after_arm:bytes ...
+Vsync_intervals_us (last 32): 33370 33349 33366 2724219 2498856 2500090 2499903 2500047 2499920 2500023 2499874 2500052 2499922 2499982

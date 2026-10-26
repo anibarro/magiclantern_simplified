@@ -186,6 +186,7 @@ static struct vram_info vram={0,720,1440,480};
 void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
 /* Canon engine stubs: registry busy or free, engine refuses (no DMA). */
 #include "native-max.h"
+#include "lv-pause-regs.h"
 static int sim_hw_busy=1,sim_hw_calls,sim_hw_prepared,sim_hw_unsafe,sim_hw_divert;
 void lc_native_set_divert(unsigned on){ sim_hw_divert=on; }
 int lc_native_resources(struct lc_resource_snapshot *s){ memset(s,0,sizeof(*s)); s->count=10; s->busy=sim_hw_busy; return 1; }
@@ -369,17 +370,20 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("hw: %s calls=%d pauses=%d\n",status,sim_hw_calls,sim_pauses);
     /* in-LV test on frame 3 + LCM27 paused-LV test after the session */
-    /* LCM32: no engine job in Live View; whole register-shadow window
-     * snapshotted on frame 3 and compared after the pause. Paused job
-     * skipped here (simulated resource 5 busy). */
-    printf("hw: borrows=%d engdrv=%d\n",sim_borrows,sim_engdrv);
-    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved") && !sim_borrows && !sim_engdrv);
+    /* LCM33: Live View steps A, A+B, A+B+C (simulated engine never gives
+     * output), each borrowing and returning channel 5 and writing then
+     * restoring its register group; whole-window diff; paused job skipped
+     * (simulated resource 5 busy). */
+    printf("hw: borrows=%d returns=%d engdrv=%d\n",sim_borrows,sim_returns,sim_engdrv);
+    assert(!unsafe && sim_hw_calls==3 && sim_hw_prepared==0 && strstr(status,"saved"));
+    assert(sim_borrows==3 && sim_returns==3 && sim_engdrv==2*(LC_PAUSE_A+LC_PAUSE_AB+LC_PAUSE_ABC));
+    assert(strstr(last_log,"T0: 2,3,5,2,") && strstr(last_log,"T1: 3,4,5,2,") && strstr(last_log,"T2: 4,5,5,2,"));
+    assert(strstr(last_log,"T3: 1,6,5,2,a001,ffff,") && strstr(last_log,"B2: 0,"));
     assert(strstr(last_log,"Reg_diff_LV_vs_paused (window C0F00000-C0F3FFFC; lv_ok 1 paused_ok 1"));
-    assert(strstr(last_log,"T0: 1,6,5,2,a001,ffff,"));
-    /* Resource 5 free once paused: the reference job runs once. */
+    /* Resource 5 free once paused: the reference job runs too. */
     reset();sim_hw_busy=0xA000;sim_hw_calls=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && sim_hw_calls==1 && strstr(status,"saved") && strstr(last_log,"T0: 1,6,5,2,a000,"));
+    assert(!unsafe && sim_hw_calls==4 && strstr(status,"saved") && strstr(last_log,"T3: 1,6,5,2,a000,"));
     /* Engine left its output channel busy (now: the paused channel-5 job,
      * resource 5 free). The accumulator (never an engine target) is saved. */
     reset();sim_hw_busy=0xA000;sim_hw_calls=0;sim_hw_unsafe=1;dng_size_ok=2048+bytes;

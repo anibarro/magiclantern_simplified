@@ -21,4 +21,4 @@ make -C modules/livecomp -j1 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
 make -C platform/EOSM.202 -j2 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
   build/EOSM_202.sym > "$B/lcm22-stock-core-check.log" 2>&1
 python3 build_tools/package_livecomp_standalone.py
-echo "Module-only package: $B/livecomp-LCM32-module-only.zip"
+echo "Module-only package: $B/livecomp-LCM33-module-only.zip"

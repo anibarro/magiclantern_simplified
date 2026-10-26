@@ -817,3 +817,29 @@ overlapping CPU merge. Product path: CPU merge.
   frame 3 and compared after PauseLiveView, up to 2048 differences logged
   (flagged if the engine's job list rewrites them), then the paused
   channel-5 reference job runs as before (5 safe runs so far).
+
+## LCM32 camera result (LVFR0003): whole-window register diff
+
+8 frames, saved; paused channel-5 reference exact again (115 ms). Whole
+ENGIO shadow window 0xC0F00000-0xC0F3FFFC, Live View running vs paused:
+**227 registers differ**, none in the engine job list:
+- 0xC0F03xxx (102): values like 0x80130000, 0x80160002, 0x801C0004 in Live
+  View, 0 when paused (plus a few 0 -> 1). Looks like the image pipeline's
+  routing table (enable | source block id << 16 | port): Live View's block
+  connections, all cleared when paused. Prime suspect.
+- start/stop flags (1 vs 0x80000000 or 0) in 0xC0F02/08/09/0B/10/11/1A/2C/
+  35/37/38/3A/3B/3Dxxx; 0xC0F2F9xx (8 vs A).
+- 0xC0F01000-054 (clock-like values, 0x2405B6E7 vs 0x8400).
+- EDMAC (0xC0F04/26/30xxx) and sensor timing (0xC0F06/07xxx): expected.
+
+## LCM33: escalating Live View test
+
+`lv-pause-regs.h` (generated from LVFR0003): 189 registers with their
+paused values, EDMAC and sensor timing excluded. Group A = the 102
+routing-table registers, B = A + 75 start/stop flags, C = B + 12 0xC0F01xxx.
+On frames where Live View's channel 5 is armed and idle: borrow channel 5,
+save Live View's values, write the group's paused values (EngDrvOut), run
+the full-frame job, restore Live View's values in reverse order and check
+them, return channel 5, verify. Order A, then B, then C (a refused borrow
+retries the same step); stop at the first exact result. lc_native_engdrv
+now accepts 0xC0F01000-0xC0F3FFFC except EDMAC and sensor timing pages.

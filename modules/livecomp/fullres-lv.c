@@ -38,6 +38,7 @@
 #include "fullres-fix.h"
 #include "native-max.h"
 #include "fullres-hw.h"
+#include "lv-pause-regs.h"
 
 extern int raw_lv_is_enabled(void);
 extern uint32_t raw_write_chan;
@@ -208,6 +209,14 @@ static struct frlv_hw hw,hw_paused;   /* LCM27: second run with Live View paused
 struct frlv_try { unsigned where,frame,channel,bands,busy,reason,us,completed,out_state,out_bytes,aborted,moved,mismatch_words,first_bad,safe; };
 static struct frlv_try tries[FRLV_TRIES];
 static unsigned ntries;
+/* LCM33: Live View attempts with a register group put in its paused state
+ * (lv-pause-regs.h, from the LCM32 whole-window diff) around a borrowed
+ * channel-5 job. where 2/3/4 = group A (0xC0F03xxx routing), A+B (plus
+ * start/stop flags), A+B+C (plus 0xC0F01xxx). */
+static const unsigned pause_group_n[3]={LC_PAUSE_A,LC_PAUSE_AB,LC_PAUSE_ABC};
+static uint32_t pause_saved[LC_PAUSE_ABC];
+static struct lc_native_borrow borrows[6];
+static unsigned nborrows,pause_bad[6],pause_write_err[6];
 /* LCM32 read-only diagnostic: Canon's ENGIO register shadow is one flat
  * 256 KB RAM copy of 0xC0F00000-0xC0F3FFFF (EngDrvOut FF2C1694 stores the
  * value at shadow_base + (reg & 0x3FFFF); shamem_read FF2C1730 loads it), so
@@ -407,6 +416,14 @@ static void write_log(const struct frlv_result *r,const char *status)
         const struct frlv_try *q=&tries[k];
         n=snprintf(t,sizeof(t),"T%d: %d,%d,%d,%d,%x,%x,%d,%d,%x,%d,%d,%x,%d,%d,%d\n",k,q->where,q->frame,q->channel,q->bands,
             q->busy,q->reason,q->us,q->completed,q->out_state,q->out_bytes,q->aborted,q->moved,q->mismatch_words,(int)q->first_bad,q->safe);
+        ok&=write_text(f,t,n);
+    }
+    n=snprintf(t,sizeof(t),"HW_borrow5: reason,state,addr,ptr,flags,conn,abort_wait_us,restored,after_state,after_addr,pause_write_err,pause_restore_bad\n");
+    ok&=write_text(f,t,n);
+    for (unsigned k=0;k<nborrows && k<6;k++) {
+        const struct lc_native_borrow *q=&borrows[k];
+        n=snprintf(t,sizeof(t),"B%d: %x,%x,%x,%x,%x,%x,%d,%d,%x,%x,%d,%d\n",k,q->reason,q->state,q->addr,q->ptr,
+            q->flags,q->conn,q->abort_wait_us,q->restored,q->after_state,q->after_addr,pause_write_err[k],pause_bad[k]);
         ok&=write_text(f,t,n);
     }
     n=snprintf(t,sizeof(t),"Job_config_list (%d pairs, reg=val):",job_pairs);
@@ -706,14 +723,13 @@ static uint32_t *hw_geometry;
 static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned frame,
     uint8_t *cap_storage,uint8_t *acc_storage,unsigned channel,unsigned bands,unsigned where)
 {
-    /* LCM32: Live View attempts (LCM20-31) removed from the runtime; only
-     * the paused reference (where 1) remains. Findings: FULLRES.md. */
+    const unsigned borrow=where>=2,npause=borrow ? pause_group_n[(where-2)%3]:0;
     struct frlv_try scratch,*t=ntries<FRLV_TRIES ? &tries[ntries++]:&scratch;
     memset(t,0,sizeof(*t));t->where=where;t->frame=frame;t->channel=channel;t->bands=bands;t->safe=1;
     h->tried=1;h->frame=frame;h->safe=1;h->busy=t->busy=resource_busy();
     /* The nine non-output engine resources must be free; channel 5 also
      * needs Canon's resource 5 (held by Live View while it runs). */
-    if (h->busy==0xFFFFu || (h->busy&0x3FE) || (channel==5 && (h->busy&1))) { h->channel=0;t->reason=0xFFFF;return 0; }
+    if (h->busy==0xFFFFu || (h->busy&0x3FE) || (channel==5 && !borrow && (h->busy&1))) { h->channel=0;t->reason=0xFFFF;return 0; }
     h->channel=channel;
     lc_native_set_wait_ms(600);
     lc_native_set_divert(1);
@@ -726,6 +742,16 @@ static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uin
         verify_end=(first+rows)*r->pitch;
     }
     sync_caches();                                   /* acc written through the cache */
+    const unsigned slot=nborrows<6 ? nborrows:5;
+    struct lc_native_borrow *bw=&borrows[slot];
+    if (borrow) {
+        nborrows++;
+        unsigned e=lc_native_borrow5(bw);
+        if (e) { t->reason=0x10000u|e;t->safe=h->safe=e!=LC_NATIVE_STOP;return e==LC_NATIVE_STOP; }
+        for (unsigned i=0;i<npause;i++) pause_saved[i]=shamem_read(lc_pause_regs[i].reg);
+        for (unsigned i=0;i<npause;i++)
+            if (lc_native_engdrv(&lc_pause_regs[i].reg,&lc_pause_regs[i].paused,1)) pause_write_err[slot]++;
+    }
     for (unsigned band=0;band<bands;band++) {
         unsigned first,rows=lc_frlv_band(r->height,band,&first);
         struct lc_native_plane a,b;
@@ -734,7 +760,7 @@ static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uin
         h->plane_ok[band]=lc_native_plane_ok(&a,1)|(lc_native_plane_ok(&b,1)<<1)|(lc_native_plane_ok(&b,0)<<2);
         struct lc_native_engine_result res;
         rec_n=0;rec_t0=(unsigned)get_us_clock();rec_on=1;
-        unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,channel);
+        unsigned reason=lc_native_engine_max_lock(&a,&b,&b,&res,channel,borrow ? 3:channel);
         rec_on=0;
         h->reason[band]=reason;h->engine_us[band]=res.elapsed_us;h->lock[band]=res.lock;h->setup[band]=res.setup;
         h->wait[band]=res.wait;memcpy(h->completed[band],res.completed,sizeof(res.completed));
@@ -746,6 +772,14 @@ static unsigned hw_test(struct frlv_hw *h,struct frlv_result *r,uint8_t *cap,uin
             if (res.all_ptr0[i]!=res.all_ptr1[i] && lc_native_write_channels[i]!=channel) t->moved|=1u<<i;
         if (!res.resume_safe) { h->safe=0;t->safe=0;return 1; }
         if (reason) break;
+    }
+    /* Restore Live View's values (reverse order), check them, give
+     * channel 5 back - all before anything slow. */
+    if (borrow) {
+        for (unsigned i=npause;i-->0;) lc_native_engdrv(&lc_pause_regs[i].reg,&pause_saved[i],1);
+        for (unsigned i=0;i<npause;i++) if (shamem_read(lc_pause_regs[i].reg)!=pause_saved[i]) pause_bad[slot]++;
+        if (lc_native_return5(bw)) { t->reason|=0x20000u;h->safe=t->safe=0;return 1; }
+        if (pause_bad[slot]) t->reason|=0x80000u;
     }
     if (t->reason) return 0;
     /* Word compare (LCM27 byte loop: 3.7 s per frame). */
@@ -809,6 +843,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     memset(&hw,0,sizeof(hw));act_on=0;act_n=0;ntries=0;memset(tries,0,sizeof(tries));
     snap_lv_ok=snap_paused_ok=job_pairs=0;
+    nborrows=0;memset(borrows,0,sizeof(borrows));memset(pause_bad,0,sizeof(pause_bad));memset(pause_write_err,0,sizeof(pause_write_err));
+    unsigned lv_tries=0,lv_step=0,lv_done=0;
     if (hw_enable) {
         if (!snap_lv) snap_lv=malloc(FRLV_SHADOW_WORDS*4);
         hw_geometry=fio_malloc(128);
@@ -908,6 +944,24 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         /* LCM30: no engine job in Live View (LCM29: even a borrowed channel 5
          * gets no output there). Snapshot Canon's register shadow instead. */
         if (hw_enable && snap_lv && !snap_lv_ok && r->merged>=3) { snap_take(snap_lv);snap_lv_ok=1; }
+        /* LCM33: escalating Live View attempts A, A+B, A+B+C on frames
+         * where channel 5 can be borrowed; stop at the first exact one. */
+        if (hw_enable && !lv_done && lv_tries<6 && r->merged>=3 && !off && !c->lost_bands &&
+            get_ms_clock()-done+900<period_ms-600) {
+            NotifyBox(2000,"HW merge test, step %c...",'A'+lv_step);
+            lv_tries++;
+            unsigned before=ntries;
+            if (hw_test(&hw,r,cap,acc,r->merged,cap_storage,acc_storage,5,2,2+lv_step)) {
+                *hw_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
+            }
+            if (ntries>before) {
+                const struct frlv_try *q=&tries[ntries-1];
+                if (!q->reason && !q->mismatch_words) { lv_done=1;NotifyBox(5000,"HW merge WORKS in Live View (step %c)",'A'+lv_step); }
+                else if (!(q->reason&0x10000u)) { if (++lv_step>2) lv_done=1; }   /* refused borrow: retry same step */
+            }
+            write_log(r,"hw merge tested");
+            continue;
+        }
         /* The preview reads only the accumulator, so it may overlap the next
          * readout (which writes the capture buffer); it must just end before
          * the next frame arrives, or the next merge starts late. Estimate =

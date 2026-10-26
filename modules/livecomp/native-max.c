@@ -416,7 +416,13 @@ unsigned lc_native_return5(struct lc_native_borrow *b)
 unsigned lc_native_engdrv(const uint32_t *regs,const uint32_t *vals,unsigned n)
 {
     if (!rom_valid()) return LC_NATIVE_ROM;
-    for (unsigned i=0;i<n;i++) if ((regs[i]&0xFFFFF003u)!=0xC0F08000u) return LC_NATIVE_ARGUMENT;
+    /* LCM33: image-pipeline registers 0xC0F01000-0xC0F3FFFC; never EDMAC
+     * (pages 04/05/26/30) or sensor timing (06/07). */
+    for (unsigned i=0;i<n;i++) {
+        uint32_t r=regs[i],pg=(r>>12)&0xFFFu;
+        if ((r&0xFFFC0003u)!=0xC0F00000u || pg<0xF01u || pg==0xF04u || pg==0xF05u || pg==0xF06u ||
+            pg==0xF07u || pg==0xF26u || pg==0xF30u) return LC_NATIVE_ARGUMENT;
+    }
     for (unsigned i=0;i<n;i++) ((void (*)(uint32_t,uint32_t))0xff2c1694)(regs[i],vals[i]);
     return 0;
 }

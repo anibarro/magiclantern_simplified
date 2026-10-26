@@ -250,7 +250,12 @@ int main(void) {
       assert(!lc_native_engdrv(ok_r,v,2) && engdrv_calls==2 && engdrv_last_reg==0xC0F08D68u && engdrv_last_val==1);
       assert(lc_native_engdrv(bad_r,v,2)==LC_NATIVE_ARGUMENT && engdrv_calls==2);
       assert(lc_native_engdrv(odd_r,v,1)==LC_NATIVE_ARGUMENT && engdrv_calls==2);
-      rom_ok=0;assert(lc_native_engdrv(ok_r,v,2)==LC_NATIVE_ROM && engdrv_calls==2); }
+      { const uint32_t r3[1]={0xC0F03010u},r1[1]={0xC0F01000u},r3f[1]={0xC0F3D000u},
+          edm[4]={0xC0F04100u,0xC0F05000u,0xC0F26100u,0xC0F30108u},lo[1]={0xC0F00FFCu},hi[1]={0xC0F40000u};
+        assert(!lc_native_engdrv(r3,v,1) && !lc_native_engdrv(r1,v,1) && !lc_native_engdrv(r3f,v,1) && engdrv_calls==5);
+        for (unsigned i=0;i<4;i++) assert(lc_native_engdrv(&edm[i],v,1)==LC_NATIVE_ARGUMENT);
+        assert(lc_native_engdrv(lo,v,1)==LC_NATIVE_ARGUMENT && lc_native_engdrv(hi,v,1)==LC_NATIVE_ARGUMENT && engdrv_calls==5); }
+      rom_ok=0;assert(lc_native_engdrv(ok_r,v,2)==LC_NATIVE_ROM && engdrv_calls==5); }
     /* LCM29 job with output on channel 5, engine locked with set 3. */
     reset();out_ch=5;assert(!lc_native_engine_max_lock(&a,&b,&a,&r,5,3));
     assert(r.resume_safe && state_data[10]==5 && setups==1 && unlocks==1 && r.completed[2]==1);
