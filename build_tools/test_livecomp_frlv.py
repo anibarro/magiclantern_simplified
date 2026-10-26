@@ -169,6 +169,15 @@ uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; if (!slurp_dst) return 0;
     return (uint32_t)(uintptr_t)slurp_dst+(slurp_armed ? (overrun_sim ? 9240u:0u):last_written); }
 static struct vram_info vram={0,720,1440,480};
 void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
+/* Canon engine stubs: registry busy or free, engine refuses (no DMA). */
+#include "native-max.h"
+static int sim_hw_busy=1,sim_hw_calls,sim_hw_prepared;
+int lc_native_resources(struct lc_resource_snapshot *s){ memset(s,0,sizeof(*s)); s->count=10; s->busy=sim_hw_busy; return 1; }
+unsigned lc_native_engine_prepare(uint32_t *g){ (void)g; sim_hw_prepared++; return 0; }
+unsigned lc_native_engine_close(void){ sim_hw_prepared--; return 0; }
+unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,const struct lc_native_plane *b,
+    const struct lc_native_plane *o,struct lc_native_engine_result *r,unsigned ch)
+{ (void)a;(void)b;(void)o;(void)ch; memset(r,0,sizeof(*r)); r->resume_safe=1; sim_hw_calls++; return r->reason=LC_NATIVE_BUSY; }
 struct vram_info *get_yuv422_vram(void){ return &vram; }
 static void (*sim_cb)(void*);static void *sim_cb_ctx;
 void RegisterEDmacCompleteCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch; sim_cb=cbr; sim_cb_ctx=ctx; }
@@ -241,7 +250,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={5,0,4,0,0,1};   /* index 5 = 3 fps, fix focus pixels */
+    struct lc_frlv_options o={5,0,4,0,0,1,1};   /* index 5 = 3 fps, fix focus pixels, hw test */
     /* Happy path: 4 inputs, geometry from registers, restore, unhook, DNG. */
     reset();
     unsigned w=(0x538-0x12)*4,h=0xDB2-1+1,bytes=w*14/8*h;
@@ -298,6 +307,14 @@ int main(void)
     reset();overrun_sim=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("overrun: %s\n",status);
     assert(!unsafe && strstr(status,"saved") && zoom==1);
+    /* HW merge test: registry busy -> no engine call; free -> one call. */
+    reset();sim_hw_busy=1;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && sim_hw_calls==0 && sim_hw_prepared==0 && strstr(status,"saved"));
+    reset();sim_hw_busy=0;sim_hw_calls=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("hw: %s calls=%d\n",status,sim_hw_calls);
+    assert(!unsafe && sim_hw_calls==1 && sim_hw_prepared==0 && strstr(status,"saved"));
     o.continuous=0;sim_period_us=333333;
     printf("sim ok\n");return 0;
 }
@@ -331,6 +348,7 @@ def main():
         src = src.replace('(unsigned)p&~livecomp_camera.cache_alias_mask',
                           '(uintptr_t)p&~(uintptr_t)livecomp_camera.cache_alias_mask')
         src = src.replace('static unsigned physical(', 'static uintptr_t physical(')
+        src = src.replace('a.pixels|=0x40000000u;b.pixels|=0x40000000u;', '')
         src = src.replace('(uint8_t *)(((unsigned)alloc[0]', '(uint8_t *)(((uintptr_t)alloc[0]')
         src = src.replace('(void *)(((unsigned)alloc[1]', '(void *)(((uintptr_t)alloc[1]')
         src = src.replace('regs[0]=(uint32_t)cmos_copy', 'regs[0]=(uint32_t)(uintptr_t)cmos_copy')

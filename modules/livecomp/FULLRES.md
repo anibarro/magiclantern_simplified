@@ -432,3 +432,32 @@ merged and logged: arming 40 ms after the vsync did not remove partials.
   (0.5 fps) are not reachable with CPU merging** (memory + compute ~2.1 s per
   18 Mpixel frame). The realistic next step for faster cadence is double
   buffering with a third 32 MB buffer, if the camera can provide one.
+
+## LCM19 camera result
+
+8 frames at 0.25 fps, 5700 K, focus pixels fixed (200,942 in 1.13 s), WB and
+DNG correct. Two findings:
+- The partial frame (frame 5 again, 55,440 bytes = 6 rows, as in LCM18) fired
+  the EDMAC **abort** callback 3.39 s after arming = right at readout start,
+  with no extra Canon ENGIO/ADTG activity that frame. Something aborts channel
+  0x12 once, ~16-20 s after entering x5. Not yet identified; costs one frame.
+- Frame 8 (73% changed) took 3.5 s with the adaptive compare-first merge and the
+  session stopped on overrun. Compare-first is removed again.
+
+## LCM20
+
+- Merge: sparse CPU max only. An overrun no longer stops the session: before
+  each of 16 bands the DMA pointer of the next frame is checked; if the readout
+  has already reached the band, the rest of that frame is skipped and counted
+  (CSV lost_bands, LOG late_frames). Only a missed completion stops.
+- Canon resource registry busy mask logged per frame (after the vsync and in
+  the idle window).
+- **Hardware max test** (menu HW merge test, default On): once, on frame 3+,
+  if all ten engine resources are free, Canon's max engine runs on real data
+  with its native output route (channel 5) in two bands (1754+1752 rows), inputs
+  = accumulator (already containing the frame) and the captured frame, output
+  in place into the capture buffer. The result must equal the accumulator
+  byte for byte; mismatches, timing, lock/setup/wait results and DMA traces go
+  to the LOG. The composite is never written by the engine. Buffers now keep 4
+  halo rows before the pixels, as the engine requires.
+- Fixed: per-frame CSV fields were not cleared between sessions.

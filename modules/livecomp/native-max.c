@@ -14,12 +14,15 @@
 #define TABLE_INSTRUCTION 0xe59f0290u
 #define TABLE_ADDRESS (NATIVE_STATE+0x218u)
 #define TABLE_BYTES 0x188u
-#define OUTPUT_CHANNEL 3u
+#define DEFAULT_OUTPUT_CHANNEL 3u   /* LCM13/14 synthetic check route */
 #define UNSET 0xffffffffu
 static uint32_t *private_geometry;
 static unsigned installed,quarantined;
 /* The setup hook observes these fields in the calling Canon task. */
 static volatile unsigned running,table_calls,table_error;
+/* Output write channel/resource of the current job: 5 = Canon's own route
+ * (proved in the LCM1 factory composite), 3 = the LCM13 replacement. */
+static unsigned OUTPUT_CHANNEL=DEFAULT_OUTPUT_CHANNEL;
 
 /* Observe completion without changing Canon's event notification. Each channel
  * owns its counter; no file I/O, allocation or waiting occurs in callbacks. */
@@ -123,6 +126,14 @@ unsigned lc_native_engine_max(const struct lc_native_plane *a,
     const struct lc_native_plane *b,const struct lc_native_plane *out,
     struct lc_native_engine_result *r)
 {
+    return lc_native_engine_max_ch(a,b,out,r,DEFAULT_OUTPUT_CHANNEL);
+}
+unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
+    const struct lc_native_plane *b,const struct lc_native_plane *out,
+    struct lc_native_engine_result *r,unsigned channel)
+{
+    if (channel!=3 && channel!=5) return LC_NATIVE_ARGUMENT;
+    if (!running) OUTPUT_CHANNEL=channel;
     if (!r) return LC_NATIVE_ARGUMENT;
     memset(r,0,sizeof(*r));r->lock=r->setup=r->wait=r->event_delete=r->unlock=UNSET;
     r->resume_safe=1;r->output_channel=OUTPUT_CHANNEL;r->resource_delete=UNSET;
@@ -150,6 +161,7 @@ unsigned lc_native_engine_max(const struct lc_native_plane *a,
     struct lc_resource_snapshot snapshot;
     if (!lc_native_resources(&snapshot) || snapshot.count!=10 ||
         memcmp(snapshot.ids,expected,sizeof(expected))) return r->reason=LC_NATIVE_CONTEXT;
+    /* Channel 5 keeps Canon's own resource list unchanged. */
     uint32_t ids[10];memcpy(ids,expected,sizeof(ids));ids[0]=OUTPUT_CHANNEL;
     unsigned started=(unsigned)get_us_clock(),old_resource=state[1],old_geometry=state[5];
     unsigned resource=((unsigned (*)(uint32_t *,unsigned))0xff2c5848)(ids,10);

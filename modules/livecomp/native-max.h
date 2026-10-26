@@ -30,6 +30,11 @@ unsigned lc_native_engine_close(void);
 unsigned lc_native_engine_max(const struct lc_native_plane *a,
     const struct lc_native_plane *b,const struct lc_native_plane *out,
     struct lc_native_engine_result *result);
+/* Same job with an explicit output write channel: 5 (Canon's native route,
+ * only usable when Canon's resource 5 is free) or 3. */
+unsigned lc_native_engine_max_ch(const struct lc_native_plane *a,
+    const struct lc_native_plane *b,const struct lc_native_plane *out,
+    struct lc_native_engine_result *r,unsigned channel);
 int lc_native_snapshot(uint32_t state[12]);
 int lc_native_resources(struct lc_resource_snapshot *snapshot);
 #endif

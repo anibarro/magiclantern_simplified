@@ -36,6 +36,7 @@
 #include "fullres-gamma.h"
 #include "notify_box.h"
 #include "fullres-fix.h"
+#include "native-max.h"
 
 extern int raw_lv_is_enabled(void);
 extern uint32_t raw_write_chan;
@@ -76,6 +77,8 @@ static void frlv_slurp(void *dst,int pitch,int height)
 #define FRLV_RAW_TYPE 0x10u              /* src/raw.c PREFERRED_RAW_TYPE, DIGIC V */
 #define FRLV_ALLOCATION 32488032u        /* size proven twice on camera (LCM9-13) */
 #define FRLV_GUARD 64u
+/* Canon's max engine reads 4 halo rows before each input band (LCM9-13). */
+#define FRLV_HALO (4u*9240u)
 #define FRLV_MAX_INPUTS 8u
 #define FRLV_MAX_ATTEMPTS 14u        /* inputs + up to 6 partial frames */
 #define FRLV_TRACE 24u
@@ -172,6 +175,9 @@ void livecomp_frlv_vsync(void)
     }
 }
 
+struct frlv_hw { unsigned tried,frame,busy,channel,reason[2],engine_us[2],lock[2],setup[2],wait[2],
+    completed[2][3],after[2][12],compare_us,mismatch_bytes,first_bad,expected,actual,prepare,close,safe; };
+static struct frlv_hw hw;
 struct frlv_input { unsigned vsync,start_ms,done_ms,state,pointer,merge_us,tail_ok,changed_pct,ntrace;
     unsigned trace_us[FRLV_TRACE],trace_off[FRLV_TRACE]; };
 struct frlv_result {
@@ -188,7 +194,7 @@ struct frlv_result {
     unsigned memcpy_us,saved,save_stage,save_size;
     unsigned fps_x1000,expo_pct,timer_fixes,timer_seen_b,pdm[6];
     unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms;
-    int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us;
+    int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
 
@@ -240,7 +246,8 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Saved_stage_size: %d,%d,%d\nDNG: %s\n"
         "Continuous_limit_overrun_offset_missed: %d,%d,%d,%d\n"
         "Merge_max_us_sum_ms_preview_ok_render_us_copy_us: %d,%d,%d,%d,%d\n"
-        "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n",
+        "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n"
+        "Zoom_done_ms_late_frames: %d,%d\n",
         stats.cmos_calls,stats.cmos_changes,stats.adtg_calls,stats.adtg_changes,stats.blanking_seen,
         stats.engio_calls,stats.engio_changes,stats.drv_changes,stats.overflow,
         stats.orig_6804,stats.orig_timer_a,stats.orig_timer_b,stats.orig_blanking,
@@ -252,7 +259,20 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->saved,r->save_stage,r->save_size,r->dng,
         r->continuous,r->limit,r->overrun_offset,r->missed,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
-        r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us);
+        r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
+        r->zoom_done_ms,r->late_frames);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),
+        "HW_prepare_close_tried_frame_busy_channel_safe: %d,%d,%d,%d,%x,%d,%d\n"
+        "HW_band0_reason_us_lock_setup_wait_completed: %d,%d,%x,%x,%x,%d/%d/%d\n"
+        "HW_band1_reason_us_lock_setup_wait_completed: %d,%d,%x,%x,%x,%d/%d/%d\n"
+        "HW_band0_after_out_state_flags_addr_ptr: %x,%x,%x,%x\n"
+        "HW_compare_us_mismatch_bytes_first_expected_actual: %d,%d,%d,%x,%x\n",
+        hw.prepare,hw.close,hw.tried,hw.frame,hw.busy,hw.channel,hw.safe,
+        hw.reason[0],hw.engine_us[0],hw.lock[0],hw.setup[0],hw.wait[0],hw.completed[0][0],hw.completed[0][1],hw.completed[0][2],
+        hw.reason[1],hw.engine_us[1],hw.lock[1],hw.setup[1],hw.wait[1],hw.completed[1][0],hw.completed[1][1],hw.completed[1][2],
+        hw.after[0][8],hw.after[0][9],hw.after[0][10],hw.after[0][11],
+        hw.compare_us,hw.mismatch_bytes,hw.first_bad,hw.expected,hw.actual);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Partials: %d\nAttempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:\n",r->partials);
     ok&=write_text(f,t,n);
@@ -399,7 +419,7 @@ static void arm_from_task(void)
 /* ---------------------------------------------------------------------
  * Continuous full-res composite (Task: Full-res composite).
  * ------------------------------------------------------------------- */
-struct frlv_frame { unsigned seq,done_ms,merge_us,changed_pct,offset_after,state,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_delta,adtg_delta,fast; };
+struct frlv_frame { unsigned seq,done_ms,merge_us,changed_pct,offset_after,state,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_delta,adtg_delta,lost_bands,busy_vsync,busy_idle; };
 static struct frlv_frame cont_frames[FRLV_CONT_MAX];
 static uint16_t *preview_yuv;              /* cached 720x480 UYVY render */
 static unsigned preview_w,preview_h,preview_pitch;
@@ -464,25 +484,76 @@ static void write_csv(const struct frlv_result *r)
     FILE *f=FIO_CreateFile(path);
     if (!f) return;
     static char t[256];
-    int n=snprintf(t,sizeof(t),"seq,done_ms,merge_us,changed_pct,dma_offset_after_merge,partial_bytes_plus1,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_calls,adtg_calls,fast\n");
+    int n=snprintf(t,sizeof(t),"seq,done_ms,merge_us,changed_pct,dma_offset_after_merge,partial_bytes_plus1,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_calls,adtg_calls,lost_bands,busy_after_vsync,busy_idle\n");
     FIO_WriteFile(f,t,n);
     for (unsigned i=0;i<r->merged && i<FRLV_CONT_MAX;i++) {
         const struct frlv_frame *c=&cont_frames[i];
-        n=snprintf(t,sizeof(t),"%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",c->seq,c->done_ms,c->merge_us,c->changed_pct,c->offset_after,c->state,
-            c->arm_after_vsync_us,c->cb_kind,c->cb_after_arm_us,c->cb_offset,c->engio_delta,c->adtg_delta,c->fast);
+        n=snprintf(t,sizeof(t),"%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%x,%x\n",c->seq,c->done_ms,c->merge_us,c->changed_pct,c->offset_after,c->state,
+            c->arm_after_vsync_us,c->cb_kind,c->cb_after_arm_us,c->cb_offset,c->engio_delta,c->adtg_delta,c->lost_bands,c->busy_vsync,c->busy_idle);
         FIO_WriteFile(f,t,n);
     }
     FIO_CloseFile(f);
 }
 /* Every completed frame is merged; a frame that cannot be read before the
  * next readout begins stops the session (never a silent gap). */
+/* Canon resource registry snapshot (read-only RAM walk, no lock taken):
+ * busy mask over Canon's ten engine resources, bit0 = write resource 5. */
+static unsigned resource_busy(void)
+{
+    struct lc_resource_snapshot snap;
+    if (!lc_native_resources(&snap)) return 0xFFFFu;
+    return snap.busy|(snap.count<<12);
+}
+/* One-shot hardware max test on real data (LCM20). After the CPU merge,
+ * acc = max(previous composite, frame) >= frame everywhere, so Canon's engine
+ * computing max(acc, frame) into the capture buffer must reproduce acc
+ * exactly. The composite itself is never written by the engine. */
+static uint32_t *hw_geometry;
+static unsigned hw_test(struct frlv_result *r,uint8_t *cap,uint8_t *acc,unsigned frame,uint8_t *cap_storage,uint8_t *acc_storage)
+{
+    hw.tried=1;hw.frame=frame;hw.safe=1;hw.busy=resource_busy();
+    if (hw.busy==0xFFFFu || (hw.busy&0x3FF)) { hw.channel=0;return 0; }    /* busy: diagnostic only */
+    hw.channel=5;
+    sync_caches();                                   /* acc written through the cache */
+    const unsigned rows[2]={1754,r->height-1754},start[2]={0,1754};
+    for (unsigned band=0;band<2;band++) {
+        struct lc_native_plane a={(uint32_t)acc_storage,FRLV_ALLOCATION,(uint32_t)acc+start[band]*r->pitch,5280,rows[band],r->pitch};
+        struct lc_native_plane b={(uint32_t)cap_storage,FRLV_ALLOCATION,(uint32_t)cap+start[band]*r->pitch,5280,rows[band],r->pitch};
+        a.pixels|=0x40000000u;b.pixels|=0x40000000u;
+        struct lc_native_engine_result res;
+        unsigned reason=lc_native_engine_max_ch(&a,&b,&b,&res,5);
+        hw.reason[band]=reason;hw.engine_us[band]=res.elapsed_us;hw.lock[band]=res.lock;hw.setup[band]=res.setup;
+        hw.wait[band]=res.wait;memcpy(hw.completed[band],res.completed,sizeof(res.completed));
+        memcpy(hw.after[band],res.after_wait,sizeof(res.after_wait));
+        if (!res.resume_safe) { hw.safe=0;return 1; }
+        if (reason) return 0;
+    }
+    sync_caches();
+    unsigned c0=(unsigned)get_us_clock();
+    const uint8_t *x=(const uint8_t *)physical(cap),*y=acc;
+    hw.first_bad=~0u;
+    for (unsigned i=0;i<r->bytes;i++) if (x[i]!=y[i]) {
+        if (!hw.mismatch_bytes) { hw.first_bad=i;hw.expected=y[i];hw.actual=x[i]; }
+        hw.mismatch_bytes++;
+    }
+    hw.compare_us=(unsigned)get_us_clock()-c0;
+    return 0;
+}
+
 static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
-    const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms)
+    const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms,
+    unsigned hw_enable,uint8_t *cap_storage,uint8_t *acc_storage)
 {
     preview_setup();r->preview_ok=preview_yuv!=NULL;
     const unsigned end=physical(cap)+r->bytes,blocks=r->bytes/14,max_partials=2+r->limit/4;
     static char line[64];
-    unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls,use_fast=0;
+    unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
+    memset(&hw,0,sizeof(hw));
+    if (hw_enable) {
+        hw_geometry=fio_malloc(128);
+        hw.prepare=hw_geometry ? lc_native_engine_prepare((uint32_t *)(((unsigned)hw_geometry+63)&~63u)):999;
+        if (hw.prepare) hw_enable=0;
+    }
     continuous=1;cont_arm=1;
     /* First arm: just after a vsync, never inside it. */
     unsigned seen=frames_done,v=vsyncs,w0=get_ms_clock();
@@ -516,9 +587,11 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         msleep(40);
         if (cont_arm) arm_from_task();
         struct frlv_frame *c=&cont_frames[r->merged];
+        memset(c,0,sizeof(*c));                         /* static: reused across sessions */
         c->seq=seen;c->done_ms=done;c->state=pointer==end ? 0:pointer-physical(cap)+1;
         c->arm_after_vsync_us=d_arm;c->cb_kind=d_kind;c->cb_after_arm_us=d_after;c->cb_offset=d_ptr ? d_ptr-physical(cap):0;
         c->engio_delta=d_engio-last_engio;c->adtg_delta=d_adtg-last_adtg;last_engio=d_engio;last_adtg=d_adtg;
+        c->busy_vsync=resource_busy();
         if (pointer!=end) {
             /* Partial frame: the rows that arrived are real exposure, the rest
              * is the previous (already merged) frame. Merge it and log it. */
@@ -530,27 +603,41 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         unsigned s0=(unsigned)get_us_clock(),changed=0;
         if (!r->merged) { statistics(r,src);s0=(unsigned)get_us_clock(); }
         /* 16 bands with a scheduler tick between them keep the camera UI alive. */
-        c->fast=use_fast;
+        /* LCM19 adaptive compare-first merge removed: on a frame with 73%
+         * changed blocks it took 3.5 s (worse than sparse) and overran. */
         for (unsigned b=0;b<16;b++) {
-            /* even block boundaries keep every band 4-byte aligned for the fast path */
-            unsigned b0=(blocks*b/16)&~1u,b1=b==15 ? blocks:(blocks*(b+1)/16)&~1u;
+            unsigned b0=blocks*b/16,b1=blocks*(b+1)/16;
+            /* If the next readout has already written into this band, the
+             * rest of this frame is gone: stop here, keep the session going. */
+            unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
+            if (off && off<=r->bytes && off>b0*14) { c->lost_bands=16-b;r->late_frames++;break; }
             if (!r->merged) memcpy(acc+b0*14,src+b0*14,(b1-b0)*14);
-            else if (use_fast) changed+=lc_raw14_max_fast((uint16_t *)(acc+b0*14),(const uint16_t *)(src+b0*14),b1-b0);
             else changed+=lc_raw14_max_sparse((uint16_t *)(acc+b0*14),(const uint16_t *)(src+b0*14),b1-b0);
             msleep(10);
         }
         c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/blocks):100;
-        /* Compare-first is cheaper only when few blocks change (qemu ARM946 counts). */
-        use_fast=r->merged && c->changed_pct<30;
         c->merge_us=(unsigned)get_us_clock()-s0;
         r->merge_max_us=MAX(r->merge_max_us,c->merge_us);r->merge_sum_ms+=c->merge_us/1000;
         /* Did the next frame's readout start writing while we were reading? */
         unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
         c->offset_after=off;
         r->merged++;
-        if (frames_done!=seen || (off && off<=r->bytes)) {
-            r->overrun_offset=off;r->error|=FE_DMA;cont_arm=0;
+        if (off && off<=r->bytes) r->overrun_offset=MAX(r->overrun_offset,off);
+        if (frames_done!=seen) {
+            r->error|=FE_DMA;cont_arm=0;
             *msg="Merge too slow for this FPS; use a slower FPS";break;
+        }
+        c->busy_idle=resource_busy();
+        /* Hardware max test: once, on frame 3 or later, while the capture
+         * buffer is idle with enough time left before the next readout. */
+        if (hw_enable && !hw.tried && r->merged>=3 && !off && !c->lost_bands &&
+            get_ms_clock()-done+800<period_ms-500) {
+            NotifyBox(2000,"Testing hardware merge...");
+            if (hw_test(r,cap,acc,r->merged,cap_storage,acc_storage)) {
+                *dma_uncertain=1;cont_arm=0;r->error|=FE_DMA;*msg="HW merge test: DMA uncertain; reboot";break;
+            }
+            write_log(r,"hw merge tested");
+            continue;                                    /* preview next frame */
         }
         if (preview_yuv) {
             unsigned p0=(unsigned)get_us_clock();
@@ -564,6 +651,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     }
     continuous=0;cont_arm=0;
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
+    if (hw_enable) { hw.close=lc_native_engine_close();if (hw.close) *dma_uncertain=1; }
 }
 
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *o,
@@ -610,9 +698,10 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         if (!alloc[i]) break;
     }
     if (!alloc[0]) { r.error|=FE_MEMORY;msg="No full-size buffer available";goto out; }
-    cap=(uint8_t *)(((unsigned)alloc[0]+2*FRLV_GUARD-1)&~(FRLV_GUARD-1));
-    if (alloc[1]) acc=(uint8_t *)physical((void *)(((unsigned)alloc[1]+FRLV_GUARD-1)&~(FRLV_GUARD-1)));
-    unsigned capacity=FRLV_ALLOCATION-3*FRLV_GUARD;
+    /* Halo rows before the pixels (Canon engine input), then guards. */
+    cap=(uint8_t *)(((unsigned)alloc[0]+FRLV_HALO+2*FRLV_GUARD-1)&~(FRLV_GUARD-1));
+    if (alloc[1]) acc=(uint8_t *)physical((void *)(((unsigned)alloc[1]+FRLV_HALO+FRLV_GUARD-1)&~(FRLV_GUARD-1)));
+    unsigned capacity=FRLV_ALLOCATION-FRLV_HALO-3*FRLV_GUARD;
     memset(cap-FRLV_GUARD,0x5a,FRLV_GUARD);
     r.stage=2;write_log(&r,"allocated");
 
@@ -645,7 +734,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         if (*cancel || ml_shutdown_requested || get_ms_clock()-t0>6000) { r.error|=FE_ZOOM;break; }
         msleep(50);
     }
-    r.zoom_ms=get_ms_clock()-t0;
+    r.zoom_ms=get_ms_clock()-t0;r.zoom_done_ms=get_ms_clock();
     if (r.error) { msg="x5 zoom did not engage";goto restore; }
     if (!wait_vsyncs(o->continuous ? 2:3,3*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
     r.top_left=shamem_read(0xC0F06800);r.bottom_right=shamem_read(0xC0F06804);
@@ -675,7 +764,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     msg="Full-res readout: capturing";*status=msg;
     if (r.continuous) {
         if (!acc) { r.error|=FE_MEMORY;msg="Composite needs two full-size buffers";goto restore; }
-        continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms);
+        continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o->hw_test,alloc[0],alloc[1]);
         if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
         *status=msg;
         goto restore;
@@ -806,7 +895,10 @@ out:
     else if (!r.error) msg=r.saved ? "Full-res DNG saved; see LVFR LOG":"Full-res: no frame saved";
     else if (r.saved) msg=r.continuous ? "Composite saved; stopped early, see LOG":"Full-res DNG saved with warnings; see LOG";
     if (r.continuous && r.saved && !r.error && !r.unsafe) {
-        static char done[64];snprintf(done,sizeof(done),"Full-res composite saved: %d frames",r.merged);msg=done;
+        static char done[64];
+        if (r.late_frames) snprintf(done,sizeof(done),"Composite saved: %d frames, %d late (see CSV)",r.merged,r.late_frames);
+        else snprintf(done,sizeof(done),"Full-res composite saved: %d frames",r.merged);
+        msg=done;
     }
     *status=msg;
     if (r.log[0]) write_log(&r,msg);
