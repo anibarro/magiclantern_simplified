@@ -91,6 +91,8 @@ struct raw_pixblock
 /* in LiveView, this will retry as needed */
 /* returns 1=success, 0=failed */
 int raw_update_params();
+/* Parse Silent Picture's photo RAW buffer without relying on Quick Review state. */
+int raw_update_params_for_silent_capture();
 
 /* get a red/green/blue pixel near the specified coords (approximate) */
 int raw_red_pixel(int x, int y);
@@ -99,7 +101,13 @@ int raw_blue_pixel(int x, int y);
 
 /* get/set the pixel at specified coords (exact, but you can get whatever color happens to be there) */
 int raw_get_pixel(int x, int y);
+int raw_get_pixel_from_buffer(void *buffer, int pitch, int x, int y);
 void raw_set_pixel(int x, int y, int value);
+
+#if defined(CONFIG_EOSM) && defined(CONFIG_QEMU)
+/* Declare the RAW worker only in builds that include its polling path. */
+void xpan_photo_process_raw_capture(void);
+#endif
 
 /* get a pixel from a custom raw buffer (not from the main one) */
 int raw_get_pixel_ex(void* raw_buffer, int x, int y);
@@ -339,8 +347,18 @@ struct raw_capture_info {
 
 extern struct raw_capture_info raw_capture_info;
 
+#ifdef CONFIG_EOSM
+/* Report expected EOS M file types from Canon's acknowledged image-quality setting. */
+int xpan_photo_capture_has_raw(void);
+int xpan_photo_capture_has_jpeg(void);
+#endif
+
 /* save a DNG file; all parameters are taken from raw_info */
 int save_dng(char* filename, struct raw_info * raw_info);
+#ifdef CONFIG_EOSM
+/* Save the optional XPan sidecar with physically cropped RAW pixels. */
+int save_dng_xpan(char* filename, struct raw_info * raw_info);
+#endif
 
 /* do not include ML headers if used in postprocessing */
 #ifdef CONFIG_MAGICLANTERN

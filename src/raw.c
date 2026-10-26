@@ -28,8 +28,12 @@
 #include "menu.h"
 #include "edmac.h"
 #include "edmac-memcpy.h"
+#include "exmem.h"
 #include "imgconv.h"
 #include "console.h"
+#include "cropmarks.h"
+#include "fileprefix.h"
+#include "fio-ml.h"
 #include "fps.h"
 #include "platform/state-object.h"
 
@@ -878,9 +882,28 @@ static void raw_lv_realloc_buffer()
 #endif  /* CONFIG_EDMAC_RAW_SLURP */
 #endif /* CONFIG_RAW_LIVEVIEW */
 
+/* Allow RAW+JPEG only for an XPan DNG snapshot; generic RAW overlays keep their old guard. */
+/* Do not expand diagnostic enum names in normal camera builds. */
+#define RAW_UPDATE_DIAG_SET(code, width, height) do {} while (0)
+
 static REQUIRES(raw_sem)
-int raw_update_params_work()
+int raw_update_params_work_internal(int allow_xpan_raw_jpeg, int force_photo_capture)
 {
+    int use_liveview = lv && !force_photo_capture;
+#ifdef CONFIG_QEMU
+    if (use_liveview)
+    {
+        /* EOS M QEMU does not provide the still RAW Live View DMA buffer. */
+        static int qemu_lv_raw_unavailable_logged = 0;
+        if (!qemu_lv_raw_unavailable_logged)
+        {
+            dbg_printf("QEMU has no Live View RAW buffer; RAW-only overlays are unavailable.\n");
+            qemu_lv_raw_unavailable_logged = 1;
+        }
+        return 0;
+    }
+#endif
+
     #ifdef RAW_DEBUG
     console_show();
     #endif
@@ -901,18 +924,19 @@ int raw_update_params_work()
     int mv1080 = mv && video_mode_resolution == 0;
     int mv1080crop = mv && video_mode_resolution == 0 && video_mode_crop;
     int mv640crop = mv && video_mode_resolution == 2 && video_mode_crop;
-    int zoom = lv_dispsize > 1;
+    int zoom = use_liveview && lv_dispsize > 1;
 
     // FIXME SJE what is this terrible hack?  Presumably much better to fix the code instead of hiding errors?
     /* silence warnings; not all cameras have all these modes */
     (void)mv640; (void)mv720; (void)mv1080; (void)mv1080crop; (void)mv640crop; (void)zoom;
 
-    if (lv)
+    if (use_liveview)
     {
 #ifdef CONFIG_RAW_LIVEVIEW
         if (!raw_lv_is_enabled())
         {
             dbg_printf("LV raw disabled\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_DISABLED, width, height);
             return 0;
         }
 
@@ -920,6 +944,7 @@ int raw_update_params_work()
         {
             /* LiveView raw data is invalid, wait a bit and request a retry */
             dbg_printf("LV raw invalid\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_RETRY_WAIT, width, height);
             return 0;
         }
 
@@ -927,6 +952,7 @@ int raw_update_params_work()
         if (lv_dispsize == 10)
         {
             dbg_printf("LV raw has trouble with 10x zoom\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_10X_ZOOM, width, height);
             return 0;
         }
         #endif
@@ -940,12 +966,14 @@ int raw_update_params_work()
         if (!raw_info.buffer)
         {
             dbg_printf("LV raw buffer null\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_NULL_BUFFER, width, height);
             return 0;
         }
 
         if (!raw_lv_get_resolution(&width, &height))
         {
             dbg_printf("LV RAW size error\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_NO_RESOLUTION, width, height);
             return 0;
         }
 
@@ -954,6 +982,7 @@ int raw_update_params_work()
         if (width < 320 || height < 160)
         {
             dbg_printf("LV RAW size too small\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_SIZE_TOO_SMALL, width, height);
             return 0;
         }
 
@@ -1087,13 +1116,19 @@ int raw_update_params_work()
         dbg_printf("Skip left:%d right:%d top:%d bottom:%d\n", skip_left, skip_right, skip_top, skip_bottom);
 #endif
     }
-    else if (QR_MODE) // image review after taking pics
+    else if (QR_MODE || force_photo_capture) // image review or an explicit still-capture parse
     {
 #ifdef CONFIG_RAW_PHOTO
 
-        if (!can_use_raw_overlays_photo())
+        int raw_available = can_use_raw_overlays_photo();
+#ifdef CONFIG_EOSM
+        if (!raw_available && allow_xpan_raw_jpeg && xpan_photo_capture_has_raw() == 1)
+            raw_available = 1;
+#endif
+        if (!raw_available)
         {
             dbg_printf("Picture quality not RAW\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_NOT_RAW, width, height);
             return 0;
         }
 
@@ -1102,6 +1137,7 @@ int raw_update_params_work()
         if (!raw_info.buffer)
         {
             dbg_printf("Photo raw buffer null\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_NULL_BUFFER, width, height);
             return 0;
         }
 
@@ -1115,6 +1151,7 @@ int raw_update_params_work()
         if ((width & 0xFFFFE000) || (height & 0xFFFFE000) || (width*height < 10e6) || (width*height > 30e6))
         {
             dbg_printf("Photo raw size error\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_BAD_SIZE, width, height);
             return 0;
         }
 
@@ -1170,7 +1207,13 @@ int raw_update_params_work()
         skip_top = 54;
         #endif
 
-        #if defined(CONFIG_650D) || defined(CONFIG_EOSM) || defined(CONFIG_700D) || defined(CONFIG_100D)
+        #ifdef CONFIG_EOSM
+        /* RAW_EDMAC includes 96x72 pixels beyond Canon's 5184x3456 CR2 raster. */
+        skip_left   = 72;
+        skip_right  = 96;
+        skip_top    = 52;
+        skip_bottom = 72;
+        #elif defined(CONFIG_650D) || defined(CONFIG_700D) || defined(CONFIG_100D)
         skip_left = 72;
         skip_top = 52;
         #endif
@@ -1193,6 +1236,7 @@ int raw_update_params_work()
     else
     {
         dbg_printf("Neither LV nor QR\n");
+        RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_WRONG_MODE, width, height);
         return 0;
     }
 
@@ -1215,11 +1259,11 @@ int raw_update_params_work()
     /* photo mode and crop/zoom modes use 1:1 readout */
     /* LiveView uses 3x3 column binning / line skipping on most models */
     /* and 3x5 in 720p */
-    if (!lv || zoom || video_mode_crop)
+    if (!use_liveview || zoom || video_mode_crop)
     {
         raw_capture_info.binning_x  = raw_capture_info.binning_y  = 1;
         raw_capture_info.skipping_x = raw_capture_info.skipping_y = 0;
-        raw_capture_info.offset_x   = raw_capture_info.offset_y   = lv ? SHRT_MIN : 0;
+        raw_capture_info.offset_x   = raw_capture_info.offset_y   = use_liveview ? SHRT_MIN : 0;
     }
     else
     {
@@ -1243,7 +1287,7 @@ int raw_update_params_work()
 
 #ifdef CONFIG_RAW_LIVEVIEW
 
-    if (lv)
+    if (use_liveview)
     {
         if (width != raw_info.width || height != raw_info.height)
         {
@@ -1265,12 +1309,13 @@ int raw_update_params_work()
             raw_info.black_level = 0;
 
             dbg_printf("LV raw dimensions changed\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_SIZE_CHANGED, width, height);
             return 0;
         }
     }
 
     /* in zoom mode: yuv position changed? force a refresh */
-    if (lv_dispsize > 1)
+    if (use_liveview && lv_dispsize > 1)
     {
         static int prev_delta_x = 0;
         static int prev_delta_y = 0;
@@ -1351,6 +1396,7 @@ int raw_update_params_work()
         #endif
 
         dbg_printf("Black check error\n");
+        RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_BLACK_CHECK, width, height);
         return 0;
     }
 
@@ -1363,7 +1409,7 @@ int raw_update_params_work()
 
     raw_info.black_level = black_mean;
 
-    if (!lv)
+    if (!use_liveview)
     {
         /* start at Canon's white level, and autodetect from there
          * Canon's guess may be up to 0.38 EV below the true value - or maybe more?
@@ -1407,6 +1453,7 @@ int raw_update_params_work()
         if (!iso)
         {
             dbg_printf("ISO error\n");
+            RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_LV_NO_ISO, width, height);
             return 0;
         }
         int iso2 = dual_iso_get_alternate_iso();
@@ -1436,21 +1483,64 @@ int raw_update_params_work()
     return 1;
 }
 
+/* Preserve the existing parser entry point for all non-XPan consumers. */
+int raw_update_params_work()
+{
+    return raw_update_params_work_internal(0, 0);
+}
+
 static int raw_update_params_once()
 {
     get_yuv422_vram();  /* refresh VRAM parameters */
 
     int ans = 0;
     take_semaphore(raw_sem, 0);
-    ans = raw_update_params_work();
+    ans = raw_update_params_work_internal(0, 0);
     if (ans)
         module_exec_cbr(CBR_RAW_INFO_UPDATE);
     give_semaphore(raw_sem);
     return ans;
 }
 
+/* Read a RAW+JPEG Quick Review buffer without enabling RAW+JPEG overlays globally. */
+static int raw_update_params_once_for_xpan_dng()
+{
+    get_yuv422_vram();
+
+    int ans = 0;
+    take_semaphore(raw_sem, 0);
+    ans = raw_update_params_work_internal(1, 0);
+    if (ans)
+        module_exec_cbr(CBR_RAW_INFO_UPDATE);
+    give_semaphore(raw_sem);
+    return ans;
+}
+
+/* Parse the just-captured still RAW even if Canon has not entered Quick Review. */
+int raw_update_params_for_silent_capture()
+{
+    RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_NONE, 0, 0);
+
+    get_yuv422_vram();
+    int ans = 0;
+    take_semaphore(raw_sem, 0);
+    ans = raw_update_params_work_internal(0, 1);
+    if (ans)
+        module_exec_cbr(CBR_RAW_INFO_UPDATE);
+    give_semaphore(raw_sem);
+
+    if (raw_info.bits_per_pixel != 14)
+    {
+        RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_BAD_BIT_DEPTH, raw_info.width, raw_info.height);
+        return 0;
+    }
+
+    return ans;
+}
+
 int raw_update_params()
 {
+    RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_NONE, 0, 0);
     int ans = raw_update_params_once();
 
     /* in LiveView, retry 3 times (there may be transient bad frames, resolution changes and so on) */
@@ -1474,11 +1564,235 @@ int raw_update_params()
     if (raw_info.bits_per_pixel != 14)
     {
         /* hack: this will disable all overlays at bit depths other than 14 */
+        RAW_UPDATE_DIAG_SET(RAW_UPDATE_DIAG_BAD_BIT_DEPTH, raw_info.width, raw_info.height);
         return 0;
     }
 
     return ans;
 }
+
+#if defined(CONFIG_EOSM) && defined(CONFIG_QEMU)
+/* Exclude the unverified RAW file worker from camera boot images until its poll is explicitly enabled. */
+extern int xpan_photo_patch_cr2_file(const char *filename);
+extern int xpan_photo_patch_jpeg_file(const char *filename);
+
+#define XPAN_RAW_CAPTURE_POLL_MS 50
+#define XPAN_RAW_FILE_STABLE_MS 1000
+#define XPAN_RAW_FILE_MISSING_MS 1000
+
+/* Track completed Canon captures and edit only their small crop metadata records. */
+void xpan_photo_process_raw_capture(void)
+{
+    static int state_ready = 0;
+    static struct card_info *seen_card = NULL;
+    static int seen_folder = -1;
+    static int seen_file = -1;
+    static struct card_info *pending_card = NULL;
+    static int pending_folder = -1;
+    static int pending_file = -1;
+    static uint32_t previous_size = 0;
+    static int stable_checks = 0;
+    static int missing_checks = 0;
+    static int pending_cr2_attempted = 0;
+    static uint32_t previous_jpeg_size = 0;
+    static int jpeg_stable_checks = 0;
+    static int pending_jpeg_attempted = 0;
+
+    struct card_info *card = get_shooting_card();
+    if (!card) return;
+
+    if (!state_ready)
+    {
+        /* Ignore any review image that predates Magic Lantern's first poll. */
+        seen_card = card;
+        seen_folder = card->folder_number;
+        seen_file = card->file_number;
+        state_ready = 1;
+        return;
+    }
+
+    int folder = card->folder_number;
+    int file_number = card->file_number;
+    if (file_number < 1) return;
+
+    /* Start a fresh file-number sequence after changing cards or folders. */
+    if (card != seen_card || folder != seen_folder || file_number < seen_file)
+    {
+        seen_card = card;
+        seen_folder = folder;
+        seen_file = file_number - 1;
+        pending_card = NULL;
+        pending_folder = pending_file = -1;
+        missing_checks = 0;
+    }
+    if (file_number <= seen_file) return;
+
+    int patch_cr2 = xpan_photo_cr2_crop_enabled();
+    /* Metadata edits need no Quick Review RAW buffer and never encode a DNG. */
+    if (!patch_cr2)
+    {
+        /* Consume captures while metadata patching is disabled. */
+        seen_card = card;
+        seen_folder = folder;
+        seen_file = file_number;
+        pending_card = NULL;
+        pending_folder = pending_file = -1;
+        previous_size = 0;
+        stable_checks = 0;
+        previous_jpeg_size = 0;
+        jpeg_stable_checks = 0;
+        missing_checks = 0;
+        return;
+    }
+    /* Patch missed burst files in order. */
+    int target_file = seen_file + 1;
+    if (pending_card != card || pending_folder != folder || pending_file != target_file)
+    {
+        pending_card = card;
+        pending_folder = folder;
+        pending_file = target_file;
+        previous_size = 0;
+        stable_checks = 0;
+        previous_jpeg_size = 0;
+        jpeg_stable_checks = 0;
+        missing_checks = 0;
+        pending_cr2_attempted = 0;
+        pending_jpeg_attempted = 0;
+        return;
+    }
+
+    char cr2_filename[FIO_MAX_PATH_LENGTH];
+    char jpeg_filename[FIO_MAX_PATH_LENGTH];
+    snprintf(cr2_filename, sizeof(cr2_filename), "%s/%s%04d.CR2", get_dcim_dir(), get_file_prefix(), target_file);
+    snprintf(jpeg_filename, sizeof(jpeg_filename), "%s/%s%04d.JPG", get_dcim_dir(), get_file_prefix(), target_file);
+    uint32_t cr2_size = 0;
+    if (FIO_GetFileSize(cr2_filename, &cr2_size) != 0)
+    {
+        uint32_t jpeg_size = 0;
+        /* Treat a missing CR2 as JPEG-only only when Canon confirms that no RAW was requested. */
+        int capture_has_raw = xpan_photo_capture_has_raw();
+        if (patch_cr2 && capture_has_raw == 0 &&
+            FIO_GetFileSize(jpeg_filename, &jpeg_size) == 0 && jpeg_size >= 16 * 1024)
+        {
+            if (jpeg_size == previous_size) stable_checks++;
+            else
+            {
+                previous_size = jpeg_size;
+                stable_checks = 0;
+                pending_jpeg_attempted = 0;
+            }
+            if (stable_checks < XPAN_RAW_FILE_STABLE_MS / XPAN_RAW_CAPTURE_POLL_MS) return;
+            if (get_shooting_card() != card || card->folder_number != folder || card->file_number < target_file)
+                return;
+            if (!pending_jpeg_attempted)
+            {
+                pending_jpeg_attempted = 1;
+                int patched = xpan_photo_patch_jpeg_file(jpeg_filename);
+                if (patched) printf("XPan JPEG crop metadata written to %s\n", jpeg_filename);
+                else printf("XPan JPEG crop metadata could not be written: %s\n", jpeg_filename);
+            }
+            seen_file = target_file;
+            pending_card = NULL;
+            pending_folder = pending_file = -1;
+            previous_size = stable_checks = 0;
+            return;
+        }
+
+        /* Allow delayed burst writes to create expected files before treating a gap as complete. */
+        if (target_file < file_number && ++missing_checks >= XPAN_RAW_FILE_MISSING_MS / XPAN_RAW_CAPTURE_POLL_MS)
+        {
+            seen_file = target_file;
+            pending_card = NULL;
+            pending_folder = pending_file = -1;
+            missing_checks = 0;
+        }
+        previous_size = 0;
+        stable_checks = 0;
+        return;
+    }
+    missing_checks = 0;
+
+    if (cr2_size < 1024 * 1024)
+    {
+        previous_size = 0;
+        stable_checks = 0;
+        return;
+    }
+
+    if (cr2_size == previous_size) stable_checks++;
+    else
+    {
+        stable_checks = 0;
+        /* A size change means Canon is still writing; recheck the crop after it settles again. */
+        pending_cr2_attempted = 0;
+    }
+    previous_size = cr2_size;
+    /* Ignore short card-write pauses before the CR2 metadata record is opened for update. */
+    if (stable_checks < XPAN_RAW_FILE_STABLE_MS / XPAN_RAW_CAPTURE_POLL_MS) return;
+
+    /* Quick Review can switch images or cards while the worker is waiting for the write to settle. */
+    if (get_shooting_card() != card || card->folder_number != folder || card->file_number < target_file)
+        return;
+
+    /* Patch Canon's fixed-size crop record once; RAW image data is never rewritten. */
+    if (patch_cr2 && !pending_cr2_attempted)
+    {
+        pending_cr2_attempted = 1;
+        int patched = xpan_photo_patch_cr2_file(cr2_filename);
+        if (patched)
+            printf("XPan crop metadata written to %s\n", cr2_filename);
+        else
+        {
+            printf("XPan CR2 crop metadata could not be written: %s\n", cr2_filename);
+        }
+    }
+
+    /* Patch a paired JPEG based on the file Canon wrote, not possibly stale PICQ readback. */
+    if (patch_cr2)
+    {
+        uint32_t jpeg_size = 0;
+        if (FIO_GetFileSize(jpeg_filename, &jpeg_size) == 0 && jpeg_size >= 16 * 1024)
+        {
+            if (jpeg_size == previous_jpeg_size) jpeg_stable_checks++;
+            else
+            {
+                previous_jpeg_size = jpeg_size;
+                jpeg_stable_checks = 0;
+                pending_jpeg_attempted = 0;
+            }
+            if (jpeg_stable_checks < XPAN_RAW_FILE_STABLE_MS / XPAN_RAW_CAPTURE_POLL_MS) return;
+            if (get_shooting_card() != card || card->folder_number != folder || card->file_number < target_file)
+                return;
+            if (!pending_jpeg_attempted)
+            {
+                pending_jpeg_attempted = 1;
+                int jpeg_patched = xpan_photo_patch_jpeg_file(jpeg_filename);
+                if (jpeg_patched) printf("XPan JPEG crop metadata written to %s\n", jpeg_filename);
+                else printf("XPan JPEG crop metadata could not be written: %s\n", jpeg_filename);
+            }
+        }
+    }
+
+    seen_file = target_file;
+    pending_card = NULL;
+    pending_folder = pending_file = -1;
+    previous_size = stable_checks = 0;
+    previous_jpeg_size = jpeg_stable_checks = 0;
+}
+
+static void xpan_photo_files_task(void *arg)
+{
+    (void)arg;
+    while (1)
+    {
+        xpan_photo_process_raw_capture();
+        msleep(XPAN_RAW_CAPTURE_POLL_MS);
+    }
+}
+
+/* Only short crop-metadata edits run here; never encode RAW pixels in this task. */
+TASK_CREATE("xpan_files", xpan_photo_files_task, 0, 0x1f, 0x4000);
+#endif
 
 static int preview_rect_x;
 static int preview_rect_y;
@@ -1667,6 +1981,22 @@ int FAST raw_blue_pixel_bright(int x, int y)
     return MAX(buf[i].h, buf[i - raw_info.width*2/8].h);
 }
 
+
+int FAST raw_get_pixel_from_buffer(void *buffer, int pitch, int x, int y) {
+    /* Let offline DNG thumbnails read the capture snapshot rather than global Quick Review state. */
+    struct raw_pixblock * p = (void*)buffer + y * pitch + (x/8)*14;
+    switch (x%8) {
+        case 0: return p->a;
+        case 1: return p->b_lo | (p->b_hi << 12);
+        case 2: return p->c_lo | (p->c_hi << 10);
+        case 3: return p->d_lo | (p->d_hi << 8);
+        case 4: return p->e_lo | (p->e_hi << 6);
+        case 5: return p->f_lo | (p->f_hi << 4);
+        case 6: return p->g_lo | (p->g_hi << 2);
+        case 7: return p->h;
+    }
+    return p->a;
+}
 
 int FAST raw_get_pixel(int x, int y) {
     struct raw_pixblock * p = (void*)raw_info.buffer + y * raw_info.pitch + (x/8)*14;

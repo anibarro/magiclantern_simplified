@@ -1448,6 +1448,33 @@ silent_pic_take_fullres(int interactive)
     info_led_off();
     lens_info.job_state = 0;
 
+    /* Snapshot still RAW before metadata work or display transitions can reuse its EDMAC. */
+    raw_set_dirty();
+    if (!raw_update_params_for_silent_capture())
+    {
+        display_on();
+        msleep(100);
+        bmp_printf(FONT_MED, 0, 0, "Raw error");
+        goto cleanup;
+    }
+
+    struct raw_info local_raw_info = raw_info;
+
+    /* Copy the DNG source before display-on can resume Live View. */
+    if (silent_pic_file_format == SILENT_PIC_FILE_FORMAT_DNG)
+    {
+        copy_job = (void*) call("FA_CreateTestImage");
+        copy_buf = (void*) call("FA_GetCrawBuf", copy_job);
+        if (!copy_buf)
+        {
+            display_on();
+            bmp_printf(FONT_MED, 0, 83, "Memory error");
+            goto cleanup;
+        }
+        local_raw_info.buffer = copy_buf;
+        memcpy(copy_buf, raw_info.buffer, local_raw_info.frame_size);
+    }
+
     silent_capture_fullres_metadata(prop_iso, capture_time);
 
     if (image_review_time)
@@ -1471,13 +1498,7 @@ silent_pic_take_fullres(int interactive)
         prop_request_change_wait(PROP_GUI_STATE, &new_gui, 4, 1000);
         gui_uilock(UILOCK_EVERYTHING);
     
-        /* preview the raw image */
-        raw_set_dirty();
-        if (!raw_update_params())
-        {
-            bmp_printf(FONT_MED, 0, 0, "Raw error");
-            goto cleanup;
-        }
+        /* Preview the already parsed photo RAW. */
         clrscr();
 
         if (is_intervalometer_running())
@@ -1488,45 +1509,11 @@ silent_pic_take_fullres(int interactive)
 
         raw_preview_fast();
     }
-    else
-    {
-        /* even if we don't preview, we still have to update raw parameters */
-        raw_set_dirty();
-        /* fake a QR mode, so the raw backend knows what parameters to apply */
-        /* but do not notify others (triggering the property would freeze on some cameras) */
-        /* however this won't trigger ETTR & co (but you'll see a warning in the menu) */
-        int old_gui_state = gui_state;
-        gui_state = GUISTATE_QR;
-        ok = raw_update_params();
-        gui_state = old_gui_state;
-        if (!ok)
-        {
-            display_on();
-            msleep(100);
-            bmp_printf(FONT_MED, 0, 0, "Raw error");
-            goto cleanup;
-        }
-    }
 
     /* image review timeout starts here */
     image_review_start_time = get_ms_clock();
 
     /* prepare to save the file */
-    struct raw_info local_raw_info = raw_info;
-    
-    /* DNG only: make a copy of the image, because save_dng will overwrite the contents of the raw buffer */
-    if (silent_pic_file_format == SILENT_PIC_FILE_FORMAT_DNG)
-    {
-        copy_job = (void*) call("FA_CreateTestImage");
-        copy_buf = (void*) call("FA_GetCrawBuf", copy_job);
-
-        if (!copy_buf)
-        {
-            bmp_printf(FONT_MED, 0, 0, "Memory error");
-            goto cleanup;
-        }
-    }
-    
     /* save the raw image as DNG or MLV */
     int save_time;
     
@@ -1543,12 +1530,6 @@ silent_pic_take_fullres(int interactive)
         bmp_printf(FONT_MED, 0, 83, "Captured in %d ms.", capture_time);
         
         int t0 = get_ms_clock();
-        
-        if (copy_buf)
-        {
-            local_raw_info.buffer = copy_buf;
-            memcpy(local_raw_info.buffer, raw_info.buffer, local_raw_info.frame_size);
-        }
 
         ok = silent_pic_save_file(&local_raw_info);
         int t1 = get_ms_clock();
