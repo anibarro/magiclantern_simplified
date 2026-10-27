@@ -1,0 +1,35 @@
+LCX1 HW step 1
+Full-res composite
+Status: HW test: no paused frames
+Stage_error_unsafe: 7,0,0
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Shutter_ms_timerA_timerB_blanking: 2500,56b,e123,10
+ISO_aperture_x10_battery_start_end_stop: 100,226,2,2,0
+Preview_only_clip_pct_x10_mode_lost_dma_aborts_first_arm_ms: 1,0,0,0,38
+Timer_switch_after_zoom_ms_exit_switched_short_skipped: 1037,1,1
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,56b056b,56b,1e03,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_max_vsync_gap_ms: 168,16259
+Timer_fixes_last_seen_B: 2,1e03
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 12,24
+Hook_adtg_calls_changes_blanking_seen: 86,70,24
+Hook_engio_calls_changes_drv_changes_overflow: 206,42,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10256
+Merged: 1
+Black_OBstdev_x10_center_mean_max: 2047,373,2533,3340
+Col_band_means_16px: 2046,2047,2047,2047,2246,2459,2467,2473,2481,2485,2492,2497
+Row_band_means_8px: 2036,2052,2048,2394,2751,2767,2780,2786,2792,2799
+Saved_stage_size: 0,0,0
+DNG: 
+Limit_overrun_offset_missed_partials: 1,0,0,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 542429,542,1,117561,108946
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 0,0
+Zoom_done_ms_late_frames: 58398,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,0,0,0
+Keys (2; ms:code:phase:passed, raw events 0x1000+param): 84575:1ff9:0:9 84575:0:0:1
+Vsync_intervals_us (last 32): 557309 332525 333201 333338 2499974 2499912 333362 16258821 133578 33220 33436 33340 33365 33412 33322 557365

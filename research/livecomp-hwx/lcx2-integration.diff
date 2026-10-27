@@ -1,0 +1,197 @@
+--- a/modules/livecomp/fullres-lv.c
++++ b/modules/livecomp/fullres-lv.c
+@@ -119,6 +119,10 @@
+ static uint32_t capture_pitch,capture_height;
+ static uint16_t cmos_copy[512];
+ static uint32_t adtg_copy[512];
++#ifdef LC_HWX
++static void hwx_rec_cmos(const uint16_t *l);
++static void hwx_rec_adtg(uint32_t cs,const uint32_t *l);
++#endif
+ 
+ /* PathDriveMode->zoom is the u16 at +0x12, i.e. the upper half of word +0x10. */
+ static unsigned pdm_zoom(void) { return (MEM(FRLV_PATHDRIVE+0x10)>>16)&0xFFFFu; }
+@@ -132,6 +136,9 @@
+     if (!active || !zoom5()) return;
+     if (lc_frr_cmos((const uint16_t *)regs[0],cmos_copy,COUNT(cmos_copy),&stats))
+         regs[0]=(uint32_t)cmos_copy;
++#ifdef LC_HWX
++    hwx_rec_cmos((const uint16_t *)regs[0]);
++#endif
+ }
+ static void FAST adtg_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
+ {
+@@ -139,6 +146,9 @@
+     if (!active || !zoom5()) return;
+     if (lc_frr_adtg(regs[0],(const uint32_t *)regs[1],adtg_copy,COUNT(adtg_copy),&cfg,&stats))
+         regs[1]=(uint32_t)adtg_copy;
++#ifdef LC_HWX
++    hwx_rec_adtg(regs[0],(const uint32_t *)regs[1]);
++#endif
+ }
+ static void FAST engio_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
+ {
+@@ -779,6 +789,10 @@
+     while (in_flight && !r->mode_lost && get_ms_clock()-w0<period_ms+4000) msleep(20);
+     return (in_flight || edmac_get_state(raw_write_chan)) && !raw_dma_abort();
+ }
++#ifdef LC_HWX
++#include "hwx-step1.h"
++#include "hwx-engine.h"
++#endif
+ /* Back to x1; Canon may need a full slow frame to finish the switch.
+  * Returns 1 when Canon's own sensor window is back. */
+ static unsigned leave_x5(struct frlv_result *r,const volatile unsigned *cancel)
+@@ -810,8 +824,8 @@
+     r.period_ms=lc_frr_timing[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:LC_FRR_FPS_DEFAULT].period_ms;
+     const unsigned period_ms=r.period_ms;
+     r.iso=raw2iso(lens_info.raw_iso);r.aperture=lens_info.aperture;r.battery_start=battery_level_bars;
+-    r.limit=o->preview_only ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */
+-    r.preview_only=o->preview_only;
++    r.limit=o->preview_only || o->hwx ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */
++    r.preview_only=o->preview_only || o->hwx;   /* nothing saved */
+     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
+     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
+     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
+@@ -821,9 +835,9 @@
+     in_flight=0;timer_fixes=0;
+ 
+     /* 1: state and fingerprints. Only EOS M 2.0.2 reaches this (camera guard). */
+-    if (o->preview_only && card) {
++    if (r.preview_only && card) {
+         /* Preview: one log, overwritten each time; no DNG. */
+-        snprintf(r.log,sizeof(r.log),"%s:/LVPREVW.LOG",card->drive_letter);r.dng[0]=0;
++        snprintf(r.log,sizeof(r.log),o->hwx ? "%s:/LVHWX.LOG":"%s:/LVPREVW.LOG",card->drive_letter);r.dng[0]=0;
+     } else if (!card || !choose_paths(&r,card)) { r.error|=FE_IO;msg="No card/filename";goto out; }
+     if (!base_state_ok(cancel,card) || lv_dispsize!=1 || raw_lv_is_enabled() ||
+         raw_write_chan!=livecomp_camera.raw_channel) {
+@@ -880,6 +894,9 @@
+         hooked[3]=1;
+     r.hooks=3+hooked[3];r.stage=3;
+     vsyncs=0;max_gap_ms=0;key_n=0;observing=1;active=1;
++#ifdef LC_HWX
++    hwx.ran=0;hwxe.ran=0;hwx_ncmos=hwx_nadtg=0;hwx_recording=o->hwx==1;
++#endif
+     write_log(&r,"hooked; entering x5");
+ 
+     /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks. */
+@@ -926,8 +943,20 @@
+ 
+     /* 6: compose until SET, the frame limit or an error. */
+     msg="Running";*status=msg;
+-    continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o->preview_only);
++    continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o->preview_only && !o->hwx);
+     if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
++#ifdef LC_HWX
++    hwx_recording=0;
++    if (o->hwx && r.merged && !(r.error&~FE_CANCEL) && !dma_uncertain) {
++        static const volatile unsigned no_cancel;
++        if (finish_dma(&r,period_ms)) dma_uncertain=1;
++        else {
++            wait_vsyncs(2,3000,&no_cancel);
++            if (o->hwx==2) hwxe_run(&r,cap,acc,&dma_uncertain,&msg);
++            else hwx_step1(&r,cap,&dma_uncertain,&msg);
++        }
++    }
++#endif
+     *status=msg;
+ 
+ restore:
+@@ -976,6 +1005,10 @@
+     if (locked) gui_uilock(old_lock);
+     if (power) powersave_permit();
+     if (r.unsafe) msg="DMA uncertain: reboot camera";
++#ifdef LC_HWX
++    else if (o->hwx==2) msg=!hwxe.ran ? "HW test: no first frame":hwxe.j[0].mark_ok || hwxe.j[1].mark_ok ? "HW engine in LV: OUTPUT OK":"HW engine in LV: no output";
++    else if (o->hwx) msg=!hwx.ran ? "HW test: no first frame":hwx.ok_level!=~0u ? "HW test: paused frames OK":"HW test: no paused frames";
++#endif
+     else if (r.preview_only && r.merged && !(r.error&~FE_CANCEL)) {
+         static char pv[64];
+         snprintf(pv,sizeof(pv),"Preview: clipped %d.%d%%",r.clip_x10/10,r.clip_x10%10);
+@@ -993,5 +1026,8 @@
+     *status=msg;
+     if (r.log[0]) write_log(&r,msg);
+     if (r.log[0] && !r.preview_only) write_csv(&r);
++#ifdef LC_HWX
++    if (o->hwx==2) hwxe_write_log(card); else hwx_write_log(card,&r);
++#endif
+     return r.unsafe;
+ }
+--- a/modules/livecomp/fullres-lv.h
++++ b/modules/livecomp/fullres-lv.h
+@@ -6,6 +6,7 @@
+     unsigned fps_index;    /* lc_frr_timing entry = sub-exposure length */
+     unsigned limit;        /* frames to merge before stopping; 0 = no limit */
+     unsigned preview_only; /* 1: one frame shown on the LCD until SET, nothing saved */
++    unsigned hwx;          /* experimental builds (LC_HWX): hardware test after one frame */
+ };
+ /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
+ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,
+--- a/modules/livecomp/livecomp-lv.c
++++ b/modules/livecomp/livecomp-lv.c
+@@ -35,6 +35,10 @@
+ static CONFIG_INT("livecomp.frames",frame_limit,0);
+ /* Preview only: one frame with the current settings on the LCD, not saved. */
+ static CONFIG_INT("livecomp.preview",preview_only,0);
++#ifdef LC_HWX
++/* Experimental builds: hardware-merge test instead of a composite (not saved). */
++static int hwx_test;
++#endif
+ static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
+ static unsigned trigger_ms;
+ static const char *status;   /* last result; NULL = show the setup hint */
+@@ -67,6 +71,9 @@
+         if (trigger && trigger_ready()) {
+             requested=1;trigger_ms=get_ms_clock();
+             status=preview_only ? "Starting the preview":"Starting the composite";
++#ifdef LC_HWX
++            if (hwx_test) status="Starting the HW test";
++#endif
+             return 0;
+         }
+         if (requested && (trigger || code==MODULE_KEY_UNPRESS_SET)) return 0;
+@@ -91,7 +98,10 @@
+ {
+     (void)unused;
+     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
+-    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only};
++    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,0};
++#ifdef LC_HWX
++    o.hwx=(unsigned)hwx_test;
++#endif
+     /* Global Draw would draw over the LCD composite: off for the session,
+      * then back to the user's setting. */
+     /* A message still on screen would call redraw() when it expires and
+@@ -160,6 +170,12 @@
+     {.name="Frame limit",.priv=&frame_limit,.max=COUNT(frame_limits)-1,
+      .choices=CHOICES("No limit","30 frames","60 frames","120 frames","240 frames"),
+      .help="Stop and save automatically after this many frames. SET stops earlier."},
++#ifdef LC_HWX
++    {.name="HW test",.priv=&hwx_test,.max=2,
++     .choices=CHOICES("OFF","Paused readout","Engine in LV"),
++     .help="EXPERIMENTAL: one frame, then the selected hardware test.",
++     .help2="Nothing saved. LOG: LVHWXD (paused) / LVHWXE (engine). May freeze."},
++#endif
+     {.name="Status",.update=update_status,
+      .help="SET: start (or preview). SET again: stop and save."},
+     MENU_EOL
+--- a/modules/livecomp/livecomp-config.h
++++ b/modules/livecomp/livecomp-config.h
+@@ -1,4 +1,6 @@
+ #ifndef LIVECOMP_CONFIG_H
+ #define LIVECOMP_CONFIG_H
+-#define LIVECOMP_BUILD_ID "LCM52 movie-mode status"
++#define LIVECOMP_BUILD_ID "LCX2 HW engine in LV"
++/* Experimental hardware-merge build (branch livecomp-hwx only). */
++#define LC_HWX 1
+ #endif
+--- a/modules/livecomp/Makefile
++++ b/modules/livecomp/Makefile
+@@ -1,5 +1,7 @@
+ MODULE_NAME = livecomp
+ MODULE_OBJS = $(addprefix $(BUILD_DIR)/,livecomp.o livecomp-lv.o fullres-lv.o)
++# Experimental branch only (livecomp-hwx): Canon engine wrapper.
++MODULE_OBJS += $(if $(wildcard native-max.c),$(BUILD_DIR)/native-max.o)
+ TOP_DIR = ../..
+ MODULE_CFLAGS = -include livecomp-config.h
+ include $(TOP_DIR)/modules/Makefile
