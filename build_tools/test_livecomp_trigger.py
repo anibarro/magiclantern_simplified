@@ -21,8 +21,8 @@ struct event { int type,param; void *obj; int arg; };
 #define IS_FAKE(e) ((e)->arg == -123456)
 static unsigned initialized=1,set_release_blocked;
 #include "fullres-lv.h"
-static unsigned enabled,attempted,running,requested,trigger_ms,now,stops,frlv_phase,frlv_go;
-static volatile int frlv_adjust[LC_ADJ_COUNT];
+static unsigned enabled,attempted,running,requested,trigger_ms,now,stops;
+static int preview_only;
 static int ml_shutdown_requested,menu,gui_state,lv,LV_PAUSED,movie,lv_dispsize,RECORDING,half;
 static struct { int job_state; } lens_info;
 static const char *status;
@@ -66,25 +66,12 @@ int main(void) {
     now=1100;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);
     now=1600;assert(livecomp_lv_key(MODULE_KEY_Q)==0 && stops==1);
     assert(livecomp_lv_key(MODULE_KEY_INFO)==0);   /* other keys are held while running */
-    /* Exposure preview: SET starts the composite (once), half-shutter
-     * cancels; during the composite SET stops and half-shutter does nothing. */
-    stops=0;frlv_phase=LC_FRLV_PREVIEW;frlv_go=0;
-    now=2200;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && frlv_go && !stops && trigger_ms==2200);
-    now=2300;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);      /* same press */
-    assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);       /* already starting */
-    frlv_go=0;assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && stops==0);  /* same code as LEFT on EOS M: not an exit */
-    /* preview controls: dial = shutter, up/down = ISO, left/right = aperture, MENU = exit */
-    stops=0;
-    assert(livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && frlv_adjust[LC_ADJ_SHUTTER]==2);
-    assert(livecomp_lv_key(MODULE_KEY_PRESS_UP)==0 && livecomp_lv_key(MODULE_KEY_PRESS_DOWN)==0 && livecomp_lv_key(MODULE_KEY_PRESS_DOWN)==0 && frlv_adjust[LC_ADJ_ISO]==-1);
-    assert(livecomp_lv_key(MODULE_KEY_PRESS_RIGHT)==0 && frlv_adjust[LC_ADJ_APERTURE]==1 && !stops);
-    assert(livecomp_lv_key(MODULE_KEY_MENU)==0 && stops==1);
-    stops=0;frlv_phase=LC_FRLV_COMPOSE;
-    assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);
-    assert(livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && frlv_adjust[LC_ADJ_SHUTTER]==2);  /* no adjustments while compositing */
-    assert(livecomp_lv_key(MODULE_KEY_MENU)==0 && stops==1);stops=0;
-    now=3000;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && stops==1 && !frlv_go);
-    frlv_phase=LC_FRLV_SETUP;stops=1;
+    /* While running only SET/Q act (stop); every other key is held. */
+    stops=0;now=2200;
+    assert(livecomp_lv_key(MODULE_KEY_MENU)==0 && livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 &&
+           livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && livecomp_lv_key(MODULE_KEY_PRESS_LEFT)==0 && !stops);
+    assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && stops==1);
+    stops=1;
     assert(livecomp_lv_key(0)==1);
     running=0;assert(livecomp_lv_key(MODULE_KEY_Q)==1 && !requested); /* reboot guard */
     /* Real physical down in idle LV was consumed upstream. Release survives. */
@@ -110,18 +97,15 @@ int main(void) {
     enabled=1;half=1;dispatch(5,0);assert(!requested);half=0;
     /* While running, Canon never receives SET/Q: press and release are both
      * consumed, one click is one action (press if seen, else release). */
-    attempted=running=1;requested=stops=set_release_blocked=0;frlv_phase=LC_FRLV_COMPOSE;now=20000;trigger_ms=0;
+    attempted=running=1;requested=stops=set_release_blocked=0;now=20000;trigger_ms=0;
     { struct event e={0,4,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==1); }
     { struct event e={0,5,0,-123456};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==1); }  /* fake release */
     { struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==1 && !set_release_blocked); }
     now=21000;{ struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==2); } /* release only */
     now=22000;{ struct event e={0,0x1d,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==3); }
     { struct event e={0,0x50,0,0};assert(livecomp_raw_key((uintptr_t)&e)==1); }   /* other keys: portable path */
-    frlv_phase=LC_FRLV_PREVIEW;frlv_go=0;now=23000;
-    { struct event e={0,4,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && frlv_go && stops==3); }
-    { struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==3); }
-    assert(keylog_n>=8);
-    frlv_phase=LC_FRLV_SETUP;frlv_go=0;attempted=running=0;set_release_blocked=0;
+    assert(keylog_n>=6);
+    attempted=running=0;set_release_blocked=0;
     struct event internal={2,5,0,0};
     assert(livecomp_raw_key((uintptr_t)&internal)==1 && !requested);
     return 0;
@@ -132,7 +116,7 @@ int main(void) {
         subprocess.run([os.environ.get('CC','cc'),'-std=c99','-Wall','-Wextra','-Werror',
                         '-I'+str(ROOT/'src'),'-I'+str(ROOT/'modules/livecomp'),str(p/'test.c'),'-o',str(p/'test')],check=True)
         subprocess.run([str(p/'test')],check=True)
-    print('PASS: short physical SET release, long synthetic/physical release suppression, menu-exit isolation, trigger/Stop gates, preview start/cancel keys')
+    print('PASS: short physical SET release, long synthetic/physical release suppression, menu-exit isolation, trigger/Stop gates, keys held while running')
 
 if __name__ == '__main__':
     main()

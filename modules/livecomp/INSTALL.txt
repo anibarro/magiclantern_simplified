@@ -1,4 +1,4 @@
-Live Composite LCM47 - Canon EOS M firmware 2.0.2
+Live Composite LCM48 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M at full sensor resolution
 (5208x3478): the camera keeps exposing frames of the chosen shutter speed,
@@ -14,10 +14,10 @@ Keep your existing autoexec.bin and its matching EOSM_202.sym together.
 CAMERA SETUP
  - Movie mode, M exposure, fixed ISO (not Auto; 100 recommended), fixed WB,
    normal view (x1). Camera on a tripod.
- - Aperture and ISO: set them with the camera's own controls before
-   starting. They stay fixed for the whole session.
- - ML FPS override OFF, Global Draw OFF, no other RAW tools (crop_rec,
-   mlv_lite, raw video, silent pictures).
+ - Aperture and ISO: the camera's own settings; the shutter: this menu.
+ - ML FPS override OFF; no other RAW tools (crop_rec, mlv_lite, raw video,
+   silent pictures). Global Draw may stay ON: it is turned off while a
+   session runs and restored afterwards.
 
 MENU (Shoot > Live Composite)
    Live Composite   ON arms the module. Nothing starts until you press SET.
@@ -26,38 +26,34 @@ MENU (Shoot > Live Composite)
                     side shows the camera's ISO and aperture.
                       2 s: the LCD shows a quarter of the picture per frame.
                       2.5 s and longer: the whole picture after every frame.
-                    2-5 s are camera-tested. 6-60 s are marked "not yet
-                    tested" until a camera run confirms them.
-                    Shorter shutters (Olympus goes down to 1/2 s) are not
-                    offered: merging a frame takes ~1.5-1.9 s on the CPU,
-                    so they would leave gaps in the trails.
+                    2-5 s are camera-tested; 6-60 s are marked "not yet
+                    tested". Shorter shutters would leave gaps (merging a
+                    frame takes ~1.5-1.9 s) and are not offered.
+   Preview only     OFF (default) / ON. ON: SET takes ONE frame with the
+                    current shutter, ISO and aperture and shows it with its
+                    settings and the share of clipped highlights. Nothing is
+                    saved. SET returns to Live View; adjust and repeat, then
+                    set Preview only OFF for the real composite.
    Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
    Status           Off / Armed / Starting / Running / Reboot, with the
                     setup reminder or the last result.
 
 RUN
- 1. Close the menu and press/release SET. The camera switches to the
-    full-sensor mode (about 10 s; for long shutters the first frame takes
-    as long as the shutter).
- 2. EXPOSURE PREVIEW: every frame is shown as exposed, NOT blended and NOT
-    recorded. The top of the screen shows
-       PREVIEW  2.5 s  ISO 100  f/8.0  clip 0.3%
-    (clip = share of the picture with clipped highlights). Adjust here:
-       rear dial        shutter (the camera re-enters the full-res mode,
-                        about 10 s, then the preview goes on)
-       up / down        ISO, one stop (100 ... 3200)
-       left / right     aperture, 1/3 stop
-       MENU             leave, nothing is saved
-    Canon's own controls stay locked while a session runs. A shutter chosen
-    here is kept in the menu for the next session.
- 3. Press SET to start the composite. The frame being exposed at that
-    moment is discarded; the next one is the base exposure.
- 4. "COMPOSITE n  SET=stop": the LCD shows the growing composite. Press SET
-    (or MENU) to stop: the exposure in
-    progress is completed and merged. Or wait for the frame limit.
- 5. The camera returns to normal view and saves LVFRnnnn.DNG (composite,
+ 1. (Optional) Preview only ON, close the menu, press SET: after about 10 s
+    plus one shutter time the frame appears with
+       PREVIEW  2.5 s  ISO 100  f/8.0  clipped 0.3%
+    Press SET to return. Change ISO/aperture (camera) or shutter (menu) and
+    repeat until the exposure is right. Then Preview only OFF.
+ 2. Close the menu and press/release SET. The camera switches to the
+    full-sensor mode (about 10 s) and the first frame is the base exposure.
+ 3. "COMPOSITE n  SET=stop": the LCD shows the growing composite. Press SET
+    to stop: the exposure in progress is completed and merged. Or wait for
+    the frame limit.
+ 4. The camera returns to normal view and saves LVFRnnnn.DNG (composite,
     camera WB as DNG white balance, EOS M focus pixels removed), .LOG and
     .CSV. Press SET again for another session; no reboot needed.
+ While a session runs only SET acts; the other buttons are held so the
+ camera does not react to them in the full-sensor mode.
 
 BATTERY
 When the battery indicator drops to its last (red) level during a session,

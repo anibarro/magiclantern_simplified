@@ -8,10 +8,10 @@ Olympus-style Live Composite: continuous light painting with LCD preview and RAW
 :Summary: Full-sensor live composite with DNG for EOS M 2.0.2
 
 Full-sensor (5208x3478) composite, 2-60 s shutter, RAW DNG output.
-Movie M, fixed ISO/WB, x1 view, FPS override OFF, Global Draw OFF.
+Movie M, fixed ISO/WB, x1 view, FPS override OFF (Global Draw: automatic).
 Set ISO and aperture on the camera, the shutter in this menu.
-SET: exposure preview. SET: start. SET: stop and save LVFRnnnn.DNG.
-Half-shutter leaves the preview. Low battery stops and saves.
+Preview only ON: SET shows one frame with these settings, nothing saved.
+SET starts the composite, SET stops and saves LVFRnnnn.DNG.
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
 Standalone module

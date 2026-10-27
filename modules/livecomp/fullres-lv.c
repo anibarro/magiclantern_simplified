@@ -199,7 +199,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned saved,save_stage,save_size;
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
-    unsigned preview_frames,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,adjustments,reentries;
+    unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
@@ -230,7 +230,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user\n"
         "Shutter_ms_timerA_timerB_blanking: %d,%x,%x,%d\n"
         "ISO_aperture_x10_battery_start_end_stop: %d,%d,%d,%d,%d\n"
-        "Preview_frames_last_clip_pct_x10_mode_lost_dma_aborts: %d,%d,%d,%d\nPreview_adjustments_shutter_reentries: %d,%d\n"
+        "Preview_only_clip_pct_x10_mode_lost_dma_aborts: %d,%d,%d,%d\n"
         "EngDrvOut_instr_hooks: %x,%d\n"
         "Regs_6800_6804_6008_6010_6014_38024: %x,%x,%x,%x,%x,%x\n"
         "Reg_6804_after_restore: %x\n"
@@ -239,7 +239,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Timer_fixes_last_seen_B: %d,%x\n"
         "PathDriveMode_words: %x,%x,%x,%x,%x,%x\n",
         status,r->stage,r->error,r->unsafe,r->period_ms,cfg.timer_a,cfg.timer_b,cfg.blanking,
-        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_frames,r->clip_x10,r->mode_lost,r->dma_aborts,r->adjustments,r->reentries,
+        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_only,r->clip_x10,r->mode_lost,r->dma_aborts,
         r->rom_engdrvout,r->hooks,r->top_left,r->bottom_right,r->reg_6008,r->reg_6010,r->reg_6014,r->reg_38024,
         r->reg_6804_after,r->width,r->height,r->pitch,r->bytes,
         r->zoom_ms,max_gap_ms,r->timer_fixes,r->timer_seen_b,
@@ -530,79 +530,42 @@ static unsigned battery_low(struct frlv_result *r)
     r->battery_stop=1;NotifyBox(8000,"Battery low: saving");
     return 1;
 }
-/* ---- Exposure preview: settings display and adjustments ------------
- * Canon's own controls stay locked during a session (in the x5 full-res
- * mode Canon would act on them). The preview offers its own: rear dial =
- * shutter, up/down = ISO (full stops), left/right = aperture (1/3 stops),
- * applied with Canon's ISO/aperture setters; MENU or half-shutter leaves.
- * The settings are drawn on the BMP overlay in two lines (NotifyBox only
- * has one short line). */
-static void preview_hud(const struct frlv_result *r,unsigned period_ms,unsigned starting)
+/* ---- Preview only (menu option) -------------------------------------
+ * One frame with the current shutter, ISO and aperture, shown on the LCD
+ * with its settings until SET (or 60 s); nothing is saved. The user then
+ * adjusts with the normal Canon/ML controls and starts again. (LCM43-47 had
+ * a live preview with its own controls inside the session; on the camera
+ * it mixed with Canon's UI and was replaced.) */
+static void preview_info(const struct frlv_result *r)
 {
     static char a[80];
-    const unsigned iso=lens_info.raw_iso ? (unsigned)raw2iso(lens_info.raw_iso):0,ap=(unsigned)lens_info.aperture;
-    snprintf(a,sizeof(a),"PREVIEW  %d.%d s  ISO %d  f/%d.%d  clip %d.%d%%     ",
-        period_ms/1000,period_ms%1000/100,iso,ap/10,ap%10,r->clip_x10/10,r->clip_x10%10);
+    const unsigned iso=r->iso,ap=r->aperture,ms=r->period_ms;
+    snprintf(a,sizeof(a),"PREVIEW  %d.%d s  ISO %d  f/%d.%d  clipped %d.%d%%     ",
+        ms/1000,ms%1000/100,iso,ap/10,ap%10,r->clip_x10/10,r->clip_x10%10);
     bmp_printf(FONT(FONT_MED,COLOR_WHITE,COLOR_BLACK),10,8,"%s",a);
-    bmp_printf(FONT(FONT_SMALL,COLOR_WHITE,COLOR_BLACK),10,44,"%s",starting ?
-        "Starting the composite with the next frame...                         ":
-        "SET: start   MENU: exit   dial: shutter   up/down: ISO   left/right: f ");
+    bmp_printf(FONT(FONT_MED,COLOR_WHITE,COLOR_BLACK),10,40,"%s","Not saved.  SET: back to Live View   ");
 }
-static void preview_hud_clear(void) { clrscr(); }
-/* Next/previous 1/3-stop raw aperture (Canon codes: 8 per stop, thirds at
- * +3 and +5 within each stop). */
-static unsigned aperture_step(unsigned v,int dir)
+static void preview_hold(struct frlv_result *r,const uint8_t *acc,const volatile unsigned *cancel)
 {
-    const unsigned m=v%8,base=v-m;
-    if (dir>0) return m<3 ? base+3:m<5 ? base+5:base+8;
-    return m>5 ? base+5:m>3 ? base+3:m>0 ? base:base-3;
+    if (!preview_yuv) return;
+    const unsigned clipped=preview_render(r,acc,0,1);sync_caches();
+    r->clip_x10=clipped*1000u/MAX(1u,(preview_w/2)*(preview_h/2));
+    preview_show();preview_info(r);
+    /* Canon keeps refilling its LV buffers once per (long) frame period:
+     * cover each refill right after the vsync, redraw the text now and then. */
+    unsigned v=vsyncs,t0=get_ms_clock(),drawn=t0;
+    while (!*cancel && !ml_shutdown_requested && zoom5() && get_ms_clock()-t0<60000) {
+        if (vsyncs!=v) { v=vsyncs;preview_show(); }
+        if (get_ms_clock()-drawn>1000) { preview_info(r);drawn=get_ms_clock(); }
+        msleep(20);
+    }
+    clrscr();
 }
-/* Applies pending adjustments. 1: ISO/aperture changed (or nothing), 2: the
- * shutter changed: the caller must re-enter x5 with the new timers. */
-static unsigned preview_adjust(struct frlv_result *r,const struct lc_frlv_options *o,unsigned *shutter_idx)
-{
-    if (!o->adjust) return 0;
-    int d[LC_ADJ_COUNT];
-    const uint32_t irq=cli();
-    for (unsigned k=0;k<LC_ADJ_COUNT;k++) { d[k]=o->adjust[k];o->adjust[k]=0; }
-    sei(irq);
-    if (!d[0] && !d[1] && !d[2]) return 0;
-    r->adjustments++;
-    if (d[LC_ADJ_ISO] && lens_info.raw_iso) {
-        int iso=lens_info.raw_iso+8*d[LC_ADJ_ISO];
-        iso=MIN(MAX(iso,72),112);                      /* ISO 100 ... 3200 */
-        if (iso!=lens_info.raw_iso) lens_set_rawiso(iso);
-    }
-    if (d[LC_ADJ_APERTURE] && lens_info.raw_aperture) {
-        unsigned v=(unsigned)lens_info.raw_aperture;
-        for (int k=0;k<(d[LC_ADJ_APERTURE]>0 ? d[LC_ADJ_APERTURE]:-d[LC_ADJ_APERTURE]);k++)
-            v=aperture_step(v,d[LC_ADJ_APERTURE]);
-        if (lens_info.raw_aperture_min) v=MAX(v,(unsigned)lens_info.raw_aperture_min);
-        if (lens_info.raw_aperture_max) v=MIN(v,(unsigned)lens_info.raw_aperture_max);
-        if ((int)v!=(int)lens_info.raw_aperture) lens_set_rawaperture((int)v);
-    }
-    if (d[LC_ADJ_SHUTTER]) {
-        int n=(int)*shutter_idx+d[LC_ADJ_SHUTTER];
-        n=MIN(MAX(n,0),(int)LC_FRR_FPS_CHOICES-1);
-        if ((unsigned)n!=*shutter_idx) { *shutter_idx=(unsigned)n;return 2; }
-    }
-    return 1;
-}
-/* Returns 1 when the shutter was changed in the preview (caller re-enters
- * x5 with the new timers and calls again), else 0. */
-static unsigned continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
+static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms,
-    const struct lc_frlv_options *o,unsigned *shutter_idx)
+    unsigned preview_only)
 {
-    unsigned reenter=0,hud_ms=0;
-    /* Exposure preview first (if the caller provides a start flag): every
-     * frame is shown as it was exposed, nothing is merged. SET (go) starts
-     * the composite with the first frame exposed entirely after the press. */
-    static volatile unsigned own_phase;
-    volatile unsigned *phase=o->phase ? o->phase:&own_phase;
-    const volatile unsigned *go=o->go;
-    unsigned go_vsync=0,lost_ticks=0;
-    *phase=go ? LC_FRLV_PREVIEW:LC_FRLV_COMPOSE;
+    unsigned lost_ticks=0;
     preview_setup();r->preview_ok=preview_yuv!=NULL;
     const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28;
     static char line[64];
@@ -612,35 +575,17 @@ static unsigned continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *a
     unsigned seen=frames_done,v=vsyncs,w0=get_ms_clock();
     while (vsyncs==v && get_ms_clock()-w0<period_ms+3000) msleep(10);
     msleep(40);arm_from_task();
-    if (*phase==LC_FRLV_PREVIEW) {
-        *msg="Exposure preview";
-        preview_hud(r,period_ms,0);hud_ms=get_ms_clock();
-    } else { *msg="Composite: first frame...";NotifyBox(8000,"Composite: first frame"); }
+    if (preview_only) { *msg="Preview: exposing";NotifyBox(MIN(period_ms+3000,60000u),"Preview: exposing %d.%d s",period_ms/1000,period_ms%1000/100); }
+    else { *msg="Composite: first frame...";NotifyBox(8000,"Composite: first frame"); }
     for (;;) {
-        if (go && *go && !go_vsync) go_vsync=vsyncs;
         if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled() || r->merged>=r->limit || battery_low(r)) {
-            if (cont_arm && *cancel) NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping after this frame");
+            if (cont_arm && *cancel) NotifyBox(5000,"Stopping after this frame");
             cont_arm=0;
         }
         w0=get_ms_clock();
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
-            if (go && *go && !go_vsync) {
-                go_vsync=vsyncs;
-                preview_hud(r,period_ms,1);
-            }
-            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping after this frame"); }
+            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping after this frame"); }
             if (ml_shutdown_requested || battery_low(r)) cont_arm=0;
-            if (*phase==LC_FRLV_PREVIEW && cont_arm && !go_vsync) {
-                const unsigned a=preview_adjust(r,o,shutter_idx);
-                if (a==2) {
-                    /* New shutter: stop here, the caller re-enters x5. */
-                    cont_arm=0;reenter=1;
-                    NotifyBox(8000,"Shutter %d.%d s: restarting",lc_frr_timing[*shutter_idx].period_ms/1000,lc_frr_timing[*shutter_idx].period_ms%1000/100);
-                }
-                /* Canon applies ISO/aperture asynchronously; refresh the
-                 * values shown (and redraw over Canon's own overlays). */
-                if (a || get_ms_clock()-hud_ms>500) { preview_hud(r,period_ms,0);hud_ms=get_ms_clock(); }
-            }
             /* Canon reconfigured the sensor (left x5 or reset its timing):
              * the armed frame will never complete. */
             lost_ticks=(!zoom5() || window_lost()) ? lost_ticks+1:0;
@@ -659,7 +604,7 @@ static unsigned continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *a
         /* LCM26: a frame that arrived while we were still busy is skipped
          * (a gap of one sub-exposure), not fatal. The capture buffer holds
          * the latest complete frame. Stop only if it keeps happening. */
-        if (frames_done!=seen+1 && *phase==LC_FRLV_COMPOSE) {
+        if (frames_done!=seen+1) {
             r->missed+=frames_done-seen-1;
             /* Relative rule, so it also works without a frame limit. */
             if (r->missed>2+r->merged/4) { r->error|=FE_DMA;*msg="Merge too slow: frames missed";cont_arm=0;break; }
@@ -677,36 +622,11 @@ static unsigned continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *a
         }
         if (!guards_ok(cap,r->bytes)) { cont_arm=0;*dma_uncertain=1;r->error|=FE_GUARD;*msg="Buffer guard overwritten";break; }
         if (r->merged>=r->limit) continue;               /* past the limit: not merged */
-        if (*phase==LC_FRLV_PREVIEW) {
-            if (cont_arm) arm_from_task();
-            /* Frame done at vsync n was exposed from vsync n-1 on; SET came
-             * after vsync go_vsync, so frames done at go_vsync+2 or later
-             * are exposed entirely after the press. */
-            if (go_vsync && done_vsync>=go_vsync+2) {
-                *phase=LC_FRLV_COMPOSE;preview_hud_clear();
-                NotifyBox(MIN(period_ms+2000,60000u),"COMPOSITE 1  SET=stop");
-            } else {
-                /* Show this frame as exposed (same render as the composite). */
-                sync_caches();
-                const uint8_t *src=(const uint8_t *)physical(cap);
-                if (!r->preview_frames) statistics(r,src);
-                if (preview_yuv) {
-                    const unsigned clipped=preview_render(r,src,0,1);sync_caches();preview_show();
-                    r->clip_x10=clipped*1000u/MAX(1u,(preview_w/2)*(preview_h/2));
-                }
-                r->preview_frames++;
-                if (!cont_arm) continue;
-                /* Every message names the phase (LCM44 camera run: the
-                 * preview was taken for a composite that did not blend). */
-                *msg="Exposure preview";
-                preview_hud(r,period_ms,go_vsync!=0);hud_ms=get_ms_clock();
-                continue;
-            }
-        }
         /* Next frame: arm now (its readout starts ~period-readout later),
          * never inside the vsync: preview_show (~110 ms) already waited. */
         if (!preview_yuv) msleep(40);
-        if (cont_arm && !in_flight) arm_from_task();    /* the preview may have armed it */
+        /* No extra frame after the last one the limit allows. */
+        if (cont_arm && !in_flight && r->merged+1<r->limit) arm_from_task();
         struct frlv_frame *c=r->merged<FRLV_CSV_MAX ? &cont_frames[r->merged]:&cont_overflow;
         memset(c,0,sizeof(*c));                         /* static: reused across sessions */
         c->seq=seen;c->done_ms=done;c->state=pointer==end ? 0:pointer-physical(cap)+1;
@@ -775,6 +695,7 @@ static unsigned continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *a
         }
         /* Once a stop is requested, keep saying so (LCM24 replaced the
          * "Stopping" box with the frame count, so Q/SET looked ignored). */
+        if (preview_only) { *msg="Preview";continue; }
         if (!cont_arm) {
             snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);*msg=line;
             NotifyBox(5000,"%s",line);
@@ -785,9 +706,8 @@ static unsigned continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *a
         if (r->merged%10==1) write_log(r,"composing");
     }
     cont_arm=0;
-    if (*phase==LC_FRLV_PREVIEW) preview_hud_clear();
+    if (preview_only && r->merged && !r->error && !*dma_uncertain) preview_hold(r,acc,cancel);
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
-    return reenter && !r->error;
 }
 
 /* Let an armed slurp complete (or stop it). Nonzero: DMA ownership uncertain. */
@@ -821,9 +741,10 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     memset(&r,0,sizeof(r));memset(&stats,0,sizeof(stats));
     lc_frr_configure(&cfg,o->fps_index);
     r.period_ms=lc_frr_timing[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:LC_FRR_FPS_DEFAULT].period_ms;
-    unsigned period_ms=r.period_ms,shutter_idx=o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:LC_FRR_FPS_DEFAULT;
+    const unsigned period_ms=r.period_ms;
     r.iso=raw2iso(lens_info.raw_iso);r.aperture=lens_info.aperture;r.battery_start=battery_level_bars;
-    r.limit=o->limit ? o->limit:~0u;                /* 0 = no limit */
+    r.limit=o->preview_only ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */
+    r.preview_only=o->preview_only;
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
@@ -833,16 +754,19 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     in_flight=0;timer_fixes=0;
 
     /* 1: state and fingerprints. Only EOS M 2.0.2 reaches this (camera guard). */
-    if (!card || !choose_paths(&r,card)) { r.error|=FE_IO;msg="No card/filename";goto out; }
+    if (o->preview_only && card) {
+        /* Preview: one log, overwritten each time; no DNG. */
+        snprintf(r.log,sizeof(r.log),"%s:/LVPREVW.LOG",card->drive_letter);r.dng[0]=0;
+    } else if (!card || !choose_paths(&r,card)) { r.error|=FE_IO;msg="No card/filename";goto out; }
     if (!base_state_ok(cancel,card) || lv_dispsize!=1 || raw_lv_is_enabled() ||
         raw_write_chan!=livecomp_camera.raw_channel) {
         r.error|=FE_STATE|(raw_lv_is_enabled() ? FE_RAWUSER:0);
         msg="Need Movie LV x1, no RAW tools";goto out;
     }
     if (!lens_info.raw_iso) { r.error|=FE_STATE;msg="Set a fixed ISO (not Auto)";goto out; }
-    /* Global Draw redraws over the LCD while our preview replaces Canon's
-     * image (LCM43: with it on, the composite was not visible). */
-    if (get_global_draw_setting()&1) { r.error|=FE_STATE;msg="Turn Global Draw OFF";goto out; }
+    /* Global Draw must be off here (it draws over the LCD composite); the
+     * controller turns it off for the session and restores it afterwards. */
+    if (get_global_draw_setting()&1) { r.error|=FE_STATE;msg="Global Draw still on";goto out; }
     if (fps_get_current_x1000()<20000) {
         r.error|=FE_STATE;msg="Turn ML FPS override OFF";goto out;
     }
@@ -891,9 +815,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     vsyncs=0;max_gap_ms=0;key_n=0;observing=1;active=1;
     write_log(&r,"hooked; entering x5");
 
-    /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks.
-     * Entered again (from here) when the shutter is changed in the preview. */
-reenter:
+    /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks. */
     msg="Starting (about 10 s)";*status=msg;
     NotifyBox(8000,"%s",msg);
     unsigned t0=get_ms_clock();
@@ -921,19 +843,7 @@ reenter:
 
     /* 6: compose until SET, the frame limit or an error. */
     msg="Running";*status=msg;
-    const unsigned again=continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o,&shutter_idx);
-    if (o->phase) *o->phase=LC_FRLV_SETUP;
-    if (again && !*cancel && !dma_uncertain) {
-        /* New shutter chosen in the preview: leave x5 with the old timers
-         * (same steps as the final restore), then enter it again with the
-         * new ones - the only path that reconfigures the sensor completely. */
-        if (finish_dma(&r,period_ms)) { dma_uncertain=1;goto restore; }
-        if (!leave_x5(&r,cancel)) { msg="Could not leave x5";goto restore; }
-        lc_frr_configure(&cfg,shutter_idx);
-        r.period_ms=period_ms=lc_frr_timing[shutter_idx].period_ms;
-        r.reentries++;write_log(&r,"shutter changed; re-entering x5");
-        goto reenter;
-    }
+    continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o->preview_only);
     if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
     *status=msg;
 
@@ -964,7 +874,7 @@ out:
     /* The capture buffer is free once no DMA can target it: release it
      * before the (slow) DNG write. A partial composite is still saved. */
     if (!r.unsafe && alloc[0]) { fio_free(alloc[0]);alloc[0]=NULL;cap=NULL; }
-    if (acc && r.merged && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
+    if (acc && r.merged && !r.preview_only && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
         !(r.error&(FE_GUARD|FE_SIZE|FE_REGS))) {
         if (r.width==5280) {
             unsigned f0=(unsigned)get_us_clock();
@@ -981,7 +891,12 @@ out:
     if (locked) gui_uilock(old_lock);
     if (power) powersave_permit();
     if (r.unsafe) msg="DMA uncertain: reboot camera";
-    else if (!r.error) msg=r.saved ? "Full-res composite saved":r.preview_frames ? "Preview ended; nothing saved":"Full-res: no frame saved";
+    else if (r.preview_only && r.merged && !(r.error&~FE_CANCEL)) {
+        static char pv[64];
+        snprintf(pv,sizeof(pv),"Preview: clipped %d.%d%%",r.clip_x10/10,r.clip_x10%10);
+        msg=pv;
+    }
+    else if (!r.error) msg=r.saved ? "Full-res composite saved":"Full-res: no frame saved";
     else if (r.saved) msg="Saved; stopped early, see LOG";
     if (r.saved && !r.error && !r.unsafe) {
         static char done[64];
@@ -991,8 +906,7 @@ out:
         msg=done;
     }
     *status=msg;
-    if (o->shutter_used) *o->shutter_used=shutter_idx;
     if (r.log[0]) write_log(&r,msg);
-    if (r.log[0]) write_csv(&r);
+    if (r.log[0] && !r.preview_only) write_csv(&r);
     return r.unsafe;
 }

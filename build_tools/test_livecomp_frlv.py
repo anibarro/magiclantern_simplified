@@ -215,8 +215,8 @@ void AbortEDmac(unsigned ch){ (void)ch; aborts++; if (abort_fails) return; dma_s
 int get_global_draw_setting(void){ return gd_setting; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
-static int dng_created,cur_dng,cur_log;static char last_log[8192];static unsigned last_log_n;
-FILE *FIO_CreateFile(const char *p){ if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0; } cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
+static int dng_created,cur_dng,cur_log;static char last_log[8192],last_log_path[64];static unsigned last_log_n;
+FILE *FIO_CreateFile(const char *p){ if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
 int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) dng_bytes+=n;
   if (cur_log && last_log_n+n<sizeof(last_log)) { memcpy(last_log+last_log_n,b,n);last_log_n+=n;last_log[last_log_n]=0; } return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
@@ -240,13 +240,12 @@ static void canon_reconfigure(unsigned z)
 }
 void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
-static unsigned cancel_at,go_at,battery_at,lose_mode_at,adjust_at;static volatile unsigned *cancel_ptr,*go_ptr;
-static volatile int *adjust_ptr;static int adjust_k,adjust_d;
+static unsigned cancel_at,battery_at,lose_mode_at,hold_cancel_vsyncs,hold_vsyncs;static volatile unsigned *cancel_ptr;
 static void frame(void)
 {
     if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
-    if (go_at && go_ptr && slurp_frames>=(int)go_at) *go_ptr=1;
-    if (adjust_at && adjust_ptr && slurp_frames>=(int)adjust_at) { adjust_ptr[adjust_k]+=adjust_d;adjust_at=0; }
+    /* Preview only: SET some vsyncs after the frame was captured. */
+    if (hold_cancel_vsyncs && slurp_frames>=1 && !slurp_armed && zoom==5 && ++hold_vsyncs>=hold_cancel_vsyncs && cancel_ptr) *cancel_ptr=1;
     if (battery_at && slurp_frames>=(int)battery_at) battery_level_bars=0;
     /* Canon leaves the full-res timing: window back to the x1 value, the
      * armed 32 MB slurp never completes (until aborted). */
@@ -283,7 +282,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={1,6,0,0,0,0};   /* 2.5 s shutter, stop after 6 frames, no preview */
+    struct lc_frlv_options o={1,6,0};   /* 2.5 s shutter, stop after 6 frames */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -364,41 +363,20 @@ int main(void)
       printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
       assert(!unsafe && strstr(status,"saved") && strips>=2); }
     sim_slow=1;o.fps_index=1;sim_period_us=2500000;o.limit=6;
-    /* Exposure preview: 3 frames shown, SET, the frame in flight at the press
-     * is skipped, then 6 frames composited. */
-    { static volatile unsigned phase,go;
-      reset();o.phase=&phase;o.go=&go;go=0;go_at=3;go_ptr=&go;dng_size_ok=2048+bytes;
-      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-      unsigned pf=0,clip=0;const char *k=strstr(last_log,"Preview_frames_last_clip_pct_x10_mode_lost_dma_aborts: ");
-      assert(k && sscanf(k,"Preview_frames_last_clip_pct_x10_mode_lost_dma_aborts: %u,%u",&pf,&clip)==2);
-      printf("preview: %s (preview frames %u, captured %d)\n",status,pf,slurp_frames);
-      assert(!unsafe && strstr(status,"saved: 6 frames") && pf>=3 && slurp_frames>=(int)pf+6+1);
-      /* Leaving the preview (half-shutter = cancel) saves nothing. */
-      reset();go=0;go_at=0;cancel_at=4;cancel_ptr=&cancel;
-      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-      printf("preview cancel: %s\n",status);
-      assert(!unsafe && strstr(status,"Preview ended") && !dng_created && zoom==1 && unpatched==4);
-      /* Preview adjustments: ISO +1 stop and aperture +1/3 are applied in
-       * place; a shutter step re-enters x5 with the new timers and the
-       * session goes on with the new shutter (reported back). */
-      cancel=0;cancel_at=0;
-      static volatile int adj[LC_ADJ_COUNT];unsigned used=99;o.adjust=adj;o.shutter_used=&used;
-      reset();dng_size_ok=2048+bytes;go=0;lens_info.raw_iso=72;lens_info.raw_aperture=40;
-      adjust_ptr=adj;adjust_k=LC_ADJ_ISO;adjust_d=1;adjust_at=2;go_at=4;go_ptr=&go;
-      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-      printf("preview ISO: %s iso=%d hud='%s'\n",status,lens_info.raw_iso,hud_text);
-      if (!strstr(status,"saved")) printf("%.900s\n",last_log);
-      assert(!unsafe && lens_info.raw_iso==80 && strstr(status,"saved") && hud_clears>0 && used==1);
-      reset();dng_size_ok=2048+bytes;go=0;adjust_k=LC_ADJ_APERTURE;adjust_d=1;adjust_at=2;go_at=4;
-      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-      assert(!unsafe && lens_info.raw_aperture==43);
-      reset();dng_size_ok=2048+bytes;go=0;adjust_k=LC_ADJ_SHUTTER;adjust_d=2;adjust_at=2;go_at=7;
-      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-      printf("preview shutter: %s used=%u hud='%s'\n",status,used,hud_text);
-      assert(!unsafe && used==3 && strstr(status,"saved") && strstr(last_log,"Preview_adjustments_shutter_reentries: 1,1")
-             && strstr(last_log,"Shutter_ms_timerA_timerB_blanking: 4000,") && zoom==1 && unpatched==4);
-      o.adjust=0;o.shutter_used=0;go_at=0;lens_info.raw_iso=72;lens_info.aperture=lens_info.raw_aperture=40;
-      cancel=0;cancel_at=0;o.phase=0;o.go=0; }
+    /* Preview only: exactly one frame captured, shown until SET (simulated
+     * a few vsyncs later), nothing saved (no DNG, no CSV), clipped share in
+     * the status; the next session numbers are not consumed (LVPREVW.LOG). */
+    reset();o.preview_only=1;o.limit=0;hold_cancel_vsyncs=3;hold_vsyncs=0;cancel_ptr=&cancel;hud_draws=0;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("preview only: %s frames=%d hud='%s'\n",status,slurp_frames,hud_text);
+    assert(!unsafe && slurp_frames==1 && !dng_created && !csv_written && strstr(status,"Preview: clipped")
+           && hud_draws>0 && hud_clears>0 && zoom==1 && unpatched==4 && frees==allocs && strstr(last_log_path,"LVPREVW.LOG"));
+    o.preview_only=0;o.limit=6;cancel=0;hold_cancel_vsyncs=0;
+    /* A composite with a limit captures no extra frame after the last one. */
+    reset();o.limit=3;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && slurp_frames==3 && strstr(status,"saved: 3 frames"));
+    o.limit=6;
     /* Battery reaches its last level: the session stops and saves. */
     reset();o.limit=0;battery_at=5;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
