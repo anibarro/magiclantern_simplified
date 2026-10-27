@@ -60,6 +60,11 @@ def declare_string_section():
         print("    MODULE_STRING(__module_string_%s_name, __module_string_%s_value) \\" % (a, a))
     print("  MODULE_STRINGS_END()")
     
+def is_command_available(name):
+    """Check if command `name` is on PATH."""
+    import shutil
+    return shutil.which(name) is not None
+
 # return the first command of the list that can be found on the OS
 def get_command_of(commands):
     """Return the first command of the list `commands` that can be found on the OS."""
