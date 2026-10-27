@@ -110,6 +110,11 @@ static volatile unsigned done_cb_kind,done_cb_after,done_cb_ptr,done_arm_after_v
 static volatile unsigned done_state,done_pointer,done_ms,done_vsync;
 static volatile unsigned vsync_us[FRLV_VSYNC_RING];
 static volatile unsigned timer_fixes,timer_seen_b;
+/* Timer switch at a frame boundary (LCM50): the worker sets the pending
+ * pair, the vsync callback adopts it; the timer reapply below then writes
+ * it (same registers and order as ML's FPS override on this camera). The
+ * frame starting at that vsync is a whole exposure at the new timing. */
+static volatile unsigned pending_timers,pend_a,pend_b,timers_switched_vsync;
 static uint8_t *capture_target;            /* uncached alias */
 static uint32_t capture_pitch,capture_height;
 static uint16_t cmos_copy[512];
@@ -156,6 +161,9 @@ void livecomp_frlv_vsync(void)
     unsigned now=get_ms_clock();
     if (vsyncs && now-last_vsync_ms>max_gap_ms) max_gap_ms=now-last_vsync_ms;
     last_vsync_ms=now;last_vsync_us=(unsigned)get_us_clock();vsync_us[vsyncs%FRLV_VSYNC_RING]=last_vsync_us;vsyncs++;
+    if (pending_timers && active && zoom5()) {
+        cfg.timer_a=pend_a;cfg.timer_b=pend_b;pending_timers=0;timers_switched_vsync=vsyncs;
+    }
     if (active && zoom5()) {
         /* If Canon restored its timer B outside engio_write, reapply ours the
          * same way the core's FPS override does on this camera. Logged. */
@@ -199,7 +207,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned saved,save_stage,save_size;
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
-    unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms;
+    unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms,switch_ms,exit_switched,target_a,target_b,short_skipped;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
@@ -230,7 +238,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user\n"
         "Shutter_ms_timerA_timerB_blanking: %d,%x,%x,%d\n"
         "ISO_aperture_x10_battery_start_end_stop: %d,%d,%d,%d,%d\n"
-        "Preview_only_clip_pct_x10_mode_lost_dma_aborts_first_arm_ms: %d,%d,%d,%d,%d\n"
+        "Preview_only_clip_pct_x10_mode_lost_dma_aborts_first_arm_ms: %d,%d,%d,%d,%d\nTimer_switch_after_zoom_ms_exit_switched_short_skipped: %d,%d,%d\n"
         "EngDrvOut_instr_hooks: %x,%d\n"
         "Regs_6800_6804_6008_6010_6014_38024: %x,%x,%x,%x,%x,%x\n"
         "Reg_6804_after_restore: %x\n"
@@ -238,8 +246,8 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Zoom_ms_max_vsync_gap_ms: %d,%d\n"
         "Timer_fixes_last_seen_B: %d,%x\n"
         "PathDriveMode_words: %x,%x,%x,%x,%x,%x\n",
-        status,r->stage,r->error,r->unsafe,r->period_ms,cfg.timer_a,cfg.timer_b,cfg.blanking,
-        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_only,r->clip_x10,r->mode_lost,r->dma_aborts,r->first_arm_after_vsync_ms,
+        status,r->stage,r->error,r->unsafe,r->period_ms,r->target_a,r->target_b,cfg.blanking,
+        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_only,r->clip_x10,r->mode_lost,r->dma_aborts,r->first_arm_after_vsync_ms,r->switch_ms,r->exit_switched,r->short_skipped,
         r->rom_engdrvout,r->hooks,r->top_left,r->bottom_right,r->reg_6008,r->reg_6010,r->reg_6014,r->reg_38024,
         r->reg_6804_after,r->width,r->height,r->pitch,r->bytes,
         r->zoom_ms,max_gap_ms,r->timer_fixes,r->timer_seen_b,
@@ -403,6 +411,12 @@ static unsigned raw_dma_abort(void)
     for (unsigned i=0;i<30 && edmac_get_state(raw_write_chan);i++) msleep(10);
     if (edmac_get_state(raw_write_chan)) return 0;
     in_flight=0;return 1;
+}
+/* Length of the frame that ended at vsync number n (1-based count). */
+static unsigned frame_interval_ms(unsigned n)
+{
+    if (n<2) return 0;
+    return (vsync_us[(n-1)%FRLV_VSYNC_RING]-vsync_us[(n-2)%FRLV_VSYNC_RING])/1000u;
 }
 static unsigned window_lost(void)
 {
@@ -600,6 +614,16 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
             if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping after this frame"); }
             if (ml_shutdown_requested || battery_low(r)) cont_arm=0;
+            /* Last frame in flight: go back to 3 fps at the vsync where it
+             * completes, so leaving x5 does not wait another long frame. */
+            /* Only once the frame in flight has clearly outlasted a 3 fps frame
+             * (so it is a full-shutter frame whose end is the right moment;
+             * a late-latched short frame is never followed by the switch). */
+            if ((!cont_arm || r->merged+1>=r->limit) && !r->exit_switched &&
+                get_ms_clock()-last_vsync_ms>2*LC_FRR_ENTRY_MS+100) {
+                const uint32_t irq=cli();pend_a=LC_FRR_ENTRY_A;pend_b=LC_FRR_ENTRY_B;pending_timers=1;sei(irq);
+                r->exit_switched=1;
+            }
             /* Canon reconfigured the sensor (left x5 or reset its timing):
              * the armed frame will never complete. */
             lost_ticks=(!zoom5() || window_lost()) ? lost_ticks+1:0;
@@ -636,6 +660,15 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         }
         if (!guards_ok(cap,r->bytes)) { cont_arm=0;*dma_uncertain=1;r->error|=FE_GUARD;*msg="Buffer guard overwritten";break; }
         if (r->merged>=r->limit) continue;               /* past the limit: not merged */
+        /* First frame after the timer switch: if the camera latched the new
+         * timers one frame late, this frame is still a short 3 fps one -
+         * not a full exposure. Measure it at the vsyncs and skip it. */
+        if (!r->merged && frame_interval_ms(done_vsync)*10u<period_ms*9u) {
+            r->short_skipped++;
+            if (r->short_skipped>3) { cont_arm=0;r->error|=FE_STALL;*msg="Shutter not applied";break; }
+            if (cont_arm && !in_flight) arm_from_task();
+            continue;
+        }
         /* Next frame: arm now (its readout starts ~period-readout later),
          * never inside the vsync: preview_show (~110 ms) already waited. */
         if (!preview_yuv) msleep(40);
@@ -754,6 +787,11 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     static struct frlv_result r;
     memset(&r,0,sizeof(r));memset(&stats,0,sizeof(stats));
     lc_frr_configure(&cfg,o->fps_index);
+    /* Enter at 3 fps; the chosen shutter is switched in at a vsync once the
+     * mode is verified (startup = shutter + ~1.5 s instead of 2 shutters). */
+    const unsigned target_a=cfg.timer_a,target_b=cfg.timer_b;
+    cfg.timer_a=LC_FRR_ENTRY_A;cfg.timer_b=LC_FRR_ENTRY_B;pending_timers=0;
+    r.target_a=target_a;r.target_b=target_b;
     r.period_ms=lc_frr_timing[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:LC_FRR_FPS_DEFAULT].period_ms;
     const unsigned period_ms=r.period_ms;
     r.iso=raw2iso(lens_info.raw_iso);r.aperture=lens_info.aperture;r.battery_start=battery_level_bars;
@@ -762,7 +800,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
-    unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0;
+    unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0,gui_hidden=0;
     const char *msg="Checking the camera";
     *status=msg;
     in_flight=0;timer_fixes=0;
@@ -830,12 +868,12 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     write_log(&r,"hooked; entering x5");
 
     /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks. */
-    /* Canon's first full-res frame after the switch is transitional
-     * (~period + 0.2 s, skipped); the first real frame follows. */
+    /* x5 at 3 fps (~1 s incl. the short transitional frame), then the
+     * first frame at the chosen shutter. */
     {
         static char start[40];
-        snprintf(start,sizeof(start),"Starting: about %d s",(2*period_ms+1500)/1000);
-        msg=start;*status=msg;NotifyBox(MIN(2*period_ms+3000,60000u),"%s",msg);
+        snprintf(start,sizeof(start),"First frame in about %d s",(period_ms+1999)/1000);
+        msg=start;*status=msg;NotifyBox(MIN(period_ms+3000,60000u),"%s",msg);
     }
     unsigned t0=get_ms_clock();
     set_lv_zoom(5);zoomed=1;
@@ -845,7 +883,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     }
     r.zoom_ms=get_ms_clock()-t0;r.zoom_done_ms=get_ms_clock();
     if (r.error) { msg="x5 zoom did not engage";goto restore; }
-    if (!wait_vsyncs(2,3*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
+    if (!wait_vsyncs(2,3*LC_FRR_ENTRY_MS+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
     r.top_left=shamem_read(0xC0F06800);r.bottom_right=shamem_read(0xC0F06804);
     r.reg_6008=shamem_read(0xC0F06008);r.reg_6010=shamem_read(0xC0F06010);
     r.reg_6014=shamem_read(0xC0F06014);r.reg_38024=shamem_read(0xC0F38024);
@@ -859,6 +897,17 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     memset(cap+r.bytes,0x5a,FRLV_GUARD);
     capture_pitch=r.pitch;capture_height=r.height;capture_target=cap;
     r.stage=5;
+    /* Hide Canon's zoom overlay (box and arrows): Canon stops drawing to the
+     * visible BMP buffer; ML's own text still shows. Restored at the end. */
+    canon_gui_disable_front_buffer();gui_hidden=1;clrscr();
+    /* Switch to the chosen shutter at the next vsync. */
+    {
+        unsigned w0=get_ms_clock();
+        const uint32_t irq=cli();pend_a=target_a;pend_b=target_b;pending_timers=1;sei(irq);
+        while (pending_timers && get_ms_clock()-w0<3*LC_FRR_ENTRY_MS+2000) msleep(2);
+        if (pending_timers) { pending_timers=0;r.error|=FE_STALL;msg="Shutter switch failed";goto restore; }
+        r.switch_ms=get_ms_clock()-r.zoom_done_ms;
+    }
 
     /* 6: compose until SET, the frame limit or an error. */
     msg="Running";*status=msg;
@@ -875,7 +924,9 @@ restore:
     active=0;
     msg=r.error ? msg:"Full-res composite: restoring";*status=msg;
     if (finish_dma(&r,period_ms)) dma_uncertain=1;
+    if (gui_hidden) { canon_gui_enable_front_buffer(0);gui_hidden=0; }
     if (zoomed) leave_x5(&r,cancel);
+    if (zoomed) redraw();
     if (zoomed && !(r.error&FE_RESTORE)) r.stage=MAX(r.stage,7u);
     goto unhook;
 hook_fail:

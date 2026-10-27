@@ -136,6 +136,7 @@ void AbortEDmac(unsigned ch); int get_global_draw_setting(void);
 #define COLOR_WHITE 1
 #define COLOR_BLACK 2
 void bmp_printf(uint32_t font,int x,int y,const char *fmt,...); void clrscr(void);
+void canon_gui_disable_front_buffer(void); void canon_gui_enable_front_buffer(int r); void redraw(void);
 int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap);
 static inline uint32_t cli(void){ return 0; } static inline void sei(uint32_t x){ (void)x; }
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
@@ -208,6 +209,8 @@ int raw2iso(int r){ return r; }
 static int hud_draws,hud_clears;static char hud_text[128];
 void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x; if (y<40) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
 void clrscr(void){ hud_clears++; }
+static int gui_off;static unsigned gui_offs;
+void canon_gui_disable_front_buffer(void){ gui_off=1;gui_offs++; } void canon_gui_enable_front_buffer(int r){ (void)r; gui_off=0; } void redraw(void){}
 int lens_set_rawiso(int iso){ lens_info.raw_iso=iso; return 1; }
 int lens_set_rawaperture(int ap){ lens_info.raw_aperture=ap; lens_info.aperture=ap; return 1; }
 static int aborts,gd_setting,abort_fails;
@@ -238,7 +241,8 @@ static void canon_reconfigure(unsigned z)
     if ((h=hook_at(0xFF2C19AC))) { regs[0]=(uint32_t)(uintptr_t)engio; h(regs,0,0); }
     reg6800=engio[1]; reg6804=no_window ? 0x4540298u:engio[3]; reg6014=engio[5];
 }
-void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
+static unsigned zoom5_us,first_frame_us;
+void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); if (z==5) { zoom5_us=now_us;first_frame_us=0; } }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
 static unsigned cancel_at,battery_at,lose_mode_at,hold_cancel_vsyncs,hold_vsyncs;static volatile unsigned *cancel_ptr;
 static void frame(void)
@@ -257,6 +261,7 @@ static void frame(void)
         for (int i=0;i<slurp_w*slurp_h;i+=4096) slurp_dst[i]=(uint8_t)(slurp_frames*7+i);
         memset(slurp_dst+slurp_w*slurp_h-8,0x11,8);
         slurp_frames++;
+        if (slurp_frames==1) first_frame_us=now_us;
         if (sim_cb) sim_cb(sim_cb_ctx);
     }
     dma_state=dma_stuck && (slurp_armed || dma_state);
@@ -264,11 +269,19 @@ static void frame(void)
     livecomp_frlv_vsync();
 }
 static unsigned sim_slow=1;   /* scales simulated CPU time (msleep) */
+/* x5 runs at the 3 fps entry timing (timer B 0x1E03) until the switch.
+ * Timers written in the vsync callback apply to the frame that starts there
+ * (sim_late_latch: only to the one after it). */
+static int sim_late_latch;
+static unsigned sim_period(void){ return zoom==5 ? (reg6014==0x1E03 ? 333333u:sim_period_us):33333u; }
 void msleep(int ms)
 {
-    unsigned period=(zoom==5) ? sim_period_us:33333;
     unsigned end=now_us+ms*1000*sim_slow;
-    while (next_vsync_us<=end) { now_us=next_vsync_us; frame(); next_vsync_us+=period; }
+    while (next_vsync_us<=end) {
+        unsigned before=sim_period();
+        now_us=next_vsync_us; frame();
+        next_vsync_us+=sim_late_latch ? before:sim_period();
+    }
     now_us=end;
 }
 static void reset(void)
@@ -295,6 +308,16 @@ int main(void)
     assert(slurp_w==(int)(w*14/8) && slurp_h==(int)h && allocs==frees);
     assert(strstr(status,"saved: 6 frames") && dng_bytes==2048+bytes && locked==0 && csv_written);
     assert(!strstr(last_log,"HW_"));               /* no engine code in the product */
+    /* Fast start (LCM50): x5 entered at 3 fps, shutter switched in at a
+     * vsync, so the first usable frame is done one shutter + ~1 s after the
+     * zoom; the exit switch back to 3 fps is logged; Canon's zoom overlay
+     * hidden during the session and restored. */
+    printf("first frame %u ms after zoom\n",(first_frame_us-zoom5_us)/1000);
+    assert(first_frame_us-zoom5_us<2500000u+1200000u);
+    assert(strstr(last_log,"Timer_switch_after_zoom_ms_exit_switched_short_skipped: "));
+    { const char *k=strstr(last_log,"exit_switched_short_skipped: ");unsigned sw,ex,sk;
+      assert(sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3 && ex==1 && sw<1500);printf("short frames skipped: %u\n",sk); }
+    assert(gui_offs==1 && gui_off==0);
     /* Start-up: armed right after the transitional frame (no full period
      * lost waiting for the next vsync), i.e. 40-100 ms after a vsync. */
     { const char *k=strstr(last_log,"first_arm_ms: ");unsigned po,cl,ml,da,fa;
@@ -354,12 +377,13 @@ int main(void)
     assert(!unsafe && strstr(status,"saved") && zoom==1);
     /* Frames arrive faster than the (simulated 80 ms) merge: the session
      * keeps going (behind/skipped frames counted) and saves. */
-    reset();sim_period_us=70000;o.limit=8;dng_size_ok=2048+bytes;
+    reset();sim_period_us=2500000;sim_slow=40;o.limit=8;dng_size_ok=2048+bytes;   /* merge ~3.2 s > 2.5 s frames */
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0;
       assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u",&bands,&skip,&behind)==3);
       printf("behind: %s (behind=%u skipped_previews=%u)\n",status,behind,skip);
       assert(!unsafe && strstr(status,"saved") && zoom==1 && behind>0); }
+    sim_slow=1;
     /* 2 s: a full preview does not fit but a quarter strip does. */
     reset();sim_period_us=2000000;o.fps_index=0;sim_slow=20;o.limit=8;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -377,6 +401,16 @@ int main(void)
     assert(!unsafe && slurp_frames==1 && !dng_created && !csv_written && strstr(status,"Preview: clipped")
            && hud_draws>0 && hud_clears>0 && zoom==1 && unpatched==4 && frees==allocs && strstr(last_log_path,"LVPREVW.LOG"));
     o.preview_only=0;o.limit=6;cancel=0;hold_cancel_vsyncs=0;
+    /* Late-latching timers: the first frame after the switch is a short
+     * 3 fps one; it is detected at the vsyncs and skipped, the composite
+     * still starts with a full frame and leaves x5 promptly. */
+    reset();sim_late_latch=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    { const char *k=strstr(last_log,"exit_switched_short_skipped: ");unsigned sw,ex,sk;
+      assert(k && sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3);
+      printf("late latch: %s, short skipped %u\n",status,sk);
+      assert(!unsafe && strstr(status,"saved: 6 frames") && sk==1 && ex==1); }
+    sim_late_latch=0;
     /* A composite with a limit captures no extra frame after the last one. */
     reset();o.limit=3;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);

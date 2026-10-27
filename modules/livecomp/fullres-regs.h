@@ -35,6 +35,12 @@
  * the CPU and are not offered. 2-5 s are camera-tested (LCM16-LCM41,
  * k = 1 and 3); 6-60 s use the same scheme with k up to 22 (readout up to
  * ~3.3 s) and still need a camera check. */
+/* Entry timing: the session enters x5 at the reference 3 fps (crop_rec
+ * CROP_Full_Res, LCM16-tested), so Canon's transitional first frame is
+ * short, then switches to the chosen shutter at a vsync (LCM50). */
+#define LC_FRR_ENTRY_A 0x56Bu
+#define LC_FRR_ENTRY_B 0x1E03u
+#define LC_FRR_ENTRY_MS 333u
 struct lc_frr_timing { uint32_t timer_a,timer_b,period_ms; };
 static const struct lc_frr_timing lc_frr_timing[LC_FRR_FPS_CHOICES]={
     {1387u,46107u,2000u},       /* 2 s,  k=1, rolling preview (LCM27) */

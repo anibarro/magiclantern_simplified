@@ -1,4 +1,4 @@
-Live Composite LCM49 - Canon EOS M firmware 2.0.2
+Live Composite LCM50 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M at full sensor resolution
 (5208x3478): the camera keeps exposing frames of the chosen shutter speed,
@@ -39,15 +39,16 @@ MENU (Shoot > Live Composite)
                     setup reminder or the last result.
 
 RUN
- 1. (Optional) Preview only ON, close the menu, press SET: after about two
-    shutter times plus a second (the camera's first frame after switching
-    to full resolution is transitional and skipped) the frame appears with
+ 1. (Optional) Preview only ON, close the menu, press SET: after one shutter
+    time plus about 1.5 s the frame appears with
        PREVIEW  2.5 s  ISO 100  f/8.0  clipped 0.3%
     Press SET to return. Change ISO/aperture (camera) or shutter (menu) and
     repeat until the exposure is right. Then Preview only OFF.
  2. Close the menu and press/release SET. The camera switches to the
-    full-sensor mode; the first composite frame is ready after about two
-    shutter times plus a second ("Starting: about n s").
+    full-sensor mode at 3 fps (about 1 s), then the first frame at your
+    shutter starts: it is ready after one shutter time ("First frame in
+    about n s") and is the base of the composite. Canon's zoom box and
+    arrows are hidden while the session runs.
  3. "COMPOSITE n  SET=stop": the LCD shows the growing composite. Press SET
     to stop: the exposure in progress is completed and merged. Or wait for
     the frame limit.
