@@ -295,6 +295,11 @@ int main(void)
     assert(slurp_w==(int)(w*14/8) && slurp_h==(int)h && allocs==frees);
     assert(strstr(status,"saved: 6 frames") && dng_bytes==2048+bytes && locked==0 && csv_written);
     assert(!strstr(last_log,"HW_"));               /* no engine code in the product */
+    /* Start-up: armed right after the transitional frame (no full period
+     * lost waiting for the next vsync), i.e. 40-100 ms after a vsync. */
+    { const char *k=strstr(last_log,"first_arm_ms: ");unsigned po,cl,ml,da,fa;
+      assert(k && sscanf(k,"first_arm_ms: %u,%u,%u,%u,%u",&po,&cl,&ml,&da,&fa)==5);
+      printf("first arm %u ms after vsync\n",fa);assert(fa>=40 && fa<100); }
     /* The 2.5 s timers (A 0x56B, B 57635 = 0xE123) are what the hooks apply. */
     assert(strstr(last_log,"Shutter_ms_timerA_timerB_blanking: 2500,56b,e123,"));
     /* Refusals before any hook: FPS override on, other RAW user. */
@@ -389,7 +394,7 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("mode lost: %s (aborts %d)\n",status,aborts);
     assert(!unsafe && aborts>=1 && strstr(status,"stopped early") && dng_bytes==2048+bytes && frees==allocs);
-    assert(strstr(last_log,"mode_lost_dma_aborts: ") && strstr(last_log,",1,"));
+    assert(strstr(last_log,"mode_lost_dma_aborts_first_arm_ms: ") && strstr(last_log,",1,"));
     lose_mode_at=0;o.limit=6;
     printf("sim ok\n");return 0;
 }

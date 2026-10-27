@@ -199,7 +199,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned saved,save_stage,save_size;
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
-    unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts;
+    unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
@@ -230,7 +230,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user\n"
         "Shutter_ms_timerA_timerB_blanking: %d,%x,%x,%d\n"
         "ISO_aperture_x10_battery_start_end_stop: %d,%d,%d,%d,%d\n"
-        "Preview_only_clip_pct_x10_mode_lost_dma_aborts: %d,%d,%d,%d\n"
+        "Preview_only_clip_pct_x10_mode_lost_dma_aborts_first_arm_ms: %d,%d,%d,%d,%d\n"
         "EngDrvOut_instr_hooks: %x,%d\n"
         "Regs_6800_6804_6008_6010_6014_38024: %x,%x,%x,%x,%x,%x\n"
         "Reg_6804_after_restore: %x\n"
@@ -239,7 +239,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Timer_fixes_last_seen_B: %d,%x\n"
         "PathDriveMode_words: %x,%x,%x,%x,%x,%x\n",
         status,r->stage,r->error,r->unsafe,r->period_ms,cfg.timer_a,cfg.timer_b,cfg.blanking,
-        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_only,r->clip_x10,r->mode_lost,r->dma_aborts,
+        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_only,r->clip_x10,r->mode_lost,r->dma_aborts,r->first_arm_after_vsync_ms,
         r->rom_engdrvout,r->hooks,r->top_left,r->bottom_right,r->reg_6008,r->reg_6010,r->reg_6014,r->reg_38024,
         r->reg_6804_after,r->width,r->height,r->pitch,r->bytes,
         r->zoom_ms,max_gap_ms,r->timer_fixes,r->timer_seen_b,
@@ -571,10 +571,24 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
     cont_arm=1;
-    /* First arm: just after a vsync, never inside it. */
-    unsigned seen=frames_done,v=vsyncs,w0=get_ms_clock();
-    while (vsyncs==v && get_ms_clock()-w0<period_ms+3000) msleep(10);
-    msleep(40);arm_from_task();
+    /* First arm. Any time from 40 ms after a vsync (LCM15/17: never inside
+     * it, the previous readout may still be ending) until the readout at
+     * the end of the period (~150 ms x k, k = timer A / 1388) captures the
+     * next whole frame. The caller returns right after the x5 switch's
+     * transitional frame, so normally we arm at once instead of waiting a
+     * full period (LCM48: one shutter time of the "Starting" delay). */
+    unsigned seen=frames_done,w0=get_ms_clock();
+    const unsigned readout_ms=150u*((cfg.timer_a+1u)/1388u)+300u;
+    unsigned since=((unsigned)get_us_clock()-last_vsync_us)/1000u;
+    if (since<40u) msleep(40u-since);
+    else if (since+readout_ms>=period_ms) {
+        const unsigned v=vsyncs;
+        while (vsyncs==v && get_ms_clock()-w0<period_ms+3000) msleep(10);
+        msleep(40);
+    }
+    arm_from_task();
+    r->first_arm_after_vsync_ms=((unsigned)get_us_clock()-last_vsync_us)/1000u;
+    write_log(r,"capturing");                    /* after arming: not on the critical path */
     if (preview_only) { *msg="Preview: exposing";NotifyBox(MIN(period_ms+3000,60000u),"Preview: exposing %d.%d s",period_ms/1000,period_ms%1000/100); }
     else { *msg="Composite: first frame...";NotifyBox(8000,"Composite: first frame"); }
     for (;;) {
@@ -816,8 +830,13 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     write_log(&r,"hooked; entering x5");
 
     /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks. */
-    msg="Starting (about 10 s)";*status=msg;
-    NotifyBox(8000,"%s",msg);
+    /* Canon's first full-res frame after the switch is transitional
+     * (~period + 0.2 s, skipped); the first real frame follows. */
+    {
+        static char start[40];
+        snprintf(start,sizeof(start),"Starting: about %d s",(2*period_ms+1500)/1000);
+        msg=start;*status=msg;NotifyBox(MIN(2*period_ms+3000,60000u),"%s",msg);
+    }
     unsigned t0=get_ms_clock();
     set_lv_zoom(5);zoomed=1;
     while (!(lv_dispsize==5 && zoom5())) {
@@ -830,7 +849,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.top_left=shamem_read(0xC0F06800);r.bottom_right=shamem_read(0xC0F06804);
     r.reg_6008=shamem_read(0xC0F06008);r.reg_6010=shamem_read(0xC0F06010);
     r.reg_6014=shamem_read(0xC0F06014);r.reg_38024=shamem_read(0xC0F38024);
-    r.stage=4;write_log(&r,"zoomed");
+    r.stage=4;
     if (r.bottom_right!=((cfg.raw_v<<16)|cfg.raw_h)) { r.error|=FE_REGS;msg="Sensor window not applied";goto restore; }
     lc_frr_geometry(r.top_left,r.bottom_right,&r.width,&r.height);
     r.pitch=r.width*14/8;r.bytes=r.pitch*r.height;
@@ -839,7 +858,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     }
     memset(cap+r.bytes,0x5a,FRLV_GUARD);
     capture_pitch=r.pitch;capture_height=r.height;capture_target=cap;
-    r.stage=5;write_log(&r,"verified");
+    r.stage=5;
 
     /* 6: compose until SET, the frame limit or an error. */
     msg="Running";*status=msg;
