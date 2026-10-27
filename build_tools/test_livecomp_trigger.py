@@ -32,7 +32,10 @@ static int get_halfshutter_pressed(void) { return half; }
 static unsigned get_ms_clock(void) { return now; }
 static void stop(unsigned kind) { assert(kind==1);stops++; }
 '''
+    code += 'static int session_key(unsigned code);\nstatic unsigned keylog_n;\nvoid livecomp_frlv_key_log(unsigned c,unsigned p,unsigned r){(void)c;(void)p;(void)r;keylog_n++;}\n'
+    code += 'static int livecomp_lv_running(void) { return running; }\n'
     code += function(source, 'trigger_ready(')+function(source.replace('int livecomp_lv_key(', 'static int livecomp_lv_key('), 'livecomp_lv_key(')
+    code += function(source.replace('static int session_key(unsigned code);\n',''), 'session_key(')
     lifecycle=(ROOT/'modules/livecomp/livecomp.c').read_text()
     assert lifecycle.index('MODULE_CBR(CBR_KEYPRESS_RAW') < lifecycle.index('MODULE_CBR(CBR_KEYPRESS,')
     code += function(lifecycle,'livecomp_raw_key(').replace('unsigned context','uintptr_t context')
@@ -96,6 +99,20 @@ int main(void) {
     dispatch(5,1);assert(!requested); /* synthetic release alone is not a tap */
     enabled=0;dispatch(5,0);assert(!requested);
     enabled=1;half=1;dispatch(5,0);assert(!requested);half=0;
+    /* While running, Canon never receives SET/Q: press and release are both
+     * consumed, one click is one action (press if seen, else release). */
+    attempted=running=1;requested=stops=set_release_blocked=0;frlv_phase=LC_FRLV_COMPOSE;now=20000;trigger_ms=0;
+    { struct event e={0,4,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==1); }
+    { struct event e={0,5,0,-123456};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==1); }  /* fake release */
+    { struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==1 && !set_release_blocked); }
+    now=21000;{ struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==2); } /* release only */
+    now=22000;{ struct event e={0,0x1d,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==3); }
+    { struct event e={0,0x50,0,0};assert(livecomp_raw_key((uintptr_t)&e)==1); }   /* other keys: portable path */
+    frlv_phase=LC_FRLV_PREVIEW;frlv_go=0;now=23000;
+    { struct event e={0,4,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && frlv_go && stops==3); }
+    { struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==3); }
+    assert(keylog_n>=8);
+    frlv_phase=LC_FRLV_SETUP;frlv_go=0;attempted=running=0;set_release_blocked=0;
     struct event internal={2,5,0,0};
     assert(livecomp_raw_key((uintptr_t)&internal)==1 && !requested);
     return 0;

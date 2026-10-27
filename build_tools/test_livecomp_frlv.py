@@ -129,6 +129,7 @@ void NotifyBox(int ms,const char *fmt,...);
 int raw_lv_is_enabled(void); int fps_get_current_x1000(void); struct card_info *get_ml_card(void);
 void powersave_prohibit(void); void powersave_permit(void); void gui_uilock(int l);
 int raw2iso(int r);
+void AbortEDmac(unsigned ch); int get_global_draw_setting(void);
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
 '''
@@ -195,6 +196,9 @@ int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){
 struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
 int raw2iso(int r){ return r; }
+static int aborts,gd_setting,abort_fails;
+void AbortEDmac(unsigned ch){ (void)ch; aborts++; if (abort_fails) return; dma_state=0; slurp_armed=0; }
+int get_global_draw_setting(void){ return gd_setting; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
 static int dng_created,cur_dng,cur_log;static char last_log[8192];static unsigned last_log_n;
@@ -222,12 +226,15 @@ static void canon_reconfigure(unsigned z)
 }
 void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
-static unsigned cancel_at,go_at,battery_at;static volatile unsigned *cancel_ptr,*go_ptr;
+static unsigned cancel_at,go_at,battery_at,lose_mode_at;static volatile unsigned *cancel_ptr,*go_ptr;
 static void frame(void)
 {
     if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
     if (go_at && go_ptr && slurp_frames>=(int)go_at) *go_ptr=1;
     if (battery_at && slurp_frames>=(int)battery_at) battery_level_bars=0;
+    /* Canon leaves the full-res timing: window back to the x1 value, the
+     * armed 32 MB slurp never completes (until aborted). */
+    if (lose_mode_at && slurp_frames>=(int)lose_mode_at) { reg6804=0x2D80298;dma_stuck=1; }
     if (stall_after_zoom && zoom==5) return;
     if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); last_written=1000; }
     else if (slurp_armed && !dma_stuck) {
@@ -292,10 +299,17 @@ int main(void)
     /* LV stall after switch: restore, unhook, nothing captured. */
     reset();stall_after_zoom=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && slurp_frames==0 && zoom==1 && unpatched==4);
-    /* DMA never completes: ownership uncertain, buffers retained. */
-    reset();dma_stuck=1;unsigned a0=allocs;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    /* DMA never completes but AbortEDmac stops it: safe, buffers freed. */
+    reset();dma_stuck=1;aborts=0;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("stuck, aborted: %s unsafe=%u aborts=%d\n",status,unsafe,aborts);
+    assert(!unsafe && aborts>=1 && zoom==1 && frees==allocs && strstr(status,"Frame lost"));
+    /* ...and if even the abort fails: ownership uncertain, buffers retained. */
+    reset();dma_stuck=1;abort_fails=1;unsigned a0=allocs;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("stuck: %s unsafe=%u allocs=%u frees=%u\n",status,unsafe,allocs,frees);
-    assert(unsafe && zoom==1 && frees<allocs && a0==0);
+    assert(unsafe && zoom==1 && frees<allocs && a0==0 && strstr(status,"reboot"));abort_fails=0;
+    /* Global Draw on: refused before any hook. */
+    reset();gd_setting=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && nhooks==0 && strstr(status,"Global Draw"));gd_setting=0;
     /* Every sub-exposure choice runs; slower ones have longer timeouts. */
     for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {
         reset();o.fps_index=i;sim_period_us=lc_frr_timing[i].period_ms*1000u;dng_size_ok=2048+bytes;
@@ -339,8 +353,8 @@ int main(void)
     { static volatile unsigned phase,go;
       reset();o.phase=&phase;o.go=&go;go=0;go_at=3;go_ptr=&go;dng_size_ok=2048+bytes;
       unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-      unsigned pf=0,clip=0;const char *k=strstr(last_log,"Preview_frames_last_clip_pct_x10: ");
-      assert(k && sscanf(k,"Preview_frames_last_clip_pct_x10: %u,%u",&pf,&clip)==2);
+      unsigned pf=0,clip=0;const char *k=strstr(last_log,"Preview_frames_last_clip_pct_x10_mode_lost_dma_aborts: ");
+      assert(k && sscanf(k,"Preview_frames_last_clip_pct_x10_mode_lost_dma_aborts: %u,%u",&pf,&clip)==2);
       printf("preview: %s (preview frames %u, captured %d)\n",status,pf,slurp_frames);
       assert(!unsafe && strstr(status,"saved: 6 frames") && pf>=3 && slurp_frames>=(int)pf+6+1);
       /* Leaving the preview (half-shutter = cancel) saves nothing. */
@@ -353,8 +367,16 @@ int main(void)
     reset();o.limit=0;battery_at=5;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("battery: %s\n",status);
-    assert(!unsafe && strstr(status,"Battery low: composite saved") && strstr(last_log,"battery_start_end_stop: 72,40,3,0,1"));
+    assert(!unsafe && strstr(status,"Battery low: saved") && strstr(last_log,"battery_start_end_stop: 72,40,3,0,1"));
     battery_at=0;battery_level_bars=3;o.limit=6;
+    /* Canon leaves the mode mid-session (LCM43 second run): the in-flight
+     * frame is aborted, the composite so far is saved, no reboot needed. */
+    reset();o.limit=0;lose_mode_at=4;aborts=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("mode lost: %s (aborts %d)\n",status,aborts);
+    assert(!unsafe && aborts>=1 && strstr(status,"stopped early") && dng_bytes==2048+bytes && frees==allocs);
+    assert(strstr(last_log,"mode_lost_dma_aborts: ") && strstr(last_log,",1,"));
+    lose_mode_at=0;o.limit=6;
     printf("sim ok\n");return 0;
 }
 '''
@@ -380,7 +402,7 @@ def main():
         run(REGS_TEST, 'regs', tmp)
         (tmp / 'stub.h').write_text(STUB)
         for h in ('dryos.h', 'module.h', 'lens.h', 'raw.h', 'mem.h', 'patch.h', 'edmac.h', 'fps.h',
-                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h', 'notify_box.h'):
+                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h', 'notify_box.h', 'zebra.h'):
             (tmp / h).write_text('#include "stub.h"\n')
         src = (MOD / 'fullres-lv.c').read_text()
         # 32-bit Canon pointers: on the 64-bit host keep addresses as uintptr_t.

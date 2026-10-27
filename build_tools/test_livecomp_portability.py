@@ -32,6 +32,8 @@ static void *get_ml_card(void) { return 0; }
 static void livecomp_lv_poll(void *p) { (void)p;polls++; }
 static unsigned livecomp_lv_key(unsigned k) { keys++;last_key=k;return 0; }
 static void livecomp_lv_shutdown(void) { shutdowns++; }
+static int livecomp_lv_running(void) { return 0; }
+static void livecomp_frlv_key_log(unsigned c,unsigned p,unsigned r) { (void)c;(void)p;(void)r; }
 '''
     for name in ('livecomp_init(', 'livecomp_poll(', 'livecomp_key(', 'livecomp_raw_key(', 'livecomp_deinit('):
         text=function(lifecycle,name)

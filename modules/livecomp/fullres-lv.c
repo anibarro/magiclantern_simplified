@@ -42,6 +42,7 @@
 #include "vram.h"
 #include "fullres-gamma.h"
 #include "notify_box.h"
+#include "zebra.h"
 #include "fullres-fix.h"
 
 extern int raw_lv_is_enabled(void);
@@ -175,6 +176,17 @@ void livecomp_frlv_vsync(void)
     }
 }
 
+/* Keys seen while a session runs (diagnostics, LOG): ms, code, phase, result. */
+#define FRLV_KEYS 24u
+static struct { uint32_t ms;uint16_t code;uint8_t phase,result; } key_log[FRLV_KEYS];
+static volatile unsigned key_n;
+void livecomp_frlv_key_log(unsigned code,unsigned phase,unsigned result)
+{
+    if (!observing) return;
+    unsigned i=key_n++;
+    if (i<FRLV_KEYS) { key_log[i].ms=get_ms_clock();key_log[i].code=(uint16_t)code;key_log[i].phase=(uint8_t)phase;key_log[i].result=(uint8_t)result; }
+}
+
 struct frlv_result {
     unsigned error,stage,unsafe,rom_engdrvout,hooks;
     unsigned top_left,bottom_right,width,height,pitch,bytes;
@@ -186,7 +198,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned saved,save_stage,save_size;
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
-    unsigned preview_frames,clip_x10,battery_start,battery_end,battery_stop,iso,aperture;
+    unsigned preview_frames,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
@@ -217,7 +229,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user\n"
         "Shutter_ms_timerA_timerB_blanking: %d,%x,%x,%d\n"
         "ISO_aperture_x10_battery_start_end_stop: %d,%d,%d,%d,%d\n"
-        "Preview_frames_last_clip_pct_x10: %d,%d\n"
+        "Preview_frames_last_clip_pct_x10_mode_lost_dma_aborts: %d,%d,%d,%d\n"
         "EngDrvOut_instr_hooks: %x,%d\n"
         "Regs_6800_6804_6008_6010_6014_38024: %x,%x,%x,%x,%x,%x\n"
         "Reg_6804_after_restore: %x\n"
@@ -226,7 +238,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Timer_fixes_last_seen_B: %d,%x\n"
         "PathDriveMode_words: %x,%x,%x,%x,%x,%x\n",
         status,r->stage,r->error,r->unsafe,r->period_ms,cfg.timer_a,cfg.timer_b,cfg.blanking,
-        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_frames,r->clip_x10,
+        r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_frames,r->clip_x10,r->mode_lost,r->dma_aborts,
         r->rom_engdrvout,r->hooks,r->top_left,r->bottom_right,r->reg_6008,r->reg_6010,r->reg_6014,r->reg_38024,
         r->reg_6804_after,r->width,r->height,r->pitch,r->bytes,
         r->zoom_ms,max_gap_ms,r->timer_fixes,r->timer_seen_b,
@@ -259,6 +271,10 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
         r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips);
     ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Keys (%d; ms:code:phase:passed, raw events 0x1000+param):",key_n);
+    for (unsigned k=0;k<key_n && k<FRLV_KEYS;k++)
+        n+=snprintf(t+n,sizeof(t)-n," %d:%x:%d:%d",key_log[k].ms,key_log[k].code,key_log[k].phase,key_log[k].result);
+    t[n++]='\n';ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Vsync_intervals_us (last %d):",FRLV_VSYNC_RING);
     for (unsigned k=1;k<FRLV_VSYNC_RING && k<r->vsync_count;k++) {
         unsigned a=(r->vsync_first+k-1)%FRLV_VSYNC_RING,b=(r->vsync_first+k)%FRLV_VSYNC_RING;
@@ -375,6 +391,22 @@ static int guards_ok(const uint8_t *p,unsigned bytes)
  * occasional partial frames when arming inside the vsync callback: the
  * readout of the frame that just ended can still be finishing (~2 ms margin),
  * so a slurp started then takes its last rows and stops at frame end. */
+/* Stop our RAW slurp if it cannot finish (LCM43: Canon left the full-res
+ * timing mid-frame, so the armed 32 MB transfer never completed and the
+ * session ended "DMA uncertain"). Canon's AbortEDmac; 1 = channel idle,
+ * the buffer is ours again (its contents are discarded). */
+static unsigned raw_dma_abort(void)
+{
+    if (!edmac_get_state(raw_write_chan)) { in_flight=0;return 1; }
+    AbortEDmac(raw_write_chan);
+    for (unsigned i=0;i<30 && edmac_get_state(raw_write_chan);i++) msleep(10);
+    if (edmac_get_state(raw_write_chan)) return 0;
+    in_flight=0;return 1;
+}
+static unsigned window_lost(void)
+{
+    return shamem_read(0xC0F06804)!=((cfg.raw_v<<16)|cfg.raw_h);
+}
 static void arm_from_task(void)
 {
     EngDrvOut(FRLV_RAW_TYPE_REG,FRLV_RAW_TYPE);
@@ -494,7 +526,7 @@ static void write_csv(const struct frlv_result *r)
 static unsigned battery_low(struct frlv_result *r)
 {
     if (r->battery_stop || !r->battery_start || battery_level_bars>0) return 0;
-    r->battery_stop=1;NotifyBox(8000,"Battery low: saving the composite");
+    r->battery_stop=1;NotifyBox(8000,"Battery low: saving");
     return 1;
 }
 static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
@@ -507,7 +539,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     static volatile unsigned own_phase;
     volatile unsigned *phase=o->phase ? o->phase:&own_phase;
     const volatile unsigned *go=o->go;
-    unsigned go_vsync=0;
+    unsigned go_vsync=0,lost_ticks=0;
     *phase=go ? LC_FRLV_PREVIEW:LC_FRLV_COMPOSE;
     preview_setup();r->preview_ok=preview_yuv!=NULL;
     const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28;
@@ -519,25 +551,34 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     while (vsyncs==v && get_ms_clock()-w0<period_ms+3000) msleep(10);
     msleep(40);arm_from_task();
     if (*phase==LC_FRLV_PREVIEW) {
-        *msg="Exposure preview: first frame...";
-        NotifyBox(MIN(period_ms+2000,60000u),"Exposure preview: first frame in %d.%d s",period_ms/1000,period_ms%1000/100);
-    } else { *msg="Full-res composite: first frame...";NotifyBox(8000,"Full-res composite: first exposure"); }
+        *msg="Preview: first frame...";
+        NotifyBox(MIN(period_ms+2000,60000u),"Preview: SET starts composite");
+    } else { *msg="Composite: first frame...";NotifyBox(8000,"Composite: first frame"); }
     for (;;) {
         if (go && *go && !go_vsync) go_vsync=vsyncs;
         if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled() || r->merged>=r->limit || battery_low(r)) {
-            if (cont_arm && *cancel) NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping: finishing current exposure");
+            if (cont_arm && *cancel) NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping after this frame");
             cont_arm=0;
         }
         w0=get_ms_clock();
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
             if (go && *go && !go_vsync) {
                 go_vsync=vsyncs;
-                NotifyBox(MIN(period_ms*2+2000,60000u),"Composite starts with the next exposure");
+                NotifyBox(MIN(period_ms*2+2000,60000u),"Composite starts next frame");
             }
-            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping: finishing current exposure"); }
+            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping after this frame"); }
             if (ml_shutdown_requested || battery_low(r)) cont_arm=0;
+            /* Canon reconfigured the sensor (left x5 or reset its timing):
+             * the armed frame will never complete. */
+            lost_ticks=(!zoom5() || window_lost()) ? lost_ticks+1:0;
+            if (lost_ticks>=10) {                       /* 100 ms, not a transient */
+                cont_arm=0;r->mode_lost=1;
+                if (raw_dma_abort()) { r->error|=FE_STATE;*msg="Camera left full-res mode";break; }
+                *dma_uncertain=1;r->error|=FE_DMA;*msg="RAW DMA did not stop";break;
+            }
             msleep(10);
         }
+        if (r->mode_lost) break;
         if (frames_done==seen) {
             if (!in_flight) break;                       /* clean stop: nothing armed */
             r->error|=FE_STALL;*msg="LV frame missing; see LOG";break;
@@ -554,7 +595,13 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         unsigned state=done_state,pointer=done_pointer,done=done_ms;
         unsigned d_kind=done_cb_kind,d_after=done_cb_after,d_ptr=done_cb_ptr,d_arm=done_arm_after_vsync,d_engio=done_engio,d_adtg=done_adtg;
         preview_show();                                  /* hide Canon's new frame */
-        if (state) { cont_arm=0;*dma_uncertain=1;r->error|=FE_DMA;*msg="RAW DMA did not finish";break; }
+        if (state) {
+            /* Still active one frame later: stop it; uncertain only if it
+             * does not stop. The incomplete frame is not used. */
+            cont_arm=0;r->error|=FE_DMA;r->dma_aborts++;
+            if (raw_dma_abort()) { *msg="Frame lost: DMA stopped";break; }
+            *dma_uncertain=1;*msg="RAW DMA did not stop";break;
+        }
         if (!guards_ok(cap,r->bytes)) { cont_arm=0;*dma_uncertain=1;r->error|=FE_GUARD;*msg="Buffer guard overwritten";break; }
         if (r->merged>=r->limit) continue;               /* past the limit: not merged */
         if (*phase==LC_FRLV_PREVIEW) {
@@ -564,7 +611,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
              * are exposed entirely after the press. */
             if (go_vsync && done_vsync>=go_vsync+2) {
                 *phase=LC_FRLV_COMPOSE;
-                NotifyBox(3000,"Composite started: base exposure");
+                NotifyBox(3000,"Composite: base frame");
             } else {
                 /* Show this frame as exposed (same render as the composite). */
                 sync_caches();
@@ -576,10 +623,12 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
                 }
                 r->preview_frames++;
                 if (!cont_arm) continue;
-                static char info[128];
-                snprintf(info,sizeof(info),"%d.%d s  ISO %d  f/%d.%d  clipped %d.%d%%\n%s",
-                    period_ms/1000,period_ms%1000/100,r->iso,r->aperture/10,r->aperture%10,r->clip_x10/10,r->clip_x10%10,
-                    go_vsync ? "Composite starts with the next exposure":"SET: start composite   Half-press: cancel");
+                /* NotifyBox prints one FONT_LARGE line at x=50: keep every
+                 * message on one line of at most 30 characters (LCM43: a
+                 * longer, two-line text was drawn as garbage). */
+                static char info[64];   /* the text itself stays <= 30 chars */
+                if (go_vsync) snprintf(info,sizeof(info),"Composite starts next frame");
+                else snprintf(info,sizeof(info),"ISO %d f/%d.%d clip %d.%d%%",r->iso,r->aperture/10,r->aperture%10,r->clip_x10/10,r->clip_x10%10);
                 *msg="Exposure preview";
                 NotifyBox(MIN(period_ms+2000,60000u),"%s",info);
                 continue;
@@ -598,7 +647,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             /* Partial frame: the rows that arrived are real exposure, the rest
              * is the previous (already merged) frame. Merge it and log it. */
             r->partials++;
-            if (r->partials>2+r->merged/4) { cont_arm=0;r->error|=FE_DMA;*msg="Too many partial frames; see CSV";break; }
+            if (r->partials>2+r->merged/4) { cont_arm=0;r->error|=FE_DMA;*msg="Too many partial frames";break; }
         }
         sync_caches();
         const uint8_t *src=(const uint8_t *)physical(cap);
@@ -617,7 +666,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             else changed+=lc_raw14_max_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             msleep(10);
             /* Acknowledge Q/SET during the ~1.7 s merge too (LCM25). */
-            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping: finishing current exposure"); }
+            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping after this frame"); }
         }
         c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/pairs):100;
         c->merge_us=(unsigned)get_us_clock()-s0;
@@ -658,10 +707,10 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         /* Once a stop is requested, keep saying so (LCM24 replaced the
          * "Stopping" box with the frame count, so Q/SET looked ignored). */
         if (!cont_arm) {
-            snprintf(line,sizeof(line),"Stopping: %d frames, last exposure...",r->merged);*msg=line;
+            snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);*msg=line;
             NotifyBox(5000,"%s",line);
         } else {
-            snprintf(line,sizeof(line),"Full-res composite: %d frames",r->merged);*msg=line;
+            snprintf(line,sizeof(line),"Composite: %d frames",r->merged);*msg=line;
             NotifyBox(1500,"%s",line);
         }
         if (r->merged%10==1) write_log(r,"composing");
@@ -684,7 +733,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
     unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0;
-    const char *msg="Full-res composite: checking";
+    const char *msg="Checking the camera";
     *status=msg;
     in_flight=0;timer_fixes=0;
 
@@ -693,18 +742,21 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     if (!base_state_ok(cancel,card) || lv_dispsize!=1 || raw_lv_is_enabled() ||
         raw_write_chan!=livecomp_camera.raw_channel) {
         r.error|=FE_STATE|(raw_lv_is_enabled() ? FE_RAWUSER:0);
-        msg="Use Movie LV x1, Global Draw OFF, no other RAW tools";goto out;
+        msg="Need Movie LV x1, no RAW tools";goto out;
     }
-    if (!lens_info.raw_iso) { r.error|=FE_STATE;msg="Set a fixed ISO (not Auto) in Movie M";goto out; }
+    if (!lens_info.raw_iso) { r.error|=FE_STATE;msg="Set a fixed ISO (not Auto)";goto out; }
+    /* Global Draw redraws over the LCD while our preview replaces Canon's
+     * image (LCM43: with it on, the composite was not visible). */
+    if (get_global_draw_setting()&1) { r.error|=FE_STATE;msg="Turn Global Draw OFF";goto out; }
     if (fps_get_current_x1000()<20000) {
-        r.error|=FE_STATE;msg="Turn ML FPS override OFF for full resolution";goto out;
+        r.error|=FE_STATE;msg="Turn ML FPS override OFF";goto out;
     }
     r.rom_engdrvout=MEM(FRLV_ENGDRVOUT);
     for (unsigned i=0;i<6;i++) r.pdm[i]=MEM(FRLV_PATHDRIVE+4*i);
     if (MEM(FRLV_CMOS_WRITE)!=FRLV_CMOS_INSTR || MEM(FRLV_ADTG_WRITE)!=FRLV_ADTG_INSTR ||
         MEM(FRLV_ENGIO_WRITE)!=FRLV_ENGIO_INSTR ||
         pdm_zoom()!=1) {
-        r.error|=FE_ROM;msg="Firmware fingerprint mismatch; nothing changed";goto out;
+        r.error|=FE_ROM;msg="Firmware mismatch; no change";goto out;
     }
     r.stage=1;
 
@@ -713,7 +765,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         alloc[i]=fio_malloc(FRLV_ALLOCATION);
         if (!alloc[i]) break;
     }
-    if (!alloc[1]) { r.error|=FE_MEMORY;msg="Not enough memory for two full-size buffers";goto out; }
+    if (!alloc[1]) { r.error|=FE_MEMORY;msg="Not enough memory";goto out; }
     /* 64-byte aligned pixels with a guard area before (capture only) and
      * after the frame: an overrun of the RAW DMA is detected, never silent.
      * The capture buffer is used through its uncached alias (DMA target),
@@ -741,11 +793,11 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         !patch_hook_function(FRLV_ENGDRVOUT,r.rom_engdrvout,drv_hook,"livecomp: full-res preview"))
         hooked[3]=1;
     r.hooks=3+hooked[3];r.stage=3;
-    vsyncs=0;max_gap_ms=0;observing=1;active=1;
+    vsyncs=0;max_gap_ms=0;key_n=0;observing=1;active=1;
     write_log(&r,"hooked; entering x5");
 
     /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks. */
-    msg="Full-res composite: starting (about 10 s)";*status=msg;
+    msg="Starting (about 10 s)";*status=msg;
     NotifyBox(8000,"%s",msg);
     unsigned t0=get_ms_clock();
     set_lv_zoom(5);zoomed=1;
@@ -764,14 +816,14 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     lc_frr_geometry(r.top_left,r.bottom_right,&r.width,&r.height);
     r.pitch=r.width*14/8;r.bytes=r.pitch*r.height;
     if (r.width<4000 || r.width>5280 || r.width%4 || r.height<3000 || r.height>3528 || r.bytes>capacity) {
-        r.error|=FE_SIZE;msg="Unexpected full-res geometry; see LOG";goto restore;
+        r.error|=FE_SIZE;msg="Unexpected geometry; see LOG";goto restore;
     }
     memset(cap+r.bytes,0x5a,FRLV_GUARD);
     capture_pitch=r.pitch;capture_height=r.height;capture_target=cap;
     r.stage=5;write_log(&r,"verified");
 
     /* 6: compose until SET, the frame limit or an error. */
-    msg="Full-res composite: capturing";*status=msg;
+    msg="Running";*status=msg;
     continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms,o);
     if (o->phase) *o->phase=LC_FRLV_SETUP;
     if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
@@ -788,8 +840,8 @@ restore:
     /* Let any armed slurp complete before leaving the mode. */
     {
         unsigned w0=get_ms_clock();
-        while (in_flight && get_ms_clock()-w0<period_ms+4000) msleep(20);
-        if (in_flight || edmac_get_state(raw_write_chan)) dma_uncertain=1;
+        while (in_flight && !r.mode_lost && get_ms_clock()-w0<period_ms+4000) msleep(20);
+        if ((in_flight || edmac_get_state(raw_write_chan)) && !raw_dma_abort()) dma_uncertain=1;
     }
     if (zoomed) {
         set_lv_zoom(1);
@@ -806,7 +858,7 @@ restore:
     if (zoomed && !(r.error&FE_RESTORE)) r.stage=MAX(r.stage,7u);
     goto unhook;
 hook_fail:
-    r.error|=FE_HOOK;msg="Hook install failed; nothing switched";
+    r.error|=FE_HOOK;msg="Hook failed; nothing changed";
 unhook:
     active=0;
     for (int i=3;i>=0;i--) if (hooked[i]) {
@@ -827,8 +879,8 @@ out:
             r.fp_fixed=lc_fix_focus_pixels(acc,r.width,r.height,r.pitch);
             r.fp_us=(unsigned)get_us_clock()-f0;
         }
-        *status="Full-res composite: saving DNG";
-        NotifyBox(15000,"Saving full-res composite DNG...");
+        *status="Saving the DNG";
+        NotifyBox(15000,"Saving the DNG...");
         r.saved=frlv_save_dng(&r,acc);
         if (!r.saved) r.error|=FE_IO;
         else r.stage=8;
@@ -836,14 +888,14 @@ out:
     if (!r.unsafe) for (unsigned i=0;i<2;i++) if (alloc[i]) fio_free(alloc[i]);
     if (locked) gui_uilock(old_lock);
     if (power) powersave_permit();
-    if (r.unsafe) msg="Full-res: RAW DMA ownership uncertain; keep LOG, reboot";
+    if (r.unsafe) msg="DMA uncertain: reboot camera";
     else if (!r.error) msg=r.saved ? "Full-res composite saved":r.preview_frames ? "Preview ended; nothing saved":"Full-res: no frame saved";
-    else if (r.saved) msg="Composite saved; stopped early, see LOG";
+    else if (r.saved) msg="Saved; stopped early, see LOG";
     if (r.saved && !r.error && !r.unsafe) {
         static char done[64];
-        if (r.late_frames || r.missed) snprintf(done,sizeof(done),"Composite saved: %d frames, %d late, %d skipped",r.merged,r.late_frames,r.missed);
-        else if (r.battery_stop) snprintf(done,sizeof(done),"Battery low: composite saved, %d frames",r.merged);
-        else snprintf(done,sizeof(done),"Full-res composite saved: %d frames",r.merged);
+        if (r.late_frames || r.missed) snprintf(done,sizeof(done),"Composite saved: %d (%d late)",r.merged,r.late_frames+r.missed);
+        else if (r.battery_stop) snprintf(done,sizeof(done),"Battery low: saved %d frames",r.merged);
+        else snprintf(done,sizeof(done),"Composite saved: %d frames",r.merged);
         msg=done;
     }
     *status=msg;

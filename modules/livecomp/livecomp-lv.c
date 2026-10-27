@@ -36,6 +36,7 @@ static unsigned trigger_ms;
 static const char *status;   /* last result; NULL = show the setup hint */
 
 int livecomp_lv_busy(void) { return requested || attempted; }
+int livecomp_lv_running(void) { return running; }
 static void stop(unsigned kind) { (void)kind;stop_requested=1; }
 void livecomp_lv_shutdown(void) { stop(3); }
 /* Only an intentional Q/SET in idle Movie Live View starts a session. Menu,
@@ -47,13 +48,22 @@ static int trigger_ready(void)
         lv && !LV_PAUSED && is_movie_mode() && lv_dispsize==1 &&
         !RECORDING && !lens_info.job_state && !get_halfshutter_pressed();
 }
+static int session_key(unsigned code);
 int livecomp_lv_key(unsigned code)
+{
+    if (!running) return session_key(code);
+    const unsigned phase=frlv_phase;
+    const int pass=session_key(code);
+    livecomp_frlv_key_log(code,phase,(unsigned)pass);
+    return pass;
+}
+static int session_key(unsigned code)
 {
     int trigger=code==MODULE_KEY_PRESS_SET || code==MODULE_KEY_Q;
     if (!running) {
         if (trigger && trigger_ready()) {
             requested=1;trigger_ms=get_ms_clock();
-            status="Starting: exposure preview follows";
+            status="Starting the preview";
             return 0;
         }
         if (requested && (trigger || code==MODULE_KEY_UNPRESS_SET)) return 0;
@@ -148,7 +158,7 @@ void livecomp_lv_poll(struct card_info *card)
         gui_state==livecomp_camera.gui_idle && lv && !LV_PAUSED && !lens_info.job_state) {
         attempted=running=1;requested=0;
         if ((int)task_create("lvcomposite",0x1e,0x4000,run,0)<=0) {
-            status="Could not create the worker; retry";attempted=running=0;
+            status="Worker failed; retry";attempted=running=0;
         }
     }
 }

@@ -16,4 +16,6 @@ enum { LC_FRLV_SETUP=0,LC_FRLV_PREVIEW=1,LC_FRLV_COMPOSE=2 };
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,
     const volatile unsigned *cancel,const char **status);
 void livecomp_frlv_vsync(void);
+/* Diagnostics: record a key event seen while a session runs (LOG). */
+void livecomp_frlv_key_log(unsigned code,unsigned phase,unsigned result);
 #endif

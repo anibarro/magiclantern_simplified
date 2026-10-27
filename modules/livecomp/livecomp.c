@@ -4,6 +4,7 @@
 #include "gui-common.h"
 #include "livecomp-lv.h"
 #include "camera-profile.h"
+#include "fullres-lv.h"
 
 struct lc_camera_profile livecomp_camera;
 static unsigned initialized;
@@ -37,6 +38,19 @@ static unsigned livecomp_raw_key(unsigned context)
     if (!initialized) return 1;
     const struct event *event=(const struct event *)context;
     if (event->type!=0) return 1;
+    const int press=event->param==livecomp_camera.q_set_event || event->param==livecomp_camera.set_press_event;
+    const int release=event->param==livecomp_camera.set_release_event;
+    if ((press || release) && livecomp_lv_running()) {
+        /* While a session runs, Canon never sees SET/Q: in the full-res x5
+         * mode it would act on it (LCM43: a passed SET release is the likely
+         * cause of Canon leaving the mode). One click is one action: the
+         * press if it arrives, otherwise the physical release. */
+        livecomp_frlv_key_log(0x1000u|(unsigned)event->param,0,IS_FAKE(event) ? 2u:0u);
+        if (press) { set_release_blocked=1;livecomp_lv_key(MODULE_KEY_Q);return 0; }
+        if (IS_FAKE(event)) return 0;
+        if (set_release_blocked) { set_release_blocked=0;return 0; }
+        livecomp_lv_key(MODULE_KEY_Q);return 0;
+    }
     if (event->param==livecomp_camera.q_set_event ||
         event->param==livecomp_camera.set_press_event) {
         set_release_blocked=1;
