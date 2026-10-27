@@ -35,21 +35,6 @@ static __attribute__((optimize("O3"))) void lc_raw14_max(uint16_t *dst,const uin
         lc_raw14_pack(dst,a);
     }
 }
-/* Same result as lc_raw14_max, but a block is repacked and stored only when
- * a source sample is brighter. Once a composite has a few inputs most blocks
- * are unchanged, which saves the store (memory) traffic. Returns the number
- * of changed blocks for diagnostics. */
-static __attribute__((optimize("O3"),unused)) unsigned lc_raw14_max_sparse(uint16_t *dst,const uint16_t *src,unsigned blocks)
-{
-    unsigned changed=0;
-    for (unsigned n=0;n<blocks;n++,dst+=7,src+=7) {
-        uint16_t a[8],b[8];lc_raw14_unpack(dst,a);lc_raw14_unpack(src,b);
-        unsigned any=0;
-        for (unsigned p=0;p<8;p++) if (b[p]>a[p]) { a[p]=b[p];any=1; }
-        if (any) { lc_raw14_pack(dst,a);changed++; }
-    }
-    return changed;
-}
 /* Select-max (LCM24), used by the full-res composite. Both buffers share the same packed layout, so max(a,b)
  * per sample is a per-field choice of bits from a or b: no unpack/repack.
  * Viewed as a bit stream, 16-bit halfword h0 comes first, MSB first, so the

@@ -20,17 +20,7 @@ REGS_TEST = r'''
 #include <stdlib.h>
 #include "raw14-max.h"
 int main(void) {
-    { /* sparse max == reference max, every sample */
-        enum { B=20000 }; static uint16_t a[7*B],b[7*B],c[7*B];
-        srand(7);
-        for (int round=0;round<4;round++) {
-            for (int i=0;i<7*B;i++) { b[i]=rand(); if (!round) a[i]=c[i]=rand(); }
-            if (round==3) memcpy(b,a,sizeof(a)); /* nothing brighter */
-            lc_raw14_max(c,b,B); unsigned ch=lc_raw14_max_sparse(a,b,B);
-            assert(!memcmp(a,c,sizeof(a)) && (round<3 || ch==0));
-        }
-    }
-    { /* LCM24 select max == reference max, every sample, incl. ties/edges */
+    { /* select max == reference max, every sample, incl. ties/edges */
         enum { P=10000 }; static uint32_t a[7*P],b[7*P],c[7*P];
         srand(11);
         for (int round=0;round<4;round++) {
@@ -43,9 +33,15 @@ int main(void) {
         }
     }
     struct lc_frr_config c; struct lc_frr_stats st; memset(&st,0,sizeof(st));
-    lc_frr_configure(&c,5,0);   /* 3 fps entry */
-    /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8). */
-    assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==0x1E03);
+    lc_frr_configure(&c,LC_FRR_FPS_DEFAULT);
+    assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==57635 && c.blanking==10);
+    for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {   /* menu order: 2, 2.5, 3, 4, 5 s */
+        static const unsigned ms[]={2000,2500,3000,4000,5000};
+        { unsigned got=1000000/lc_frr_timing[i].fps_x1000; assert(got>=ms[i] && got<=ms[i]+5); }  /* 0.333 fps -> 3003 ms */
+        lc_frr_configure(&c,i);assert(c.blanking==10);          /* 100% exposure, no gap */
+    }
+    /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8), 3 fps. */
+    c.timer_a=0x56B;c.timer_b=0x1E03;c.blanking=lc_frr_blanking(0x1E03,100);
     /* fps = 32 MHz / ((A+1)(B+1)) */
     for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {
         const struct lc_frr_timing *t=&lc_frr_timing[i];
@@ -140,6 +136,7 @@ SIM = r'''
 #include "stub.h"
 #include "camera-profile.h"
 #include "fullres-lv.h"
+#include "fullres-regs.h"
 struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0}}; /* host: no alias bit, no LCD */
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
 struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024};
@@ -223,8 +220,10 @@ static void canon_reconfigure(unsigned z)
 }
 void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
+static unsigned cancel_at;static volatile unsigned *cancel_ptr;
 static void frame(void)
 {
+    if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
     if (stall_after_zoom && zoom==5) return;
     if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); last_written=1000; }
     else if (slurp_armed && !dma_stuck) {
@@ -257,21 +256,29 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={5,0,4,0,0,1};   /* index 5 = 3 fps, fix focus pixels */
-    /* Happy path: 4 inputs, geometry from registers, restore, unhook, DNG. */
+    struct lc_frlv_options o={1,6};   /* 2.5 s sub-exposures, stop after 6 frames */
+    sim_period_us=2500000;
+    /* Happy path: composite of 6 frames, geometry from registers, restore,
+     * unhook, DNG + LOG + CSV, every buffer freed. */
     reset();
     unsigned w=(0x538-0x12)*4,h=0xDB2-1+1,bytes=w*14/8*h;
     dng_size_ok=2048+bytes;
     unsigned unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("happy: %s unsafe=%u frames=%d unpatched=%d zoom=%u\n",status,unsafe,slurp_frames,unpatched,zoom);
-    assert(!unsafe && slurp_frames==4 && unpatched==4 && zoom==1 && lv_dispsize==1);
-    assert(slurp_w==(int)(w*14/8) && slurp_h==(int)h && allocs==frees+0 /* scratch freed too */);
-    assert(strstr(status,"saved") && dng_bytes==2048+bytes && locked==0);
-    /* Refusals before any hook: FPS override on, other RAW user, zoomed. */
+    assert(!unsafe && slurp_frames>=6 && unpatched==4 && zoom==1 && lv_dispsize==1);
+    assert(slurp_w==(int)(w*14/8) && slurp_h==(int)h && allocs==frees);
+    assert(strstr(status,"saved: 6 frames") && dng_bytes==2048+bytes && locked==0 && csv_written);
+    assert(!strstr(last_log,"HW_"));               /* no engine code in the product */
+    /* The 2.5 s timers (A 0x56B, B 57635 = 0xE123) are what the hooks apply. */
+    assert(strstr(last_log,"Requested_fps_x1000_timerA_timerB_blanking: 400,56b,e123,"));
+    /* Refusals before any hook: FPS override on, other RAW user. */
     reset();fps_now=3000;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && nhooks==0 && strstr(status,"FPS"));
     reset();raw_user=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && nhooks==0 && allocs==0);
+    /* Only one full-size buffer: refused before any hook, nothing kept. */
+    reset();single_alloc=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && nhooks==0 && frees==allocs && strstr(status,"memory"));
     /* Hook failure: earlier hooks removed, never zoomed. */
     reset();patch_fail_at=2;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && unpatched==2 && zoom==1 && strstr(status,"Hook"));
@@ -285,57 +292,44 @@ int main(void)
     reset();dma_stuck=1;unsigned a0=allocs;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("stuck: %s unsafe=%u allocs=%u frees=%u\n",status,unsafe,allocs,frees);
     assert(unsafe && zoom==1 && frees<allocs && a0==0);
-    /* Single allocation: last frame saved from the capture buffer. */
-    reset();single_alloc=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && slurp_frames==4 && strstr(status,"saved") && frees==allocs);
-    /* Slow mode: 0.5 fps timer and 100% exposure are what the hooks apply. */
-    reset();o.fps_index=3;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && reg6014!=0x1E03);
-    /* Partial frames (idle channel, tail untouched) are retried, not merged. */
-    reset();o.fps_index=5;partial_frames=2;dng_size_ok=2048+bytes;
+    /* Every sub-exposure choice runs; slower ones have longer timeouts. */
+    for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {
+        reset();o.fps_index=i;sim_period_us=1000000000u/lc_frr_timing[i].fps_x1000;dng_size_ok=2048+bytes;
+        unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+        printf("sub-exposure %u: %s\n",i,status);
+        assert(!unsafe && strstr(status,"saved: 6 frames") && zoom==1);
+    }
+    o.fps_index=1;sim_period_us=2500000;
+    /* No frame limit: runs until SET (simulated at frame 9), then saves. */
+    reset();o.limit=0;cancel_at=9;cancel_ptr=&cancel;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && slurp_frames==4 && strstr(status,"saved"));
-    reset();partial_frames=20;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && strstr(status,"partial") && zoom==1 && unpatched==4);
-    /* Slowest timing: timeouts scale with the frame period. */
-    reset();sim_period_us=3000000;o.fps_index=2;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    printf("slow: %s\n",status);assert(!unsafe && strstr(status,"saved"));sim_period_us=333333;
-    /* Continuous composite: every completed frame merged, limit, CSV, DNG. */
-    reset();sim_period_us=4000000;o.fps_index=0;o.continuous=1;o.limit=6;dng_size_ok=2048+bytes;
-    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    printf("cont: %s frames=%d\n",status,slurp_frames);
-    assert(!unsafe && strstr(status,"saved") && csv_written && zoom==1 && unpatched==4 && slurp_frames>=6);
-    /* Continuous with two partial frames: merged and counted, not fatal. */
+    printf("no limit: %s frames=%d\n",status,slurp_frames);
+    assert(!unsafe && strstr(status,"saved") && slurp_frames>=9 && zoom==1);
+    cancel=0;cancel_at=0;o.limit=6;
+    /* Two partial frames: merged and counted, not fatal. */
     reset();partial_frames=2;dng_size_ok=2048+bytes;
-    { unsigned before=slurp_frames; (void)before; }
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && strstr(status,"saved"));
-    /* Merge overrun (next readout already writing): stop, keep the composite. */
+    /* Merge overrun (next readout already writing): keep the composite. */
     reset();overrun_sim=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("overrun: %s\n",status);
     assert(!unsafe && strstr(status,"saved") && zoom==1);
-    /* LCM26: frames arrive faster than the (simulated 80 ms) merge: the
-     * session keeps going (behind/skipped frames counted) and saves. */
+    /* Frames arrive faster than the (simulated 80 ms) merge: the session
+     * keeps going (behind/skipped frames counted) and saves. */
     reset();sim_period_us=70000;o.limit=8;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0;
       assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u",&bands,&skip,&behind)==3);
       printf("behind: %s (behind=%u skipped_previews=%u)\n",status,behind,skip);
       assert(!unsafe && strstr(status,"saved") && zoom==1 && behind>0); }
-    /* LCM27: a full preview does not fit but a quarter strip does. */
-    reset();sim_period_us=2000000;o.fps_index=3;sim_slow=20;o.limit=8;dng_size_ok=2048+bytes;
+    /* 2 s: a full preview does not fit but a quarter strip does. */
+    reset();sim_period_us=2000000;o.fps_index=0;sim_slow=20;o.limit=8;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0,strips=0;
       assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u,%u",&bands,&skip,&behind,&strips)==4);
       printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
       assert(!unsafe && strstr(status,"saved") && strips>=2); }
-    sim_slow=1;o.fps_index=0;sim_period_us=4000000;o.limit=6;
-    /* Normal composite end: buffers freed, nothing quarantined, LOG has no
-     * engine sections (the product build carries no engine code). */
-    reset();dng_size_ok=2048+bytes;
-    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && strstr(status,"saved") && frees==allocs && !strstr(last_log,"HW_"));
-    o.continuous=0;sim_period_us=333333;
+    sim_slow=1;
     printf("sim ok\n");return 0;
 }
 '''

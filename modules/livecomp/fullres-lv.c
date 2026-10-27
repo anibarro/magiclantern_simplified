@@ -10,12 +10,12 @@
  *     substitute the CROP_Full_Res values (5208x3478 active, pitch 9240) and
  *     the slow frame timers chosen in the menu (fullres-regs.h).
  *  4. Capture with our own RAW slurp (EDMAC 0x12, source 0) into the capture
- *     buffer, one whole frame per vsync period:
- *     - Full-res readout: up to N single frames, merged, saved.
- *     - Full-res composite: re-armed after every frame; each frame is merged
- *       into the accumulator with an exact per-pixel maximum on the CPU
- *       (raw14-max.h), in bands, while the next exposure is already running.
- *       A 360x240 preview of the accumulator replaces Canon's LV image.
+ *     buffer, one whole frame per vsync period, re-armed after every frame.
+ *     Each frame is merged into the accumulator with an exact per-pixel
+ *     maximum on the CPU (raw14-max.h), in bands, while the next exposure is
+ *     already running. Every frame is a 100% exposure of the frame period
+ *     (no gap between sub-exposures). A 360x240 preview of the accumulator
+ *     replaces Canon's LV image.
  *  5. Leave x5, remove the hooks, fix the PDAF pixels, save DNG + LOG + CSV.
  * If the RAW DMA does not finish, buffer ownership is uncertain: the buffers
  * are kept allocated and the user is told to reboot.
@@ -84,12 +84,9 @@ static void frlv_slurp(void *dst,int pitch,int height)
 #define FRLV_ALLOCATION 32488032u        /* size proven twice on camera (LCM9-13) */
 #define FRLV_GUARD 64u
 #define FRLV_ALIGN(a) (((a)+FRLV_GUARD-1)&~(uintptr_t)(FRLV_GUARD-1))
-#define FRLV_MAX_INPUTS 8u
-#define FRLV_MAX_ATTEMPTS 14u        /* inputs + up to 6 partial frames */
-#define FRLV_TRACE 24u
 #define FRLV_VSYNC_RING 32u
-#define FRLV_CONT_MAX 999u
-#define FRLV_BANDS 8u                /* continuous merge: bands between ticks */
+#define FRLV_CSV_MAX 999u             /* frames with a CSV line; merging goes on */
+#define FRLV_BANDS 8u                /* merge bands, scheduler tick between them */
 #define FRLV_PREVIEW_MS 420u         /* measured render + copy, LCM23 */
 #define FRLV_MARGIN_MS 80u           /* scheduling before the next vsync */
 #define FRLV_PREVIEW_PARTS 4u        /* rolling preview strips when short of time */
@@ -103,11 +100,11 @@ static struct lc_frr_stats stats;
 static volatile unsigned active;           /* overrides may apply */
 static volatile unsigned observing;        /* vsync bookkeeping */
 static volatile unsigned vsyncs,last_vsync_ms,max_gap_ms;
-static volatile unsigned want_capture,in_flight,capture_done;
-/* Continuous composite: re-arm at every completion; frames_done counts them. */
-static volatile unsigned continuous,cont_arm,frames_done;
+static volatile unsigned in_flight;
+/* Re-arm at every completion while cont_arm; frames_done counts them. */
+static volatile unsigned cont_arm,frames_done;
 static volatile unsigned done_cb_kind,done_cb_after,done_cb_ptr,done_arm_after_vsync,arm_vsync_delay,done_engio,done_adtg,last_vsync_us;
-static volatile unsigned capture_vsync,done_state,done_pointer,done_vsync,done_ms,start_ms,start_us;
+static volatile unsigned done_state,done_pointer,done_ms;
 static volatile unsigned vsync_us[FRLV_VSYNC_RING];
 static volatile unsigned timer_fixes,timer_seen_b;
 static uint8_t *capture_target;            /* uncached alias */
@@ -173,33 +170,22 @@ void livecomp_frlv_vsync(void)
         done_pointer=edmac_get_pointer(raw_write_chan);
         done_cb_kind=cb_kind;done_cb_after=cb_kind ? cb_us-arm_us:0;done_cb_ptr=cb_ptr;done_arm_after_vsync=arm_vsync_delay;
         done_engio=stats.engio_calls;done_adtg=stats.adtg_calls;
-        done_vsync=vsyncs;done_ms=now;in_flight=0;capture_done=1;frames_done++;
-        return;
-    }
-    if (want_capture && active && zoom5() && !raw_lv_is_enabled()) {
-        want_capture=0;
-        EngDrvOut(FRLV_RAW_TYPE_REG,FRLV_RAW_TYPE);
-        frlv_slurp((void *)physical(capture_target),capture_pitch,capture_height);
-        capture_vsync=vsyncs;start_ms=now;start_us=(unsigned)get_us_clock();in_flight=1;
+        done_ms=now;in_flight=0;frames_done++;
     }
 }
 
-struct frlv_input { unsigned vsync,start_ms,done_ms,state,pointer,merge_us,tail_ok,changed_pct,ntrace;
-    unsigned trace_us[FRLV_TRACE],trace_off[FRLV_TRACE]; };
 struct frlv_result {
     unsigned error,stage,unsafe,rom_engdrvout,hooks;
     unsigned top_left,bottom_right,width,height,pitch,bytes;
     unsigned reg_6804,reg_6008,reg_6010,reg_6014,reg_38024,reg_6804_after;
-    unsigned zoom_ms,cadence_frames,cadence_ms,max_gap;
-    unsigned inputs,merged;
-    struct frlv_input in[FRLV_MAX_ATTEMPTS];
+    unsigned zoom_ms,merged;
     unsigned partials,vsync_count,vsync_first;
     unsigned vsync_us[FRLV_VSYNC_RING];
     unsigned black,ob_stdev_x10,center_mean,max_value;
     unsigned col_band[12],row_band[10];
-    unsigned memcpy_us,saved,save_stage,save_size;
-    unsigned fps_x1000,expo_pct,timer_fixes,timer_seen_b,pdm[6];
-    unsigned continuous,limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
+    unsigned saved,save_stage,save_size;
+    unsigned fps_x1000,timer_fixes,timer_seen_b,pdm[6];
+    unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
@@ -227,64 +213,47 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Stage_error_unsafe: %d,%d,%d\n"
         "Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved\n"
         "Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user\n"
-        "Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: %d,%d,%x,%x,%d\n"
+        "Requested_fps_x1000_timerA_timerB_blanking: %d,%x,%x,%d\n"
         "EngDrvOut_instr_hooks: %x,%d\n"
         "Regs_6800_6804_6008_6010_6014_38024: %x,%x,%x,%x,%x,%x\n"
         "Reg_6804_after_restore: %x\n"
         "Width_height_pitch_bytes: %d,%d,%d,%d\n"
-        "Zoom_ms_cadence_frames_ms_max_gap_ms: %d,%d,%d,%d\n"
+        "Zoom_ms_max_vsync_gap_ms: %d,%d\n"
         "Timer_fixes_last_seen_B: %d,%x\n"
         "PathDriveMode_words: %x,%x,%x,%x,%x,%x\n",
-        status,r->stage,r->error,r->unsafe,r->fps_x1000,r->expo_pct,cfg.timer_a,cfg.timer_b,cfg.blanking,
+        status,r->stage,r->error,r->unsafe,r->fps_x1000,cfg.timer_a,cfg.timer_b,cfg.blanking,
         r->rom_engdrvout,r->hooks,r->top_left,r->bottom_right,r->reg_6008,r->reg_6010,r->reg_6014,r->reg_38024,
         r->reg_6804_after,r->width,r->height,r->pitch,r->bytes,
-        r->zoom_ms,r->cadence_frames,r->cadence_ms,r->max_gap,r->timer_fixes,r->timer_seen_b,
+        r->zoom_ms,max_gap_ms,r->timer_fixes,r->timer_seen_b,
         r->pdm[0],r->pdm[1],r->pdm[2],r->pdm[3],r->pdm[4],r->pdm[5]);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),
         "Hook_cmos_calls_changes: %d,%d\nHook_adtg_calls_changes_blanking_seen: %d,%d,%d\n"
         "Hook_engio_calls_changes_drv_changes_overflow: %d,%d,%d,%d\n"
         "Canon_orig_6804_timerA_timerB_blanking: %x,%x,%x,%x\n"
-        "Inputs_merged_memcpy_us: %d,%d,%d\n"
+        "Merged: %d\n"
         "Black_OBstdev_x10_center_mean_max: %d,%d,%d,%d\n"
         "Col_band_means_16px: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n"
         "Row_band_means_8px: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n"
         "Saved_stage_size: %d,%d,%d\nDNG: %s\n"
-        "Continuous_limit_overrun_offset_missed: %d,%d,%d,%d\n"
+        "Limit_overrun_offset_missed_partials: %d,%d,%d,%d\n"
         "Merge_max_us_sum_ms_preview_ok_render_us_copy_us: %d,%d,%d,%d,%d\n"
         "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n"
         "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped_behind_strips: select,%d,%d,%d,%d\n",
         stats.cmos_calls,stats.cmos_changes,stats.adtg_calls,stats.adtg_changes,stats.blanking_seen,
         stats.engio_calls,stats.engio_changes,stats.drv_changes,stats.overflow,
         stats.orig_6804,stats.orig_timer_a,stats.orig_timer_b,stats.orig_blanking,
-        r->inputs,r->merged,r->memcpy_us,r->black,r->ob_stdev_x10,r->center_mean,r->max_value,
+        r->merged,r->black,r->ob_stdev_x10,r->center_mean,r->max_value,
         r->col_band[0],r->col_band[1],r->col_band[2],r->col_band[3],r->col_band[4],r->col_band[5],
         r->col_band[6],r->col_band[7],r->col_band[8],r->col_band[9],r->col_band[10],r->col_band[11],
         r->row_band[0],r->row_band[1],r->row_band[2],r->row_band[3],r->row_band[4],
         r->row_band[5],r->row_band[6],r->row_band[7],r->row_band[8],r->row_band[9],
         r->saved,r->save_stage,r->save_size,r->dng,
-        r->continuous,r->limit,r->overrun_offset,r->missed,
+        r->limit,r->overrun_offset,r->missed,r->partials,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
         r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips);
     ok&=write_text(f,t,n);
-    n=snprintf(t,sizeof(t),"Partials: %d\nAttempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:\n",r->partials);
-    ok&=write_text(f,t,n);
-    for (unsigned i=0;i<r->inputs && i<FRLV_MAX_ATTEMPTS;i++) {
-        const struct frlv_input *p=&r->in[i];
-        n=snprintf(t,sizeof(t),"%d,%d,%d,%d,%d,%x,%d,%d,%d\n",i,p->vsync,p->start_ms,p->done_ms,
-            p->state,p->pointer,p->tail_ok,p->merge_us,p->changed_pct);
-        ok&=write_text(f,t,n);
-    }
-    ok&=write_text(f,"DMA_trace_attempt: us_after_arm:bytes ...\n",42);
-    for (unsigned i=0;i<r->inputs && i<FRLV_MAX_ATTEMPTS;i++) {
-        const struct frlv_input *p=&r->in[i];
-        n=snprintf(t,sizeof(t),"T%d:",i);
-        for (unsigned k=0;k<p->ntrace && n<(int)sizeof(t)-32;k++)
-            n+=snprintf(t+n,sizeof(t)-n," %d:%d",p->trace_us[k],p->trace_off[k]);
-        t[n++]='\n';
-        ok&=write_text(f,t,n);
-    }
     n=snprintf(t,sizeof(t),"Vsync_intervals_us (last %d):",FRLV_VSYNC_RING);
     for (unsigned k=1;k<FRLV_VSYNC_RING && k<r->vsync_count;k++) {
         unsigned a=(r->vsync_first+k-1)%FRLV_VSYNC_RING,b=(r->vsync_first+k)%FRLV_VSYNC_RING;
@@ -363,7 +332,7 @@ static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
     memcpy(m.matrix,raw_info.color_matrix1,sizeof(m.matrix));
     m.illuminant=raw_info.calibration_illuminant1;
     memcpy(m.neutral,r->neutral,sizeof(m.neutral));
-    m.iso=raw2iso(lens_info.raw_iso);m.tvr=MAX(1u,r->fps_x1000*100u/MAX(1u,r->expo_pct));
+    m.iso=raw2iso(lens_info.raw_iso);m.tvr=MAX(1u,r->fps_x1000);    /* shutter = frame period */
     m.fps=r->fps_x1000;m.aperture=lens_info.aperture;m.focal=lens_info.focal_len;
     r->save_stage=1;
     uint8_t *scratch=fio_malloc(16384);
@@ -406,7 +375,6 @@ static void arm_from_task(void)
     EngDrvOut(FRLV_RAW_TYPE_REG,FRLV_RAW_TYPE);
     arm_vsync_delay=(unsigned)get_us_clock()-last_vsync_us;
     frlv_slurp((void *)physical(capture_target),capture_pitch,capture_height);
-    capture_vsync=vsyncs;start_ms=get_ms_clock();start_us=(unsigned)get_us_clock();
     in_flight=1;
 }
 
@@ -414,7 +382,7 @@ static void arm_from_task(void)
  * Continuous full-res composite (Task: Full-res composite).
  * ------------------------------------------------------------------- */
 struct frlv_frame { unsigned seq,done_ms,merge_us,changed_pct,offset_after,state,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_delta,adtg_delta,lost_bands; };
-static struct frlv_frame cont_frames[FRLV_CONT_MAX];
+static struct frlv_frame cont_frames[FRLV_CSV_MAX],cont_overflow;  /* overflow: frames past the CSV table */
 static uint16_t *preview_yuv;              /* cached 720x480 UYVY render */
 static unsigned preview_w,preview_h,preview_pitch,preview_part;
 
@@ -498,7 +466,7 @@ static void write_csv(const struct frlv_result *r)
     static char t[256];
     int n=snprintf(t,sizeof(t),"seq,done_ms,merge_us,changed_pct,dma_offset_after_merge,partial_bytes_plus1,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_calls,adtg_calls,lost_bands\n");
     FIO_WriteFile(f,t,n);
-    for (unsigned i=0;i<r->merged && i<FRLV_CONT_MAX;i++) {
+    for (unsigned i=0;i<r->merged && i<FRLV_CSV_MAX;i++) {
         const struct frlv_frame *c=&cont_frames[i];
         n=snprintf(t,sizeof(t),"%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",c->seq,c->done_ms,c->merge_us,c->changed_pct,c->offset_after,c->state,
             c->arm_after_vsync_us,c->cb_kind,c->cb_after_arm_us,c->cb_offset,c->engio_delta,c->adtg_delta,c->lost_bands);
@@ -513,10 +481,10 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms)
 {
     preview_setup();r->preview_ok=preview_yuv!=NULL;
-    const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28,max_partials=2+r->limit/4;
+    const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28;
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
-    continuous=1;cont_arm=1;
+    cont_arm=1;
     /* First arm: just after a vsync, never inside it. */
     unsigned seen=frames_done,v=vsyncs,w0=get_ms_clock();
     while (vsyncs==v && get_ms_clock()-w0<period_ms+3000) msleep(10);
@@ -542,7 +510,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
          * the latest complete frame. Stop only if it keeps happening. */
         if (frames_done!=seen+1) {
             r->missed+=frames_done-seen-1;
-            if (r->missed>2+r->limit/4) { r->error|=FE_DMA;*msg="Merge too slow: frames missed";cont_arm=0;break; }
+            /* Relative rule, so it also works without a frame limit. */
+            if (r->missed>2+r->merged/4) { r->error|=FE_DMA;*msg="Merge too slow: frames missed";cont_arm=0;break; }
         }
         seen=frames_done;
         unsigned state=done_state,pointer=done_pointer,done=done_ms;
@@ -555,7 +524,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
          * never inside the vsync: preview_show (~110 ms) already waited. */
         if (!preview_yuv) msleep(40);
         if (cont_arm) arm_from_task();
-        struct frlv_frame *c=&cont_frames[r->merged];
+        struct frlv_frame *c=r->merged<FRLV_CSV_MAX ? &cont_frames[r->merged]:&cont_overflow;
         memset(c,0,sizeof(*c));                         /* static: reused across sessions */
         c->seq=seen;c->done_ms=done;c->state=pointer==end ? 0:pointer-physical(cap)+1;
         c->arm_after_vsync_us=d_arm;c->cb_kind=d_kind;c->cb_after_arm_us=d_after;c->cb_offset=d_ptr ? d_ptr-physical(cap):0;
@@ -564,7 +533,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             /* Partial frame: the rows that arrived are real exposure, the rest
              * is the previous (already merged) frame. Merge it and log it. */
             r->partials++;
-            if (r->partials>max_partials) { cont_arm=0;r->error|=FE_DMA;*msg="Too many partial frames; see CSV";break; }
+            if (r->partials>2+r->merged/4) { cont_arm=0;r->error|=FE_DMA;*msg="Too many partial frames; see CSV";break; }
         }
         sync_caches();
         const uint8_t *src=(const uint8_t *)physical(cap);
@@ -632,7 +601,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         }
         if (r->merged%10==1) write_log(r,"composing");
     }
-    continuous=0;cont_arm=0;
+    cont_arm=0;
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
 }
 
@@ -641,19 +610,17 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
 {
     static struct frlv_result r;
     memset(&r,0,sizeof(r));memset(&stats,0,sizeof(stats));
-    lc_frr_configure(&cfg,o->fps_index,o->expo_index);
+    lc_frr_configure(&cfg,o->fps_index);
     r.fps_x1000=lc_frr_timing[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:0].fps_x1000;
     const unsigned period_ms=1000000u/r.fps_x1000;
-    r.expo_pct=lc_frr_expo_pct[o->expo_index<LC_FRR_EXPO_CHOICES ? o->expo_index:0];
-    unsigned inputs=MIN(MAX(o->inputs,1u),FRLV_MAX_INPUTS);
-    r.continuous=o->continuous;r.limit=MIN(MAX(o->limit,1u),FRLV_CONT_MAX);
+    r.limit=o->limit ? o->limit:~0u;                /* 0 = no limit */
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
     unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0;
-    const char *msg="Full-res readout: checking";
+    const char *msg="Full-res composite: checking";
     *status=msg;
-    want_capture=in_flight=capture_done=0;timer_fixes=0;
+    in_flight=0;timer_fixes=0;
 
     /* 1: state and fingerprints. Only EOS M 2.0.2 reaches this (camera guard). */
     if (!card || !choose_paths(&r,card)) { r.error|=FE_IO;msg="No card/filename";goto out; }
@@ -663,7 +630,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         msg="Use Movie LV x1, Global Draw OFF, no other RAW tools";goto out;
     }
     if (fps_get_current_x1000()<20000) {
-        r.error|=FE_STATE;msg="Turn ML FPS override OFF for this test";goto out;
+        r.error|=FE_STATE;msg="Turn ML FPS override OFF for full resolution";goto out;
     }
     r.rom_engdrvout=MEM(FRLV_ENGDRVOUT);
     for (unsigned i=0;i<6;i++) r.pdm[i]=MEM(FRLV_PATHDRIVE+4*i);
@@ -679,13 +646,13 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         alloc[i]=fio_malloc(FRLV_ALLOCATION);
         if (!alloc[i]) break;
     }
-    if (!alloc[0]) { r.error|=FE_MEMORY;msg="No full-size buffer available";goto out; }
+    if (!alloc[1]) { r.error|=FE_MEMORY;msg="Not enough memory for two full-size buffers";goto out; }
     /* 64-byte aligned pixels with a guard area before (capture only) and
      * after the frame: an overrun of the RAW DMA is detected, never silent.
      * The capture buffer is used through its uncached alias (DMA target),
      * the accumulator through the cached one (CPU merge and DNG writer). */
     cap=(uint8_t *)FRLV_ALIGN((uintptr_t)alloc[0]+FRLV_GUARD);
-    if (alloc[1]) acc=(uint8_t *)physical((void *)FRLV_ALIGN((uintptr_t)alloc[1]));
+    acc=(uint8_t *)physical((void *)FRLV_ALIGN((uintptr_t)alloc[1]));
     unsigned capacity=FRLV_ALLOCATION-3*FRLV_GUARD;
     memset(cap-FRLV_GUARD,0x5a,FRLV_GUARD);
     r.stage=2;write_log(&r,"allocated");
@@ -711,8 +678,8 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     write_log(&r,"hooked; entering x5");
 
     /* 4: x5 zoom makes Canon rewrite the sensor configuration via the hooks. */
-    msg=o->continuous ? "Full-res composite: starting (about 10 s)":"Full-res readout: switching sensor";*status=msg;
-    if (o->continuous) NotifyBox(8000,"%s",msg);
+    msg="Full-res composite: starting (about 10 s)";*status=msg;
+    NotifyBox(8000,"%s",msg);
     unsigned t0=get_ms_clock();
     set_lv_zoom(5);zoomed=1;
     while (!(lv_dispsize==5 && zoom5())) {
@@ -721,7 +688,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     }
     r.zoom_ms=get_ms_clock()-t0;r.zoom_done_ms=get_ms_clock();
     if (r.error) { msg="x5 zoom did not engage";goto restore; }
-    if (!wait_vsyncs(o->continuous ? 2:3,3*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
+    if (!wait_vsyncs(2,3*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
     r.top_left=shamem_read(0xC0F06800);r.bottom_right=shamem_read(0xC0F06804);
     r.reg_6008=shamem_read(0xC0F06008);r.reg_6010=shamem_read(0xC0F06010);
     r.reg_6014=shamem_read(0xC0F06014);r.reg_38024=shamem_read(0xC0F38024);
@@ -734,88 +701,13 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     }
     memset(cap+r.bytes,0x5a,FRLV_GUARD);
     capture_pitch=r.pitch;capture_height=r.height;capture_target=cap;
-    /* Cadence over a few frames (timer B may need one frame to settle).
-     * The composite skips this: at 4 s per frame it cost ~12 s of startup. */
-    if (!o->continuous) {
-        unsigned frames=MAX(3u,cfg.timer_b<10000 ? 6u:3u);
-        wait_vsyncs(1,period_ms+4000,cancel);
-        unsigned v0=vsyncs,m0=get_ms_clock();max_gap_ms=0;
-        if (!wait_vsyncs(frames,frames*period_ms+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="LV stalled at full res";goto restore; }
-        r.cadence_frames=vsyncs-v0;r.cadence_ms=get_ms_clock()-m0;r.max_gap=max_gap_ms;
-    }
     r.stage=5;write_log(&r,"verified");
 
-    /* 6: capture inputs. One frame per request; merges happen between. */
-    msg="Full-res readout: capturing";*status=msg;
-    if (r.continuous) {
-        if (!acc) { r.error|=FE_MEMORY;msg="Composite needs two full-size buffers";goto restore; }
-        continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms);
-        if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
-        *status=msg;
-        goto restore;
-    }
-    for (unsigned attempt=0;r.merged<inputs && attempt<FRLV_MAX_ATTEMPTS;attempt++) {
-        if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled()) {
-            r.error|=raw_lv_is_enabled() ? FE_RAWUSER:*cancel ? FE_CANCEL:FE_STATE;
-            msg=*cancel ? "Stopped by user":"Mode changed during capture";break;
-        }
-        memset(cap+r.bytes-8,0x5a,8);   /* uncached alias: no dirty lines */
-        sync_caches();
-        struct frlv_input *p=&r.in[r.inputs++];
-        capture_done=0;want_capture=1;
-        unsigned w0=get_ms_clock(),limit=3*(1000000u/r.fps_x1000)+3000,last=~0u;
-        /* Sample the DMA write pointer while the frame arrives: shows when
-         * readout starts relative to the vsync and how long it lasts. */
-        while (!capture_done && get_ms_clock()-w0<limit) {
-            if (in_flight && p->ntrace<FRLV_TRACE) {
-                unsigned off=edmac_get_pointer(raw_write_chan)-physical(cap);
-                if (off!=last) {
-                    p->trace_us[p->ntrace]=(unsigned)get_us_clock()-start_us;
-                    p->trace_off[p->ntrace++]=off;last=off;
-                }
-            }
-            msleep(10);
-        }
-        if (!capture_done) {
-            want_capture=0;
-            if (in_flight) dma_uncertain=1;
-            r.error|=FE_STALL;msg="Frame not completed; see LOG";break;
-        }
-        p->vsync=capture_vsync;p->start_ms=start_ms;p->done_ms=done_ms;
-        p->state=done_state;p->pointer=done_pointer;
-        unsigned tail=0;for (unsigned k=0;k<8;k++) if (cap[r.bytes-8+k]!=0x5a) tail=1;
-        p->tail_ok=tail;
-        if (done_state) {
-            /* Still active one frame later: give it one more frame, else stop. */
-            wait_vsyncs(1,period_ms+3000,cancel);
-            if (edmac_get_state(raw_write_chan)) { dma_uncertain=1;r.error|=FE_DMA;msg="RAW DMA did not finish";break; }
-        }
-        if (!guards_ok(cap,r.bytes)) { dma_uncertain=1;r.error|=FE_GUARD;msg="Buffer guard overwritten";break; }
-        if (!tail) {
-            /* Partial frame with an idle channel: record it and try the next
-             * frame (diagnostic gate only; continuous mode must not do this). */
-            r.partials++;
-            if (r.partials>6) { r.error|=FE_DMA;msg="Repeated partial frames; see LOG";break; }
-            write_log(&r,"partial frame");
-            continue;
-        }
-        sync_caches();
-        const uint8_t *src=(const uint8_t *)physical(cap);
-        if (!r.merged) statistics(&r,src);
-        if (acc) {
-            unsigned s0=(unsigned)get_us_clock();
-            if (!r.merged) { memcpy(acc,src,r.bytes);r.memcpy_us=(unsigned)get_us_clock()-s0;p->changed_pct=100; }
-            else {
-                unsigned blocks=r.bytes/14,changed=lc_raw14_max_sparse((uint16_t *)acc,(const uint16_t *)src,blocks);
-                p->changed_pct=(unsigned)((uint64_t)changed*100/blocks);
-            }
-            p->merge_us=(unsigned)get_us_clock()-s0;
-        }
-        r.merged++;
-        write_log(&r,"capturing");
-    }
-    if (r.merged<inputs && !r.error) { r.error|=FE_DMA;msg="Too many partial frames; see LOG"; }
+    /* 6: compose until SET, the frame limit or an error. */
+    msg="Full-res composite: capturing";*status=msg;
+    continuous_capture(&r,cap,acc,cancel,&msg,&dma_uncertain,period_ms);
     if (r.merged && !(r.error&~FE_CANCEL)) r.stage=6;
+    *status=msg;
 
 restore:
     {
@@ -824,11 +716,11 @@ restore:
         for (unsigned k=0;k<FRLV_VSYNC_RING;k++) r.vsync_us[k]=vsync_us[k];
     }
     active=0;
-    msg=r.error ? msg:"Full-res readout: restoring";*status=msg;
+    msg=r.error ? msg:"Full-res composite: restoring";*status=msg;
     /* Let any armed slurp complete before leaving the mode. */
     {
         unsigned w0=get_ms_clock();
-        while ((want_capture || in_flight) && get_ms_clock()-w0<period_ms+4000) { want_capture=0;msleep(20); }
+        while (in_flight && get_ms_clock()-w0<period_ms+4000) msleep(20);
         if (in_flight || edmac_get_state(raw_write_chan)) dma_uncertain=1;
     }
     if (zoomed) {
@@ -857,18 +749,18 @@ unhook:
 out:
     r.timer_fixes=timer_fixes;r.timer_seen_b=timer_seen_b;
     if (dma_uncertain) r.unsafe=1;
-    /* With a single allocation, the last captured frame is the output. */
-    if (!acc && cap && !r.unsafe) acc=(uint8_t *)physical(cap);
-    else if (!r.unsafe && alloc[0]) { fio_free(alloc[0]);alloc[0]=NULL;cap=NULL; }
+    /* The capture buffer is free once no DMA can target it: release it
+     * before the (slow) DNG write. A partial composite is still saved. */
+    if (!r.unsafe && alloc[0]) { fio_free(alloc[0]);alloc[0]=NULL;cap=NULL; }
     if (acc && r.merged && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
-        !(r.error&(FE_GUARD|FE_SIZE|FE_REGS)) && (r.continuous || !(r.error&FE_DMA))) {
-        if (o->fix_focus_pixels && r.width==5280) {
+        !(r.error&(FE_GUARD|FE_SIZE|FE_REGS))) {
+        if (r.width==5280) {
             unsigned f0=(unsigned)get_us_clock();
             r.fp_fixed=lc_fix_focus_pixels(acc,r.width,r.height,r.pitch);
             r.fp_us=(unsigned)get_us_clock()-f0;
         }
-        *status="Full-res readout: saving DNG";
-        if (r.continuous) NotifyBox(15000,"Saving full-res composite DNG...");
+        *status="Full-res composite: saving DNG";
+        NotifyBox(15000,"Saving full-res composite DNG...");
         r.saved=frlv_save_dng(&r,acc);
         if (!r.saved) r.error|=FE_IO;
         else r.stage=8;
@@ -877,9 +769,9 @@ out:
     if (locked) gui_uilock(old_lock);
     if (power) powersave_permit();
     if (r.unsafe) msg="Full-res: RAW DMA ownership uncertain; keep LOG, reboot";
-    else if (!r.error) msg=r.saved ? "Full-res DNG saved; see LVFR LOG":"Full-res: no frame saved";
-    else if (r.saved) msg=r.continuous ? "Composite saved; stopped early, see LOG":"Full-res DNG saved with warnings; see LOG";
-    if (r.continuous && r.saved && !r.error && !r.unsafe) {
+    else if (!r.error) msg=r.saved ? "Full-res composite saved":"Full-res: no frame saved";
+    else if (r.saved) msg="Composite saved; stopped early, see LOG";
+    if (r.saved && !r.error && !r.unsafe) {
         static char done[64];
         if (r.late_frames || r.missed) snprintf(done,sizeof(done),"Composite saved: %d frames, %d late, %d skipped",r.merged,r.late_frames,r.missed);
         else snprintf(done,sizeof(done),"Full-res composite saved: %d frames",r.merged);
@@ -887,6 +779,6 @@ out:
     }
     *status=msg;
     if (r.log[0]) write_log(&r,msg);
-    if (r.log[0] && r.continuous) write_csv(&r);
+    if (r.log[0]) write_csv(&r);
     return r.unsafe;
 }

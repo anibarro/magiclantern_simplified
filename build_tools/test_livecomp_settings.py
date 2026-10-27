@@ -67,7 +67,7 @@ struct lv_session {
     struct raw_info info;
     int iso,aperture,shutter,wb,kelvin,gain_r,gain_b,wb_gm,wb_ba,frame_iso,fps,tvr;
     struct lc_ring ring;
-    struct lv_frame_log frames[LV_FRAME_CAP];
+    struct lv_frame_log frames[LV_FRAME_CAP],frames_overflow;
     unsigned vsyncs,last_vsync,bytes,merged,error,quarantined,stop_kind,stop_issued,limit,preview_interval;
     unsigned timing_syncs,preview_rendered,preview_frames,preview_calls,preview_last_ms,preview_snapshot_ms;
     int timing_before_fps,timing_before_tvr,timing_after_fps,timing_after_tvr;
@@ -98,6 +98,7 @@ static void raw_preview_fast_ex(void *raw,void *dst,int y1,int y2,int quality) {
     memcpy(dst,raw,session->bytes);renders++;
 }
 '''
+    code += function(camera, 'frame_log(')
     code += function(camera, 'settings_valid(')
     code += function(camera, 'prepare_display(')
     code += function(camera, 'sync_capture_timing(')

@@ -45,16 +45,16 @@ def main():
     with zipfile.ZipFile(archive) as z:
         assert z.testzip() is None and set(z.namelist())==set(payload)
         for name,p in payload.items(): assert z.read(name)==p.read_bytes()
-    source_files=['Makefile','README.rst','INSTALL.txt','DEVELOPMENT.md','FULLRES.md','livecomp.c','livecomp-lv.c',
-                  'livecomp-lv.h','livecomp-config.h','camera-profile.h','lv-ring.h','lv-dng.h','raw14-max.h',
-                  'fullres-lv.c','fullres-lv.h','fullres-regs.h','fullres-gamma.h','fullres-fix.h']
+    # Every source and header of the module plus its documents.
+    docs=[n for n in ('Makefile','README.rst','INSTALL.txt','DEVELOPMENT.md','FULLRES.md') if (mod/n).exists()]
+    source_files=docs+sorted(p.name for p in list(mod.glob('*.c'))+list(mod.glob('*.h')))
     with zipfile.ZipFile(out/f'livecomp-{TAG}-source.zip','w',zipfile.ZIP_DEFLATED) as z:
         for name in source_files: z.write(mod/name,'modules/livecomp/'+name)
     report={'build_id':TAG,'camera':'EOSM.202','module_only':True,
             'custom_core_required':False,'other_modules_required':[],
             'stock_core_imports_resolved':len(required),'camera_tested':False,
             'preserved_capture_baseline':'LCM8, 76 frames passed on camera',
-            'full_sensor_capture_enabled':'Task: Full-res composite / Full-res readout',
+            'full_sensor_tasks':(mod/'fullres-lv.c').exists(),
             'sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in (binary,symbols,archive)}}
     (out/f'livecomp-{TAG}-manifest.json').write_text(json.dumps(report,indent=2)+'\n')

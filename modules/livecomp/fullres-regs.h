@@ -1,5 +1,5 @@
 /* GPL-2.0-or-later. Pure register-list rewriting for the EOS M full-sensor
- * readout gate. No hardware access: host tests include this header directly.
+ * composite. No hardware access: host tests include this header directly.
  *
  * Values follow Bilal Fakhouri's crop_rec_4k_mlv_snd (5f0cda8), EOS M
  * CROP_PRESET_1X1 / CROP_Full_Res ("5208x3478 @ 3 FPS"), applied only in x5:
@@ -20,25 +20,25 @@
 #define LC_FRR_RAW_V 0xDB2u
 #define LC_FRR_TIMER_A 0x56Bu
 #define LC_FRR_CLOCK 32000000u
-#define LC_FRR_FPS_CHOICES 8u
-#define LC_FRR_EXPO_CHOICES 4u
-/* Sensor timing choices (register values = timer-1). fps = 32 MHz/((A+1)(B+1)).
- * LCM16 camera evidence: 3, 1, 0.5 (B=0xB41B), 0.5 (A x2) and 0.33 (A x3)
- * all run; readout lasts ~150 ms x (A/0x56B) and ends just before the next
- * vsync. Slower than 0.35 fps needs timer A stretched (B is 16 bits).
- * Continuous composite needs merge time < period - readout. */
+#define LC_FRR_FPS_CHOICES 5u
+#define LC_FRR_FPS_DEFAULT 1u        /* 2.5 s */
+/* Sub-exposure choices, in menu order (register values = timer-1).
+ * fps = 32 MHz/((A+1)(B+1)). The sensor readout lasts ~150 ms x (A/0x56B)
+ * at the end of each period; the composite needs the CPU merge (1.5-1.9 s)
+ * plus the preview to finish before the next frame arrives:
+ *  - 2 s: merge fits, the full preview does not -> rolling quarter strips.
+ *  - 2.5 s and slower: full preview after every frame.
+ * Faster rates (1 and 3 fps ran in the LCM16 readout tests) cannot be
+ * composited and are not offered. Slower than 0.35 fps needs timer A
+ * stretched (B is 16 bits); its readout is then ~450 ms. */
 struct lc_frr_timing { uint32_t timer_a,timer_b,fps_x1000; };
 static const struct lc_frr_timing lc_frr_timing[LC_FRR_FPS_CHOICES]={
-    {4163u,30739u,250u},        /* 0.25 fps, 4 s (A x3) - composite default */
-    {4163u,38424u,200u},        /* 0.2 fps, 5 s (A x3) */
-    {4163u,23053u,333u},        /* 0.33 fps, 3 s (A x3), tested */
-    {0x56Bu,46107u,500u},       /* 0.5 fps, 2 s (B), tested */
-    {0x56Bu,23053u,1000u},      /* 1 fps, tested */
-    {0x56Bu,0x1E03u,3000u},     /* 3 fps, reference, tested */
-    {2775u,23053u,500u},        /* 0.5 fps (A x2), tested */
-    {0x56Bu,57635u,400u},       /* 0.4 fps, 2.5 s (B), readout ~150 ms (LCM25) */
+    {0x56Bu,46107u,500u},       /* 2 s   (0.5 fps, B), rolling preview (LCM27) */
+    {0x56Bu,57635u,400u},       /* 2.5 s (0.4 fps, B), default (LCM25-41) */
+    {4163u,23053u,333u},        /* 3 s   (0.33 fps, A x3) */
+    {4163u,30739u,250u},        /* 4 s   (0.25 fps, A x3) */
+    {4163u,38424u,200u},        /* 5 s   (0.2 fps, A x3) */
 };
-static const uint32_t lc_frr_expo_pct[LC_FRR_EXPO_CHOICES]={100u,50u,25u,12u};
 
 struct lc_frr_config {
     uint32_t raw_h,raw_v,timer_a,timer_b,blanking;
@@ -78,14 +78,15 @@ static inline uint32_t lc_frr_blanking(uint32_t timer_b_reg,uint32_t pct)
     if (blanking>total-2u) blanking=total-2u;
     return blanking;
 }
-static inline void lc_frr_configure(struct lc_frr_config *c,unsigned fps_index,unsigned expo_index)
+/* The composite always exposes 100% of the frame: consecutive
+ * sub-exposures leave no gap in a light trail. */
+static inline void lc_frr_configure(struct lc_frr_config *c,unsigned fps_index)
 {
-    if (fps_index>=LC_FRR_FPS_CHOICES) fps_index=0;
-    if (expo_index>=LC_FRR_EXPO_CHOICES) expo_index=0;
+    if (fps_index>=LC_FRR_FPS_CHOICES) fps_index=LC_FRR_FPS_DEFAULT;
     c->raw_h=LC_FRR_RAW_H;c->raw_v=LC_FRR_RAW_V;
     c->timer_a=lc_frr_timing[fps_index].timer_a;
     c->timer_b=lc_frr_timing[fps_index].timer_b;
-    c->blanking=lc_frr_blanking(c->timer_b,lc_frr_expo_pct[expo_index]);
+    c->blanking=lc_frr_blanking(c->timer_b,100u);
 }
 
 /* CMOS list: 16-bit (reg<<12)|value entries, 0xFFFF terminated. Copied so

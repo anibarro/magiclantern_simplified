@@ -24,6 +24,7 @@
 #include "lv-ring.h"
 #include "raw14-max.h"
 #include "fullres-lv.h"
+#include "fullres-regs.h"
 
 extern uint32_t raw_write_chan;
 extern int raw_lv_is_enabled(void);
@@ -34,6 +35,8 @@ extern void fps_update_timers_from_evfstate(void);
 enum { E_SETTINGS=1,E_MEMORY=2,E_DMA=4,E_GUARD=8,E_QUEUE=16,
        E_TIMEOUT=32,E_IO=64,E_ORDER=128,E_SHUTDOWN=256 };
 struct lv_frame_log { uint32_t sequence,slot,start_ms,done_ms,merge_us,dma_state,dma_pointer; };
+/* LV_FRAME_CAP frames get a CSV line; later frames are merged as usual and
+ * their bookkeeping goes to one overflow record (no frame limit needed). */
 /* Keep the order aligned with settings_valid. Values are sampled once per check;
  * no filesystem work or formatting is performed inside the frame callback. */
 static const char *const setting_names[]={
@@ -48,7 +51,7 @@ struct lv_settings_failure {
 struct lv_session {
     struct raw_info info;
     struct lc_ring ring;
-    struct lv_frame_log frames[LV_FRAME_CAP];
+    struct lv_frame_log frames[LV_FRAME_CAP],frames_overflow;
     void *allocation[LC_LV_SLOTS];
     uint8_t *input[LC_LV_SLOTS],*accumulator,*preview;
     struct card_info *card;
@@ -68,24 +71,27 @@ struct lv_session {
     char path[FIO_MAX_PATH_LENGTH];
 };
 static struct lv_session *session;
+static struct lv_frame_log *frame_log(struct lv_session *s,unsigned sequence)
+{
+    return sequence>=1 && sequence<=LV_FRAME_CAP ? &s->frames[sequence-1]:&s->frames_overflow;
+}
 static volatile unsigned requested,attempted,running,armed,stop_requested,display_setup;
 static volatile unsigned preview_enabled,preview_writing,preview_reading,preview_ready;
 static volatile unsigned capture_reading;
 static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
-static CONFIG_INT("livecomp.limit",frame_limit,2);
-static CONFIG_INT("livecomp.preview",preview_interval,0);
-/* Task selection is deliberately not persisted across boots:
- * 0=Live composite (LV resolution), 1=Full-res composite, 2=Full-res readout
- * (single full-sensor frames, the building block of the composite). */
-enum { TASK_LIVE=0,TASK_FULLRES_COMPOSITE=1,TASK_FULLRES_READOUT=2 };
-static int task;
-static int frlv_fps=7,frlv_expo,frlv_inputs=1,frlv_keep_fp;
-static const unsigned frlv_input_counts[]={1,4,8};
+/* Mode: full sensor (fullres-lv.c) or Live View resolution (this file). */
+enum { MODE_FULLRES=0,MODE_LIVEVIEW=1 };
+static CONFIG_INT("livecomp.mode",mode,MODE_FULLRES);
+/* Full-res sub-exposure: index into lc_frr_timing (fullres-regs.h). */
+static CONFIG_INT("livecomp.subexp",subexposure,LC_FRR_FPS_DEFAULT);
+static CONFIG_INT("livecomp.frames",frame_limit,0);
+static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
+/* Live View resolution: the LCD composite is refreshed at most once per
+ * second; a refresh is skipped while the previous one is still drawn. */
+#define LV_PREVIEW_INTERVAL_MS 1000u
 static unsigned trigger_ms;
-static const unsigned frame_limits[]={30,60,120};
-static const unsigned preview_intervals[]={1000,2000,4000};
-static const char *status="Movie M, normal view, 3 fps, slow shutter";
+static const char *status;   /* last result; NULL = show the setup hint */
 
 int livecomp_lv_busy(void) { return requested || attempted; }
 static void stop(unsigned kind)
@@ -239,7 +245,7 @@ static unsigned capture_vsync(unsigned unused)
     s->last_vsync=get_ms_clock();s->vsyncs++;
     int prior=s->ring.pending;
     if (prior>=0) {
-        struct lv_frame_log *f=&s->frames[s->ring.sequence[prior]-1];
+        struct lv_frame_log *f=frame_log(s,s->ring.sequence[prior]);
         f->done_ms=s->last_vsync;f->dma_state=edmac_get_state(raw_write_chan);
         f->dma_pointer=edmac_get_pointer(raw_write_chan);
         unsigned lo=physical(s->input[prior]);
@@ -267,7 +273,7 @@ static unsigned capture_vsync(unsigned unused)
          * and later present a discontinuous sequence as continuous. */
         s->error|=E_QUEUE;armed=0;sei(irq);stop(4);return CBR_RET_CONTINUE;
     }
-    struct lv_frame_log *f=&s->frames[s->ring.issued-1];
+    struct lv_frame_log *f=frame_log(s,s->ring.issued);
     f->sequence=s->ring.issued;f->slot=slot;f->start_ms=s->last_vsync;
     memset(s->input[slot]+s->bytes-8,0xa5,8);
     raw_lv_redirect_edmac(s->input[slot]);
@@ -408,7 +414,7 @@ static void evidence(struct lv_session *s)
             "Stop kinds: 1=user 2=cap 3=shutdown 4=error\n"
             "No factory capture, native JPEG decoder or per-input SD write.\n"
             "Frame callbacks and DMA checks do not prove zero sensor dead time.\n",
-            status,s->error,s->quarantined,s->saved,s->info.width,s->info.height,s->info.pitch,s->bytes,
+            status ? status:"",s->error,s->quarantined,s->saved,s->info.width,s->info.height,s->info.pitch,s->bytes,
             s->info.active_area.x1,s->info.active_area.y1,s->info.active_area.x2,s->info.active_area.y2,
             s->fps,s->tvr,s->iso,s->aperture,s->shutter,s->wb,s->kelvin,
             s->ring.issued,s->merged,s->vsyncs,s->stop_kind,s->stop_issued,
@@ -437,7 +443,7 @@ static void evidence(struct lv_session *s)
     if (!file) { s->error|=E_IO;return; }
     const char *header="sequence,slot,start_ms,done_ms,merge_us,dma_state,dma_pointer\n";
     if (FIO_WriteFile(file,header,strlen(header))!=(int)strlen(header)) s->error|=E_IO;
-    for (unsigned i=0;i<s->ring.issued;i++) {
+    for (unsigned i=0;i<s->ring.issued && i<LV_FRAME_CAP;i++) {
         struct lv_frame_log *f=&s->frames[i];
         int n=snprintf(line,sizeof(line),"%d,%d,%d,%d,%d,%d,%x\n",
             f->sequence,f->slot,f->start_ms,f->done_ms,f->merge_us,f->dma_state,f->dma_pointer);
@@ -467,10 +473,9 @@ static void finish_session(struct lv_session *s)
 static void run(void *unused)
 {
     (void)unused;
-    if (task==TASK_FULLRES_COMPOSITE || task==TASK_FULLRES_READOUT) {
-        struct lc_frlv_options o={(unsigned)frlv_fps,(unsigned)frlv_expo,
-            frlv_input_counts[frlv_inputs>=0 && frlv_inputs<3 ? frlv_inputs:1],
-            task==TASK_FULLRES_COMPOSITE,frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2],!frlv_keep_fp};
+    const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
+    if (mode==MODE_FULLRES) {
+        struct lc_frlv_options o={(unsigned)subexposure,limit};
         unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
         NotifyBox(5000,"%s",status);
         if (unsafe) { requested=0;attempted=1;running=0; }
@@ -481,8 +486,8 @@ static void run(void *unused)
     struct lv_session *s=malloc(sizeof(*s));
     if (!s) { status="No session memory; retry";goto finished; }
     memset(s,0,sizeof(*s));lc_ring_init(&s->ring);session=s;
-    s->limit=frame_limits[frame_limit>=0 && frame_limit<3 ? frame_limit:2];
-    s->preview_interval=preview_intervals[preview_interval>=0 && preview_interval<3 ? preview_interval:0];
+    s->limit=limit ? limit:~0u;
+    s->preview_interval=LV_PREVIEW_INTERVAL_MS;
     s->card=get_ml_card();s->start_ms=get_ms_clock();
     if (!s->card || !choose_path(s)) { s->error=E_IO;goto cleanup; }
     if (!lv || !is_movie_mode() || lv_dispsize!=1 || RECORDING || lens_info.job_state ||
@@ -546,7 +551,7 @@ static void run(void *unused)
             const void *source=(const void *)(uintptr_t)physical(s->input[slot]);
             if (!s->merged) memcpy(s->accumulator,source,s->bytes);
             else lc_raw14_max((void *)s->accumulator,source,s->bytes/14);
-            s->frames[sequence-1].merge_us=(unsigned)get_us_clock()-started;
+            frame_log(s,sequence)->merge_us=(unsigned)get_us_clock()-started;
             s->merged++;
             irq=cli();lc_ring_release(&s->ring,slot);sei(irq);
             update_preview(s,0);
@@ -643,51 +648,61 @@ static MENU_UPDATE_FUNC(update_lv)
         enabled ? "Armed. Close menu, then press SET in Movie Live View.":
         "Enable, close menu, then press SET to start. Normal photos do not start capture.");
 }
+static const char *setup_hint(void)
+{
+    return mode==MODE_FULLRES ?
+        "Movie M, fixed ISO/WB, x1 view, ML FPS override OFF, Global Draw OFF.":
+        "Movie M, fixed ISO/WB, x1 view, FPS override 3 fps (Low light), slowest shutter.";
+}
 static MENU_UPDATE_FUNC(update_status)
 {
     MENU_SET_VALUE("%s",running ? "Running":attempted ? "Reboot":requested ? "Starting":enabled ? "Armed":"Off");
-    MENU_SET_HELP("%s",status);
+    MENU_SET_HELP("%s",status ? status:setup_hint());
 }
+static struct menu_entry lv_children[];
+/* Show only the settings of the selected mode. */
+static void show_mode_settings(void) { lv_children[1].shidden=mode!=MODE_FULLRES; }
+static MENU_SELECT_FUNC(select_mode)
+{
+    (void)priv;(void)delta;
+    if (running) return;
+    mode=mode==MODE_FULLRES ? MODE_LIVEVIEW:MODE_FULLRES;
+    status=NULL;show_mode_settings();
+}
+static MENU_UPDATE_FUNC(update_mode)
+{
+    MENU_SET_HELP("%s",mode==MODE_FULLRES ?
+        "5208x3478 RAW. Each frame is one sub-exposure; the LCD shows the composite.":
+        "1736x697 RAW at 3 fps (Live View resolution). Fast LCD feedback.");
+}
+static MENU_UPDATE_FUNC(update_subexposure)
+{
+    MENU_SET_HELP("%s",subexposure==0 ? "Each frame 2 s. The LCD updates a quarter of the composite per frame.":
+        "Length of each frame. The LCD shows the whole composite after every frame.");
+}
+static struct menu_entry lv_children[]={
+    {.name="Mode",.priv=&mode,.max=1,.select=select_mode,.update=update_mode,
+     .choices=CHOICES("Full resolution","Live View res."),
+     .help2="Full: FPS override OFF, Global Draw OFF. LV res.: FPS override 3 fps, Low light."},
+    {.name="Sub-exposure",.priv=&subexposure,.max=LC_FRR_FPS_CHOICES-1,.update=update_subexposure,
+     .choices=CHOICES("2 s","2.5 s","3 s","4 s","5 s"),
+     .help2="Expose like an Olympus Live Composite base: ISO 100, f/8-f/16."},
+    {.name="Frame limit",.priv=&frame_limit,.max=COUNT(frame_limits)-1,
+     .choices=CHOICES("No limit","30 frames","60 frames","120 frames","240 frames"),
+     .help="Stop and save automatically after this many frames. SET stops earlier."},
+    {.name="Status",.update=update_status,
+     .help="Close the menu, press SET to start; SET again stops and saves the DNG."},
+    MENU_EOL
+};
 static struct menu_entry lv_menu[]={
     {.name="Live Composite",.priv=&enabled,.max=1,.select=toggle_enabled,.update=update_lv,
-     .help="Continuous light painting with LCD composite and DNG output.",
+     .help="Olympus-style live composite: brightest pixels accumulate into a RAW DNG.",
      .submenu_width=700,
-     .children=(struct menu_entry[]) {
-        {.name="Task",.priv=&task,.max=2,
-         .choices=CHOICES("Live composite","Full-res composite","Full-res readout"),
-         .help="Live: LV-resolution composite. Full-res: 5208x3478 composite at slow FPS.",
-         .help2="Full-res readout: single full-sensor frames (1/4/8, max-merged) to DNG."},
-        {.name="Full-res FPS",.priv=&frlv_fps,.max=7,
-         .choices=CHOICES("0.25 fps (4 s)","0.2 fps (5 s)","0.33 fps (3 s)","0.5 fps (2 s)","1 fps","3 fps","0.5 fps (A)","0.4 fps (2.5 s)"),
-         .help="Full-res frame rate = sub-exposure length at 100%.",
-         .help2="Merge ~1.7 s. 0.4 fps: preview each frame. 0.5 fps: fewer previews."},
-        {.name="Full-res exposure",.priv=&frlv_expo,.max=3,
-         .choices=CHOICES("100% of frame","50% of frame","25% of frame","12% of frame"),
-         .help="Full-res readout only: shutter as a fraction of the frame period."},
-        {.name="Focus pixels",.priv=&frlv_keep_fp,.max=1,
-         .choices=CHOICES("Fix","Keep"),
-         .help="Full-res DNG: replace the EOS M focus-pixel dot grid (Fix) or keep raw."},
-        {.name="Full-res frames",.priv=&frlv_inputs,.max=2,
-         .choices=CHOICES("1 frame","4 frames","8 frames"),
-         .help="Full-res readout only: frames captured and max-merged into the DNG."},
-        {.name="Capture limit",.priv=&frame_limit,.max=2,
-         .choices=CHOICES("30 frames","60 frames","120 frames"),
-         .help="Stop and save automatically at this limit. Q/SET stops earlier."},
-        {.name="LCD refresh",.priv=&preview_interval,.max=2,
-         .choices=CHOICES("Every second","Every 2 seconds","Every 4 seconds"),
-         .help="Every RAW frame is merged. First and final composites are displayed."},
-        {.name="Status",.update=update_status,
-         .help="Press SET to start/stop. After saving, press SET for another capture."},
-        {.name="Exposure setup",
-         .help="Movie M, manual ISO/WB, normal view. FPS override: 3 fps, Low light; slowest shutter."},
-        {.name="Output",
-         .help="LCD composite and LVCPnnnn.DNG at card root. LOG/CSV contain capture diagnostics."},
-        MENU_EOL
-     }}
+     .children=lv_children}
 };
 void livecomp_lv_poll(struct card_info *card)
 {
-    if (!menu_added) { menu_add("Shoot",lv_menu,COUNT(lv_menu));menu_added=1; }
+    if (!menu_added) { show_mode_settings();menu_add("Shoot",lv_menu,COUNT(lv_menu));menu_added=1; }
     if (!enabled || ml_shutdown_requested) { requested=0;return; }
     if (requested && !attempted && card && !gui_menu_shown() &&
         gui_state==livecomp_camera.gui_idle && lv && !LV_PAUSED && !lens_info.job_state) {
@@ -699,6 +714,7 @@ void livecomp_lv_poll(struct card_info *card)
 }
 MODULE_CONFIGS_START()
     MODULE_CONFIG(enabled)
+    MODULE_CONFIG(mode)
+    MODULE_CONFIG(subexposure)
     MODULE_CONFIG(frame_limit)
-    MODULE_CONFIG(preview_interval)
 MODULE_CONFIGS_END()

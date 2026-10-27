@@ -1,93 +1,75 @@
-Live Composite LCM41 - Canon EOS M firmware 2.0.2
+Live Composite LCM42 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M: the camera keeps exposing, and
 every new frame is merged into a running composite that keeps the brightest
 value of each pixel (light trails, light painting, star trails over a fixed
-foreground). There are two modes:
-  - Live composite: Live View resolution (1736x697), 3 fps, fast LCD feedback.
-  - Full-res composite: full sensor (5208x3478 active), 0.25-0.5 fps.
-Both save an uncompressed RAW DNG of the composite at the card root.
+foreground). The result is saved as an uncompressed RAW DNG at the card root.
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
 only that module. Enable livecomp.mo in the Modules tab and reboot.
 Keep your existing autoexec.bin and its matching EOSM_202.sym together.
 No replacement core, symbol file or other module is included or required.
-Import compatibility was checked against this repository's unmodified EOSM.202
-core; an unrelated older ML build may lack APIs and refuse to load the module.
 
 MENU (Shoot > Live Composite)
-   Live Composite: ON arms the module. Nothing starts until you press SET.
-   Task: Live composite / Full-res composite / Full-res readout
-         (resets to Live composite at every boot)
-   Full-res FPS: frame period = length of each full-res sub-exposure
-   Full-res exposure: Full-res readout only (composite always uses 100%)
-   Focus pixels: Fix (default) removes the EOS M PDAF dot grid from the DNG
-   Full-res frames: Full-res readout only (1 / 4 / 8)
-   Capture limit: 30 / 60 / 120 frames; the session saves itself at the limit
-   LCD refresh: Live composite only (every 1 / 2 / 4 s)
-   Status: Off / Armed / Starting / Running / Reboot, with the last message
+   Live Composite   ON arms the module. Nothing starts until you press SET.
+   Mode             Full resolution (5208x3478, default) or
+                    Live View res. (1736x697, 3 fps, faster LCD feedback)
+   Sub-exposure     Full resolution only: 2 / 2.5 (default) / 3 / 4 / 5 s.
+                    Each frame is one exposure of this length, with no gap
+                    between frames.
+                      2 s: the LCD updates a quarter of the picture per frame.
+                      2.5 s and longer: the whole picture after every frame.
+   Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
+                    SET always stops earlier.
+   Status           Off / Armed / Starting / Running / Reboot. Its help line
+                    shows the required camera setup or the last result.
+Only settings that apply to the selected mode are shown.
 
-FULL-RES COMPOSITE (recommended)
+FULL RESOLUTION
 Setup:
  a. Movie mode, M exposure, fixed ISO (100 recommended) and fixed WB,
     normal view (x1). Put the camera on a tripod.
  b. ML FPS override: OFF. Global Draw: OFF. No crop_rec, mlv_lite, raw video,
-    silent pictures or other RAW tools loaded/active.
- c. Each frame is one full sub-exposure as long as the frame period
-    (2.5 s at 0.4 fps): expose like an Olympus Live Composite base exposure -
-    ISO 100, stop down (f/8-f/16) so the dark background stays dark.
- d. Shoot > Live Composite: ON. Submenu:
-      Task: Full-res composite
-      Full-res FPS: 0.4 fps (2.5 s) (default, LCD updated after every frame)
-                    or 0.25 / 0.2 / 0.33 fps for longer sub-exposures.
-                    0.5 fps works, but the LCD is refreshed a quarter of the
-                    screen per frame (merging takes ~1.5-1.9 s per frame).
-      Capture limit: 30 / 60 / 120 frames
+    silent pictures or other RAW tools active.
+ c. Expose like an Olympus Live Composite base exposure for the chosen
+    sub-exposure: ISO 100, stop down (f/8-f/16) so the background stays dark.
 Run:
  1. Close the menu and press/release SET once. The camera switches to the
-    full-sensor x5 mode (about 10 s, the screen looks wrong meanwhile).
+    full-sensor mode (about 10 s; the screen looks wrong meanwhile).
  2. "Full-res composite: first exposure" appears, then the LCD shows the
-    growing composite (a low-resolution monitor view, refreshed every frame
-    at 0.4 fps or slower). Canon's own frame may flash briefly at each frame.
- 3. Press SET to stop: "Stopping: finishing current exposure". The
-    exposure in progress is completed and merged. Or wait for the limit.
- 4. The camera returns to x1 and saves LVFRnnnn.DNG (the full-res composite,
-    with Canon's WB setting as the DNG white balance), LVFRnnnn.LOG and
-    LVFRnnnn.CSV (one line per merged frame). Saving takes several seconds.
+    growing composite (a low-resolution monitor view). Canon's own image may
+    flash briefly at each frame.
+ 3. Press SET to stop: "Stopping: finishing current exposure". The exposure
+    in progress is completed and merged. Or wait for the frame limit.
+ 4. The camera returns to normal view and saves LVFRnnnn.DNG (the composite,
+    with Canon's WB setting as the DNG white balance and the EOS M focus
+    pixels removed), LVFRnnnn.LOG and LVFRnnnn.CSV. Saving takes some seconds.
  5. The final message reports frames merged and any late/skipped frames.
     Press SET again for another session; no reboot needed.
 Behaviour worth knowing:
- - Every complete frame is merged. A frame that arrives while the previous
-   merge is still running is skipped (a short gap in the trail) and counted;
-   if that happens too often the session stops early and saves what it has
-   ("Merge too slow"): choose a slower FPS.
- - Around the 5th frame Canon's Live View cuts one readout short. The partial
-   frame is still merged (the missing rows hold the previous frame, which is
-   harmless for a maximum) and logged; it does not stop the session.
- - The DNG stores the whole 5280-pixel-wide sensor raster, including the
-   optical-black border, with the active area marked for the raw converter.
+ - Merging a frame takes ~1.5-1.9 s on the camera's CPU while the next
+   exposure is already running. A frame that arrives during a merge is
+   skipped (a short gap in the trail) and counted; if that keeps happening
+   the session stops and saves ("Merge too slow"): use a longer sub-exposure.
+ - Around the 5th frame Canon cuts one readout short. That frame is still
+   merged (the missing rows hold the previous frame) and logged.
+ - The DNG holds the whole 5280-pixel-wide raster, including the optical
+   black border, with the active area marked for the raw converter.
 
-FULL-RES READOUT (single frames)
-Same setup as above. Task: Full-res readout captures 1/4/8 full-sensor frames
-at the selected FPS and exposure (100/50/25/12 % of the frame period),
-max-merges them and saves LVFRnnnn.DNG + LOG. The LCD is not adapted (cropped
-or frozen view) while it runs; only the DNG matters. SET cancels.
-
-LIVE COMPOSITE (Live View resolution)
+LIVE VIEW RESOLUTION
  1. Movie mode, manual exposure/ISO and fixed white balance; normal view.
  2. ML FPS override: 3 fps, Low light, slowest available shutter.
-    Enable Global Draw. Disable other RAW recording/capture tools.
- 3. Shoot > Live Composite: ON, Task: Live composite. Set Capture limit and
-    LCD refresh.
- 4. Close the menu, press/release SET in normal Live View to start; press SET
-    again to stop and save, or wait for the frame limit.
- 5. LVCPnnnn.DNG, LOG and CSV are saved at the card root. The DNG uses fixed
-    daylight colour metadata.
+    Global Draw ON. Other RAW recording/capture tools off.
+ 3. Mode: Live View res. Close the menu, press/release SET to start; press
+    SET again to stop and save, or wait for the frame limit.
+ 4. Every frame is merged; the LCD composite is refreshed once per second.
+    LVCPnnnn.DNG, LOG and CSV are saved at the card root (fixed daylight
+    colour metadata).
 
 START/STOP
 Normal photos never start a capture. Short SET acts on the physical release;
-long SET also works without triggering twice. Off returns Q/SET to normal.
+long SET also works without triggering twice. Off returns SET to normal.
 
 IF SOMETHING GOES WRONG
 Keep the LOG/CSV/DNG from the card root: they are written at every stage, even
@@ -98,10 +80,8 @@ restarted before the next session; the buffers are deliberately kept.
 If the camera ever freezes, remove the battery, then collect the LOG.
 
 VALIDATION
-Live composite: 76-frame camera session (LCM8) with LCD preview and DNG.
-Full-res composite: camera sessions LCM23-LCM40 at 0.25, 0.4 and 0.5 fps with
-exact merges, LCD preview, focus-pixel fix, WB and DNG; LCM41 is the same
-capture and merge code with the hardware-engine experiments removed.
-Host tests cover the register rewriting, a simulated camera session (capture,
-merge, preview scheduling, refusals, DMA quarantine), the merge kernels and
-the DNG writer. They do not prove hardware behaviour.
+Live View resolution: 76-frame camera session (LCM8).
+Full resolution: camera sessions LCM23-LCM41 with 2, 2.5 and 4 s frames
+(exact merges, LCD preview, focus-pixel fix, WB, DNG). 3 and 5 s use the same
+sensor timing as 4 s with less/more time per frame; they are not yet
+camera-tested in a composite. Host tests do not prove hardware behaviour.

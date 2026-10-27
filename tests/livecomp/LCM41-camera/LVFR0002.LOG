@@ -1,0 +1,34 @@
+LCM41 full-res composite
+Full-sensor LV readout gate
+Status: Full-res composite saved: 11 frames
+Stage_error_unsafe: 8,0,0
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Requested_fps_x1000_exposure_pct_timerA_timerB_blanking: 400,100,56b,e123,10
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,56b056b,56b,e123,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_cadence_frames_ms_max_gap_ms: 172,0,0,0
+Timer_fixes_last_seen_B: 0,e123
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 16,32
+Hook_adtg_calls_changes_blanking_seen: 103,75,32
+Hook_engio_calls_changes_drv_changes_overflow: 289,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10562
+Inputs_merged_memcpy_us: 0,11,0
+Black_OBstdev_x10_center_mean_max: 2047,301,2133,2176
+Col_band_means_16px: 2047,2047,2047,2047,2207,2377,2381,2383,2387,2391,2395,2397
+Row_band_means_8px: 2040,2051,2048,2174,2300,2304,2307,2306,2307,2310
+Saved_stage_size: 1,6,32397488
+DNG: B:/LVFR0002.DNG
+Continuous_limit_overrun_offset_missed: 1,30,0,0
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 1901185,17940,1,118966,113266
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 200942,700388
+Zoom_done_ms_late_frames: 330514,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,0,0,0
+Partials: 1
+Attempt_vsync_start_done_ms_state_pointer_tail_merge_us_changed_pct:
+DMA_trace_attempt: us_after_arm:bytes ...
+Vsync_intervals_us (last 32): 33342 2690590 2499129 2499959 2500024 2499930 2499967 2499978 2499954 2499965 2499983 2499917 2500010 2499951 2499943

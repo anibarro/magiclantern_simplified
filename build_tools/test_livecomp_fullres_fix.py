@@ -5,10 +5,10 @@
   24x30-tile positions are replaced by the mean of their 4 same-colour
   neighbours; every other sample is unchanged.
 - White-balance neutral table/mapping.
-- Optional: if LIVECOMP_QEMU_ARM points to qemu-arm, the sparse and select
-  merge kernels are checked against the reference maximum as ARMv5TE code on
+- Optional: if LIVECOMP_QEMU_ARM points to qemu-arm, the select merge
+  kernel is checked against the reference maximum as ARMv5TE code on
   an emulated ARM946 (what the camera executes). The host-side exactness
-  checks of both kernels are in test_livecomp_frlv.py.
+  check of the kernel is in test_livecomp_frlv.py.
 """
 from pathlib import Path
 import os
@@ -76,10 +76,7 @@ void _start(void){
     for (int i=0;i<B;i++){ uint16_t va[8],vb[8];
       for (int p=0;p<8;p++){ uint16_t x=rnd()&16383; va[p]=x; vb[p]=(r==0)?(rnd()&16383):((rnd()&((8<<r)-1))==0)?(rnd()&16383):(x?x-1:0);} 
       lc_raw14_pack(a+7*i,va); lc_raw14_pack(b+7*i,vb); memcpy(c+7*i,a+7*i,14);}
-    lc_raw14_max_sparse(c,b,B); lc_raw14_max(a,b,B);
-    for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(3);
     /* select kernel on the camera's CPU type: same result as the reference */
-    for (int i=0;i<7*B;i++) a[i]=(uint16_t)(rnd()&0xFFFF);
     for (int i=0;i<7*B;i++) c[i]=a[i];
     lc_raw14_max(c,b,B); lc_raw14_max_sel((uint32_t *)(void *)a,(const uint32_t *)(const void *)b,B/2);
     for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(4);

@@ -1,0 +1,19 @@
+LCM41 full-res composite
+Status: Set ML FPS override to 3 fps, Low light, slowest shutter
+Error_quarantined_saved: 1,0,0
+Width_height_pitch_bytes: 0,0,0,0
+Active_x1_y1_x2_y2: 0,0,0,0
+FPS_x1000_shutter_reciprocal_x1000: 29973,396113
+ISO_aperture_shutter_WB_kelvin: 0,0,0,0,0
+Issued_merged_vsyncs: 0,0,0
+Stop_kind_issued: 0,0
+Preview_snapshots_calls: 0,0
+Session_start_end_ms: 417617,417619
+Error bits: 1=settings 2=memory 4=DMA 8=guard 16=queue 32=timeout 64=IO 128=order 256=shutdown
+Stop kinds: 1=user 2=cap 3=shutdown 4=error
+No factory capture, native JPEG decoder or per-input SD write.
+Frame callbacks and DMA checks do not prove zero sensor dead time.
+Save_stage_written_last_return_size: 0,0,0,0
+Settings_failure_phase_mask_ms_vsync_issued: 0,0,0,0,0
+Timing_syncs_before_fps_tvr_after_fps_tvr: 0,0,0,0,0
+Preview_rendered: 0

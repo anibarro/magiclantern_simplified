@@ -8,9 +8,9 @@ Olympus-style Live Composite: continuous light painting with LCD preview and RAW
 :Summary: Live and full-sensor composite with DNG for EOS M 2.0.2
 
 Enable Shoot / Live Composite, close the menu, press SET to start, SET to stop.
-Full-res composite: 5208x3478 frames at 0.25-0.5 fps; Movie M, fixed ISO/WB,
+Full resolution: 5208x3478, 2-5 s sub-exposures; Movie M, fixed ISO/WB,
 x1 view, FPS override OFF, Global Draw OFF. Saves LVFRnnnn.DNG.
-Live composite: 1736x697 frames at 3 fps; FPS override 3 fps, Low light,
+Live View res.: 1736x697 at 3 fps; FPS override 3 fps, Low light,
 slowest shutter, Global Draw ON. Saves LVCPnnnn.DNG.
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
