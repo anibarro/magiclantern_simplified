@@ -59,7 +59,7 @@ int main(void) {
 '''
     # Check every member the module accesses in core-owned/shared structures.
     layouts={
-        'lens_info':'raw_iso wb_mode kelvin WBGain_R WBGain_G WBGain_B job_state aperture focal_len',
+        'lens_info':'raw_iso raw_aperture raw_aperture_min raw_aperture_max wb_mode kelvin WBGain_R WBGain_G WBGain_B job_state aperture focal_len',
         'raw_info':'white_level color_matrix1 calibration_illuminant1 cfa_pattern',
         'card_info':'drive_letter',
         'event':'type param arg',

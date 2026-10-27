@@ -22,6 +22,7 @@ struct event { int type,param; void *obj; int arg; };
 static unsigned initialized=1,set_release_blocked;
 #include "fullres-lv.h"
 static unsigned enabled,attempted,running,requested,trigger_ms,now,stops,frlv_phase,frlv_go;
+static volatile int frlv_adjust[LC_ADJ_COUNT];
 static int ml_shutdown_requested,menu,gui_state,lv,LV_PAUSED,movie,lv_dispsize,RECORDING,half;
 static struct { int job_state; } lens_info;
 static const char *status;
@@ -72,8 +73,16 @@ int main(void) {
     now=2300;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);      /* same press */
     assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);       /* already starting */
     frlv_go=0;assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && stops==1);
+    /* preview controls: dial = shutter, up/down = ISO, left/right = aperture, MENU = exit */
+    stops=0;
+    assert(livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && frlv_adjust[LC_ADJ_SHUTTER]==2);
+    assert(livecomp_lv_key(MODULE_KEY_PRESS_UP)==0 && livecomp_lv_key(MODULE_KEY_PRESS_DOWN)==0 && livecomp_lv_key(MODULE_KEY_PRESS_DOWN)==0 && frlv_adjust[LC_ADJ_ISO]==-1);
+    assert(livecomp_lv_key(MODULE_KEY_PRESS_RIGHT)==0 && frlv_adjust[LC_ADJ_APERTURE]==1 && !stops);
+    assert(livecomp_lv_key(MODULE_KEY_MENU)==0 && stops==1);
     stops=0;frlv_phase=LC_FRLV_COMPOSE;
     assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);
+    assert(livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && frlv_adjust[LC_ADJ_SHUTTER]==2);  /* no adjustments while compositing */
+    assert(livecomp_lv_key(MODULE_KEY_MENU)==0 && stops==1);stops=0;
     now=3000;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && stops==1 && !frlv_go);
     frlv_phase=LC_FRLV_SETUP;stops=1;
     assert(livecomp_lv_key(0)==1);

@@ -10,8 +10,14 @@ struct lc_frlv_options {
      * composite, or the cancel flag (half-shutter) to leave the preview. */
     volatile unsigned *phase;
     const volatile unsigned *go;
+    /* Preview adjustments requested by the key handler, consumed by the
+     * worker: steps of shutter (menu table), ISO (full stops), aperture
+     * (1/3 stops). NULL: no adjustments. */
+    volatile int *adjust;
+    unsigned *shutter_used;    /* out: shutter index in use at the end */
 };
 enum { LC_FRLV_SETUP=0,LC_FRLV_PREVIEW=1,LC_FRLV_COMPOSE=2 };
+enum { LC_ADJ_SHUTTER=0,LC_ADJ_ISO=1,LC_ADJ_APERTURE=2,LC_ADJ_COUNT=3 };
 /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,
     const volatile unsigned *cancel,const char **status);

@@ -26,6 +26,7 @@
 
 static volatile unsigned requested,attempted,running,stop_requested;
 static volatile unsigned frlv_phase,frlv_go;   /* shared with the worker */
+static volatile int frlv_adjust[LC_ADJ_COUNT];  /* preview adjustments, consumed by the worker */
 static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
 /* Shutter: index into lc_frr_timing (fullres-regs.h). */
@@ -78,8 +79,24 @@ static int session_key(unsigned code)
         }
         return 0;
     }
-    /* Half-shutter leaves the exposure preview (to change ISO/aperture/shutter). */
-    if (code==MODULE_KEY_PRESS_HALFSHUTTER && frlv_phase==LC_FRLV_PREVIEW && !frlv_go) { stop(1);return 0; }
+    /* Exposure preview: our own controls (Canon's stay locked in the x5
+     * full-res mode). MENU or half-shutter leaves without saving. */
+    if (frlv_phase==LC_FRLV_PREVIEW && !frlv_go) {
+        int k=-1,d=0;
+        switch (code) {
+            case MODULE_KEY_WHEEL_LEFT:  k=LC_ADJ_SHUTTER;d=-1;break;
+            case MODULE_KEY_WHEEL_RIGHT: k=LC_ADJ_SHUTTER;d=1;break;
+            case MODULE_KEY_PRESS_UP:    k=LC_ADJ_ISO;d=1;break;
+            case MODULE_KEY_PRESS_DOWN:  k=LC_ADJ_ISO;d=-1;break;
+            case MODULE_KEY_PRESS_LEFT:  k=LC_ADJ_APERTURE;d=-1;break;
+            case MODULE_KEY_PRESS_RIGHT: k=LC_ADJ_APERTURE;d=1;break;
+            case MODULE_KEY_MENU: case MODULE_KEY_PRESS_HALFSHUTTER: case MODULE_KEY_TRASH:
+                stop(1);return 0;
+        }
+        if (k>=0) { frlv_adjust[k]+=d;return 0; }
+    }
+    /* MENU also stops the composite (and saves), like SET. */
+    if (code==MODULE_KEY_MENU && frlv_phase==LC_FRLV_COMPOSE) { stop(1);return 0; }
     /* Unmapped/internal events must continue to the core. */
     return code==0 || (int)code<0;
 }
@@ -93,10 +110,13 @@ static void run(void *unused)
 {
     (void)unused;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
-    struct lc_frlv_options o={(unsigned)shutter,limit,&frlv_phase,&frlv_go};
+    unsigned used=(unsigned)shutter;
+    struct lc_frlv_options o={(unsigned)shutter,limit,&frlv_phase,&frlv_go,frlv_adjust,&used};
     frlv_go=0;
+    for (unsigned k=0;k<LC_ADJ_COUNT;k++) frlv_adjust[k]=0;
     unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
     frlv_phase=LC_FRLV_SETUP;
+    shutter=(int)used;          /* a shutter chosen in the preview is kept */
     NotifyBox(5000,"%s",status);
     /* Uncertain DMA ownership: buffers stay allocated, no new session. */
     if (unsafe) { requested=0;attempted=1;running=0;return; }
@@ -141,7 +161,8 @@ static struct menu_entry lv_children[]={
      .choices=CHOICES("No limit","30 frames","60 frames","120 frames","240 frames"),
      .help="Stop and save automatically after this many frames. SET stops earlier."},
     {.name="Status",.update=update_status,
-     .help="SET: exposure preview. SET again: composite. SET again: stop and save."},
+     .help="SET: preview (dial shutter, up/down ISO, left/right f, MENU exit).",
+     .help2="SET in the preview: start the composite. SET again: stop and save."},
     MENU_EOL
 };
 static struct menu_entry lv_menu[]={

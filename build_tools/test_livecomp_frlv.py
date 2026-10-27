@@ -102,7 +102,7 @@ STUB = r'''
 int is_camera(const char *m,const char *f);
 struct card_info { const char *drive_letter; };
 struct raw_info { int white_level; uint32_t cfa_pattern; int32_t color_matrix1[18]; int calibration_illuminant1; };
-struct lens_info_t { int raw_iso,aperture,focal_len,job_state,wb_mode,kelvin; unsigned WBGain_R,WBGain_G,WBGain_B; };
+struct lens_info_t { int raw_iso,aperture,focal_len,job_state,wb_mode,kelvin; unsigned WBGain_R,WBGain_G,WBGain_B; int raw_aperture,raw_aperture_min,raw_aperture_max; };
 extern struct raw_info raw_info; extern struct lens_info_t lens_info;
 extern int lv,LV_PAUSED,RECORDING,lv_dispsize,ml_shutdown_requested,icu_uilock;
 extern uint32_t raw_write_chan;
@@ -130,19 +130,28 @@ int raw_lv_is_enabled(void); int fps_get_current_x1000(void); struct card_info *
 void powersave_prohibit(void); void powersave_permit(void); void gui_uilock(int l);
 int raw2iso(int r);
 void AbortEDmac(unsigned ch); int get_global_draw_setting(void);
+#define FONT(f,fg,bg) ((f)|((fg)<<8)|((bg)<<16))
+#define FONT_MED 1
+#define FONT_SMALL 2
+#define COLOR_WHITE 1
+#define COLOR_BLACK 2
+void bmp_printf(uint32_t font,int x,int y,const char *fmt,...); void clrscr(void);
+int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap);
+static inline uint32_t cli(void){ return 0; } static inline void sei(uint32_t x){ (void)x; }
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
 '''
 
 SIM = r'''
 #include <assert.h>
+#include <stdarg.h>
 #include "stub.h"
 #include "camera-profile.h"
 #include "fullres-lv.h"
 #include "fullres-regs.h"
 struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0}}; /* host: no alias bit, no LCD */
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
-struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024};
+struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024,40,27,80};
 int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock,battery_level_bars=3;
 uint32_t raw_write_chan=0x12;
 static struct card_info card={"B"};
@@ -196,6 +205,11 @@ int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){
 struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
 int raw2iso(int r){ return r; }
+static int hud_draws,hud_clears;static char hud_text[128];
+void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x; if (y<40) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
+void clrscr(void){ hud_clears++; }
+int lens_set_rawiso(int iso){ lens_info.raw_iso=iso; return 1; }
+int lens_set_rawaperture(int ap){ lens_info.raw_aperture=ap; lens_info.aperture=ap; return 1; }
 static int aborts,gd_setting,abort_fails;
 void AbortEDmac(unsigned ch){ (void)ch; aborts++; if (abort_fails) return; dma_state=0; slurp_armed=0; }
 int get_global_draw_setting(void){ return gd_setting; }
@@ -226,11 +240,13 @@ static void canon_reconfigure(unsigned z)
 }
 void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
-static unsigned cancel_at,go_at,battery_at,lose_mode_at;static volatile unsigned *cancel_ptr,*go_ptr;
+static unsigned cancel_at,go_at,battery_at,lose_mode_at,adjust_at;static volatile unsigned *cancel_ptr,*go_ptr;
+static volatile int *adjust_ptr;static int adjust_k,adjust_d;
 static void frame(void)
 {
     if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
     if (go_at && go_ptr && slurp_frames>=(int)go_at) *go_ptr=1;
+    if (adjust_at && adjust_ptr && slurp_frames>=(int)adjust_at) { adjust_ptr[adjust_k]+=adjust_d;adjust_at=0; }
     if (battery_at && slurp_frames>=(int)battery_at) battery_level_bars=0;
     /* Canon leaves the full-res timing: window back to the x1 value, the
      * armed 32 MB slurp never completes (until aborted). */
@@ -267,7 +283,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={1,6,0,0};   /* 2.5 s shutter, stop after 6 frames, no preview */
+    struct lc_frlv_options o={1,6,0,0,0,0};   /* 2.5 s shutter, stop after 6 frames, no preview */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -362,6 +378,26 @@ int main(void)
       unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
       printf("preview cancel: %s\n",status);
       assert(!unsafe && strstr(status,"Preview ended") && !dng_created && zoom==1 && unpatched==4);
+      /* Preview adjustments: ISO +1 stop and aperture +1/3 are applied in
+       * place; a shutter step re-enters x5 with the new timers and the
+       * session goes on with the new shutter (reported back). */
+      cancel=0;cancel_at=0;
+      static volatile int adj[LC_ADJ_COUNT];unsigned used=99;o.adjust=adj;o.shutter_used=&used;
+      reset();dng_size_ok=2048+bytes;go=0;lens_info.raw_iso=72;lens_info.raw_aperture=40;
+      adjust_ptr=adj;adjust_k=LC_ADJ_ISO;adjust_d=1;adjust_at=2;go_at=4;go_ptr=&go;
+      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+      printf("preview ISO: %s iso=%d hud='%s'\n",status,lens_info.raw_iso,hud_text);
+      if (!strstr(status,"saved")) printf("%.900s\n",last_log);
+      assert(!unsafe && lens_info.raw_iso==80 && strstr(status,"saved") && hud_clears>0 && used==1);
+      reset();dng_size_ok=2048+bytes;go=0;adjust_k=LC_ADJ_APERTURE;adjust_d=1;adjust_at=2;go_at=4;
+      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+      assert(!unsafe && lens_info.raw_aperture==43);
+      reset();dng_size_ok=2048+bytes;go=0;adjust_k=LC_ADJ_SHUTTER;adjust_d=2;adjust_at=2;go_at=7;
+      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+      printf("preview shutter: %s used=%u hud='%s'\n",status,used,hud_text);
+      assert(!unsafe && used==3 && strstr(status,"saved") && strstr(last_log,"Preview_adjustments_shutter_reentries: 1,1")
+             && strstr(last_log,"Shutter_ms_timerA_timerB_blanking: 4000,") && zoom==1 && unpatched==4);
+      o.adjust=0;o.shutter_used=0;go_at=0;lens_info.raw_iso=72;lens_info.aperture=lens_info.raw_aperture=40;
       cancel=0;cancel_at=0;o.phase=0;o.go=0; }
     /* Battery reaches its last level: the session stops and saves. */
     reset();o.limit=0;battery_at=5;dng_size_ok=2048+bytes;
@@ -402,7 +438,7 @@ def main():
         run(REGS_TEST, 'regs', tmp)
         (tmp / 'stub.h').write_text(STUB)
         for h in ('dryos.h', 'module.h', 'lens.h', 'raw.h', 'mem.h', 'patch.h', 'edmac.h', 'fps.h',
-                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h', 'notify_box.h', 'zebra.h'):
+                  'shoot.h', 'propvalues.h', 'gui-common.h', 'powersave.h', 'vram.h', 'notify_box.h', 'zebra.h', 'bmp.h'):
             (tmp / h).write_text('#include "stub.h"\n')
         src = (MOD / 'fullres-lv.c').read_text()
         # 32-bit Canon pointers: on the 64-bit host keep addresses as uintptr_t.
