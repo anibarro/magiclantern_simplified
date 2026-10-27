@@ -80,7 +80,7 @@ static int session_key(unsigned code)
         return 0;
     }
     /* Exposure preview: our own controls (Canon's stay locked in the x5
-     * full-res mode). MENU or half-shutter leaves without saving. */
+     * full-res mode). MENU leaves without saving. */
     if (frlv_phase==LC_FRLV_PREVIEW && !frlv_go) {
         int k=-1,d=0;
         switch (code) {
@@ -90,7 +90,9 @@ static int session_key(unsigned code)
             case MODULE_KEY_PRESS_DOWN:  k=LC_ADJ_ISO;d=-1;break;
             case MODULE_KEY_PRESS_LEFT:  k=LC_ADJ_APERTURE;d=-1;break;
             case MODULE_KEY_PRESS_RIGHT: k=LC_ADJ_APERTURE;d=1;break;
-            case MODULE_KEY_MENU: case MODULE_KEY_PRESS_HALFSHUTTER: case MODULE_KEY_TRASH:
+            /* MENU only: on the EOS M the half-shutter arrives with the same
+             * code as LEFT (LCM46 camera test), so it cannot mean "exit". */
+            case MODULE_KEY_MENU:
                 stop(1);return 0;
         }
         if (k>=0) { frlv_adjust[k]+=d;return 0; }

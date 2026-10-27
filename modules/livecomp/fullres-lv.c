@@ -178,7 +178,7 @@ void livecomp_frlv_vsync(void)
 }
 
 /* Keys seen while a session runs (diagnostics, LOG): ms, code, phase, result. */
-#define FRLV_KEYS 24u
+#define FRLV_KEYS 64u
 static struct { uint32_t ms;uint16_t code;uint8_t phase,result; } key_log[FRLV_KEYS];
 static volatile unsigned key_n;
 void livecomp_frlv_key_log(unsigned code,unsigned phase,unsigned result)
@@ -546,7 +546,7 @@ static void preview_hud(const struct frlv_result *r,unsigned period_ms,unsigned 
     bmp_printf(FONT(FONT_MED,COLOR_WHITE,COLOR_BLACK),10,8,"%s",a);
     bmp_printf(FONT(FONT_SMALL,COLOR_WHITE,COLOR_BLACK),10,44,"%s",starting ?
         "Starting the composite with the next frame...                         ":
-        "SET: start   MENU: exit   dial: shutter   up/down: ISO   left/right: f");
+        "SET: start   MENU: exit   dial: shutter   up/down: ISO   left/right: f ");
 }
 static void preview_hud_clear(void) { clrscr(); }
 /* Next/previous 1/3-stop raw aperture (Canon codes: 8 per stop, thirds at

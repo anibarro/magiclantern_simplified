@@ -40,12 +40,13 @@ static unsigned livecomp_raw_key(unsigned context)
     if (event->type!=0) return 1;
     const int press=event->param==livecomp_camera.q_set_event || event->param==livecomp_camera.set_press_event;
     const int release=event->param==livecomp_camera.set_release_event;
+    /* Diagnostics: every raw event while a session runs (key mapping). */
+    if (livecomp_lv_running() && event->param!=105) livecomp_frlv_key_log(0x1000u|((unsigned)event->param&0xFFF),0,9);
     if ((press || release) && livecomp_lv_running()) {
         /* While a session runs, Canon never sees SET/Q: in the full-res x5
          * mode it would act on it (LCM43: a passed SET release is the likely
          * cause of Canon leaving the mode). One click is one action: the
          * press if it arrives, otherwise the physical release. */
-        livecomp_frlv_key_log(0x1000u|(unsigned)event->param,0,IS_FAKE(event) ? 2u:0u);
         if (press) { set_release_blocked=1;livecomp_lv_key(MODULE_KEY_Q);return 0; }
         if (IS_FAKE(event)) return 0;
         if (set_release_blocked) { set_release_blocked=0;return 0; }

@@ -72,7 +72,7 @@ int main(void) {
     now=2200;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && frlv_go && !stops && trigger_ms==2200);
     now=2300;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);      /* same press */
     assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);       /* already starting */
-    frlv_go=0;assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && stops==1);
+    frlv_go=0;assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && stops==0);  /* same code as LEFT on EOS M: not an exit */
     /* preview controls: dial = shutter, up/down = ISO, left/right = aperture, MENU = exit */
     stops=0;
     assert(livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && livecomp_lv_key(MODULE_KEY_WHEEL_RIGHT)==0 && frlv_adjust[LC_ADJ_SHUTTER]==2);
