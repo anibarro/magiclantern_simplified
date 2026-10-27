@@ -5,6 +5,5 @@ void livecomp_lv_poll(struct card_info *card);
 int livecomp_lv_busy(void);
 int livecomp_lv_key(unsigned code);
 unsigned livecomp_lv_vsync(unsigned context);
-unsigned livecomp_lv_preview(unsigned context);
 void livecomp_lv_shutdown(void);
 #endif

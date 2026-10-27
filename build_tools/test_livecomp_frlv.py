@@ -35,19 +35,21 @@ int main(void) {
     struct lc_frr_config c; struct lc_frr_stats st; memset(&st,0,sizeof(st));
     lc_frr_configure(&c,LC_FRR_FPS_DEFAULT);
     assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==57635 && c.blanking==10);
-    for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {   /* menu order: 2, 2.5, 3, 4, 5 s */
-        static const unsigned ms[]={2000,2500,3000,4000,5000};
-        { unsigned got=1000000/lc_frr_timing[i].fps_x1000; assert(got>=ms[i] && got<=ms[i]+5); }  /* 0.333 fps -> 3003 ms */
+    for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {   /* menu order, 2 s ... 60 s */
+        static const unsigned ms[]={2000,2500,3000,4000,5000,6000,8000,10000,13000,15000,20000,25000,30000,40000,50000,60000};
+        assert(LC_FRR_FPS_CHOICES==sizeof(ms)/sizeof(*ms) && lc_frr_timing[i].period_ms==ms[i]);
+        /* timer A = k x 1388 - 1: the reference line time stretched k times */
+        assert((lc_frr_timing[i].timer_a+1)%1388==0 && lc_frr_timing[i].timer_a<=0xFFFF);
         lc_frr_configure(&c,i);assert(c.blanking==10);          /* 100% exposure, no gap */
     }
+    assert(LC_FRR_TESTED<=LC_FRR_FPS_CHOICES && LC_FRR_FPS_DEFAULT<LC_FRR_TESTED);
     /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8), 3 fps. */
     c.timer_a=0x56B;c.timer_b=0x1E03;c.blanking=lc_frr_blanking(0x1E03,100);
-    /* fps = 32 MHz / ((A+1)(B+1)) */
+    /* period = (A+1)(B+1) / 32 MHz, within 0.1% of the menu value */
     for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {
         const struct lc_frr_timing *t=&lc_frr_timing[i];
-        double fps=32e6/((double)(t->timer_a+1)*(t->timer_b+1));
-        double want=t->fps_x1000/1000.0;
-        assert(fps>want*0.998 && fps<want*1.002 && t->timer_b<=0xFFFF && t->timer_a>=LC_FRR_TIMER_A);
+        double period=(double)(t->timer_a+1)*(t->timer_b+1)/32e6,want=t->period_ms/1000.0;
+        assert(period>want*0.999 && period<want*1.001 && t->timer_b<=0xFFFF && t->timer_a>=LC_FRR_TIMER_A);
     }
     for (uint32_t v=0;v<0x10000;v+=7) assert(lc_frr_nrzi_decode(lc_frr_nrzi_encode(v))==v);
     assert(lc_frr_blanking(0x1E03,100)==10 && lc_frr_blanking(0x1E03,50)==0x1E04-0x1E04/2);
@@ -140,7 +142,7 @@ SIM = r'''
 struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0}}; /* host: no alias bit, no LCD */
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
 struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024};
-int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock;
+int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock,battery_level_bars=3;
 uint32_t raw_write_chan=0x12;
 static struct card_info card={"B"};
 /* Simulated camera state */
@@ -220,10 +222,12 @@ static void canon_reconfigure(unsigned z)
 }
 void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
-static unsigned cancel_at;static volatile unsigned *cancel_ptr;
+static unsigned cancel_at,go_at,battery_at;static volatile unsigned *cancel_ptr,*go_ptr;
 static void frame(void)
 {
     if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
+    if (go_at && go_ptr && slurp_frames>=(int)go_at) *go_ptr=1;
+    if (battery_at && slurp_frames>=(int)battery_at) battery_level_bars=0;
     if (stall_after_zoom && zoom==5) return;
     if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); last_written=1000; }
     else if (slurp_armed && !dma_stuck) {
@@ -256,7 +260,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={1,6};   /* 2.5 s sub-exposures, stop after 6 frames */
+    struct lc_frlv_options o={1,6,0,0};   /* 2.5 s shutter, stop after 6 frames, no preview */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -270,7 +274,7 @@ int main(void)
     assert(strstr(status,"saved: 6 frames") && dng_bytes==2048+bytes && locked==0 && csv_written);
     assert(!strstr(last_log,"HW_"));               /* no engine code in the product */
     /* The 2.5 s timers (A 0x56B, B 57635 = 0xE123) are what the hooks apply. */
-    assert(strstr(last_log,"Requested_fps_x1000_timerA_timerB_blanking: 400,56b,e123,"));
+    assert(strstr(last_log,"Shutter_ms_timerA_timerB_blanking: 2500,56b,e123,"));
     /* Refusals before any hook: FPS override on, other RAW user. */
     reset();fps_now=3000;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && nhooks==0 && strstr(status,"FPS"));
@@ -294,7 +298,7 @@ int main(void)
     assert(unsafe && zoom==1 && frees<allocs && a0==0);
     /* Every sub-exposure choice runs; slower ones have longer timeouts. */
     for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {
-        reset();o.fps_index=i;sim_period_us=1000000000u/lc_frr_timing[i].fps_x1000;dng_size_ok=2048+bytes;
+        reset();o.fps_index=i;sim_period_us=lc_frr_timing[i].period_ms*1000u;dng_size_ok=2048+bytes;
         unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
         printf("sub-exposure %u: %s\n",i,status);
         assert(!unsafe && strstr(status,"saved: 6 frames") && zoom==1);
@@ -329,7 +333,28 @@ int main(void)
       assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u,%u",&bands,&skip,&behind,&strips)==4);
       printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
       assert(!unsafe && strstr(status,"saved") && strips>=2); }
-    sim_slow=1;
+    sim_slow=1;o.fps_index=1;sim_period_us=2500000;o.limit=6;
+    /* Exposure preview: 3 frames shown, SET, the frame in flight at the press
+     * is skipped, then 6 frames composited. */
+    { static volatile unsigned phase,go;
+      reset();o.phase=&phase;o.go=&go;go=0;go_at=3;go_ptr=&go;dng_size_ok=2048+bytes;
+      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+      unsigned pf=0,clip=0;const char *k=strstr(last_log,"Preview_frames_last_clip_pct_x10: ");
+      assert(k && sscanf(k,"Preview_frames_last_clip_pct_x10: %u,%u",&pf,&clip)==2);
+      printf("preview: %s (preview frames %u, captured %d)\n",status,pf,slurp_frames);
+      assert(!unsafe && strstr(status,"saved: 6 frames") && pf>=3 && slurp_frames>=(int)pf+6+1);
+      /* Leaving the preview (half-shutter = cancel) saves nothing. */
+      reset();go=0;go_at=0;cancel_at=4;cancel_ptr=&cancel;
+      unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+      printf("preview cancel: %s\n",status);
+      assert(!unsafe && strstr(status,"Preview ended") && !dng_created && zoom==1 && unpatched==4);
+      cancel=0;cancel_at=0;o.phase=0;o.go=0; }
+    /* Battery reaches its last level: the session stops and saves. */
+    reset();o.limit=0;battery_at=5;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("battery: %s\n",status);
+    assert(!unsafe && strstr(status,"Battery low: composite saved") && strstr(last_log,"battery_start_end_stop: 72,40,3,0,1"));
+    battery_at=0;battery_level_bars=3;o.limit=6;
     printf("sim ok\n");return 0;
 }
 '''

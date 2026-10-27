@@ -5,13 +5,13 @@ Olympus-style Live Composite: continuous light painting with LCD preview and RAW
 
 :Author: LC1 prototype authors; module port assisted by OpenAI Codex; full-res composite assisted by Anthropic Claude
 :License: GPL
-:Summary: Live and full-sensor composite with DNG for EOS M 2.0.2
+:Summary: Full-sensor live composite with DNG for EOS M 2.0.2
 
-Enable Shoot / Live Composite, close the menu, press SET to start, SET to stop.
-Full resolution: 5208x3478, 2-5 s sub-exposures; Movie M, fixed ISO/WB,
-x1 view, FPS override OFF, Global Draw OFF. Saves LVFRnnnn.DNG.
-Live View res.: 1736x697 at 3 fps; FPS override 3 fps, Low light,
-slowest shutter, Global Draw ON. Saves LVCPnnnn.DNG.
+Full-sensor (5208x3478) composite, 2-60 s shutter, RAW DNG output.
+Movie M, fixed ISO/WB, x1 view, FPS override OFF, Global Draw OFF.
+Set ISO and aperture on the camera, the shutter in this menu.
+SET: exposure preview. SET: start. SET: stop and save LVFRnnnn.DNG.
+Half-shutter leaves the preview. Low battery stops and saves.
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
 Standalone module
@@ -32,7 +32,5 @@ livecomp.mo. The validation core is never included in the install ZIP.
 Validation
 ----------
 
-LCM8 captured 76 Live View frames with LCD preview and DNG output on camera.
-The full-res composite ran on camera at 0.25, 0.4 and 0.5 fps (LCM23-LCM40)
-with exact merges, preview and DNG. Short SET is handled on release; long SET
-remains available.
+The full-res composite ran on camera with 2, 2.5 and 4 s frames (LCM23-LCM42)
+with exact merges, preview and DNG. 6-60 s shutters still need a camera run.

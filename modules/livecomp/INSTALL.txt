@@ -1,87 +1,73 @@
-Live Composite LCM42 - Canon EOS M firmware 2.0.2
+Live Composite LCM43 - Canon EOS M firmware 2.0.2
 
-Olympus-style Live Composite for the EOS M: the camera keeps exposing, and
-every new frame is merged into a running composite that keeps the brightest
-value of each pixel (light trails, light painting, star trails over a fixed
-foreground). The result is saved as an uncompressed RAW DNG at the card root.
+Olympus-style Live Composite for the EOS M at full sensor resolution
+(5208x3478): the camera keeps exposing frames of the chosen shutter speed,
+and every frame is merged into a composite that keeps the brightest value
+of each pixel (light trails, light painting, star trails over a fixed
+foreground). The result is an uncompressed RAW DNG at the card root.
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
 only that module. Enable livecomp.mo in the Modules tab and reboot.
 Keep your existing autoexec.bin and its matching EOSM_202.sym together.
-No replacement core, symbol file or other module is included or required.
+
+CAMERA SETUP
+ - Movie mode, M exposure, fixed ISO (not Auto; 100 recommended), fixed WB,
+   normal view (x1). Camera on a tripod.
+ - Aperture and ISO: set them with the camera's own controls before
+   starting. They stay fixed for the whole session.
+ - ML FPS override OFF, Global Draw OFF, no other RAW tools (crop_rec,
+   mlv_lite, raw video, silent pictures).
 
 MENU (Shoot > Live Composite)
    Live Composite   ON arms the module. Nothing starts until you press SET.
-   Mode             Full resolution (5208x3478, default) or
-                    Live View res. (1736x697, 3 fps, faster LCD feedback)
-   Sub-exposure     Full resolution only: 2 / 2.5 (default) / 3 / 4 / 5 s.
-                    Each frame is one exposure of this length, with no gap
-                    between frames.
-                      2 s: the LCD updates a quarter of the picture per frame.
+   Shutter          2 s ... 60 s (default 2.5 s): the exposure of every
+                    frame; frames follow each other with no gap. The right
+                    side shows the camera's ISO and aperture.
+                      2 s: the LCD shows a quarter of the picture per frame.
                       2.5 s and longer: the whole picture after every frame.
+                    2-5 s are camera-tested. 6-60 s are marked "not yet
+                    tested" until a camera run confirms them.
+                    Shorter shutters (Olympus goes down to 1/2 s) are not
+                    offered: merging a frame takes ~1.5-1.9 s on the CPU,
+                    so they would leave gaps in the trails.
    Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
-                    SET always stops earlier.
-   Status           Off / Armed / Starting / Running / Reboot. Its help line
-                    shows the required camera setup or the last result.
-Only settings that apply to the selected mode are shown.
+   Status           Off / Armed / Starting / Running / Reboot, with the
+                    setup reminder or the last result.
 
-FULL RESOLUTION
-Setup:
- a. Movie mode, M exposure, fixed ISO (100 recommended) and fixed WB,
-    normal view (x1). Put the camera on a tripod.
- b. ML FPS override: OFF. Global Draw: OFF. No crop_rec, mlv_lite, raw video,
-    silent pictures or other RAW tools active.
- c. Expose like an Olympus Live Composite base exposure for the chosen
-    sub-exposure: ISO 100, stop down (f/8-f/16) so the background stays dark.
-Run:
- 1. Close the menu and press/release SET once. The camera switches to the
-    full-sensor mode (about 10 s; the screen looks wrong meanwhile).
- 2. "Full-res composite: first exposure" appears, then the LCD shows the
-    growing composite (a low-resolution monitor view). Canon's own image may
-    flash briefly at each frame.
- 3. Press SET to stop: "Stopping: finishing current exposure". The exposure
-    in progress is completed and merged. Or wait for the frame limit.
- 4. The camera returns to normal view and saves LVFRnnnn.DNG (the composite,
-    with Canon's WB setting as the DNG white balance and the EOS M focus
-    pixels removed), LVFRnnnn.LOG and LVFRnnnn.CSV. Saving takes some seconds.
- 5. The final message reports frames merged and any late/skipped frames.
-    Press SET again for another session; no reboot needed.
-Behaviour worth knowing:
- - Merging a frame takes ~1.5-1.9 s on the camera's CPU while the next
-   exposure is already running. A frame that arrives during a merge is
-   skipped (a short gap in the trail) and counted; if that keeps happening
-   the session stops and saves ("Merge too slow"): use a longer sub-exposure.
+RUN
+ 1. Close the menu and press/release SET. The camera switches to the
+    full-sensor mode (about 10 s; for long shutters the first frame takes
+    as long as the shutter).
+ 2. EXPOSURE PREVIEW: every frame is shown as exposed, nothing is recorded.
+    The message shows shutter, ISO, aperture and the share of clipped
+    highlights. Too bright or too dark? Half-press the shutter button to
+    leave, change ISO/aperture/shutter, and press SET again.
+ 3. Press SET to start the composite. The frame being exposed at that
+    moment is discarded; the next one is the base exposure.
+ 4. The LCD shows the growing composite. Press SET to stop: the exposure in
+    progress is completed and merged. Or wait for the frame limit.
+ 5. The camera returns to normal view and saves LVFRnnnn.DNG (composite,
+    camera WB as DNG white balance, EOS M focus pixels removed), .LOG and
+    .CSV. Press SET again for another session; no reboot needed.
+
+BATTERY
+When the battery indicator drops to its last (red) level during a session,
+the session stops like SET and the composite is saved while there is still
+power for the card write ("Battery low: composite saved").
+
+GOOD TO KNOW
+ - A frame that arrives while the previous merge is still running is skipped
+   (a short gap) and counted; if that keeps happening the session stops and
+   saves ("Merge too slow"): use a longer shutter.
  - Around the 5th frame Canon cuts one readout short. That frame is still
    merged (the missing rows hold the previous frame) and logged.
- - The DNG holds the whole 5280-pixel-wide raster, including the optical
-   black border, with the active area marked for the raw converter.
-
-LIVE VIEW RESOLUTION
- 1. Movie mode, manual exposure/ISO and fixed white balance; normal view.
- 2. ML FPS override: 3 fps, Low light, slowest available shutter.
-    Global Draw ON. Other RAW recording/capture tools off.
- 3. Mode: Live View res. Close the menu, press/release SET to start; press
-    SET again to stop and save, or wait for the frame limit.
- 4. Every frame is merged; the LCD composite is refreshed once per second.
-    LVCPnnnn.DNG, LOG and CSV are saved at the card root (fixed daylight
-    colour metadata).
-
-START/STOP
-Normal photos never start a capture. Short SET acts on the physical release;
-long SET also works without triggering twice. Off returns SET to normal.
+ - The DNG holds the whole 5280-pixel-wide raster with the active area
+   marked for the raw converter.
 
 IF SOMETHING GOES WRONG
-Keep the LOG/CSV/DNG from the card root: they are written at every stage, even
-when the session stops early. A refusal message (wrong mode, FPS override on,
-another RAW tool active) changes nothing: fix the setting and press SET again.
-Only if Status says "Reboot" (RAW DMA ownership uncertain) must the camera be
-restarted before the next session; the buffers are deliberately kept.
-If the camera ever freezes, remove the battery, then collect the LOG.
-
-VALIDATION
-Live View resolution: 76-frame camera session (LCM8).
-Full resolution: camera sessions LCM23-LCM41 with 2, 2.5 and 4 s frames
-(exact merges, LCD preview, focus-pixel fix, WB, DNG). 3 and 5 s use the same
-sensor timing as 4 s with less/more time per frame; they are not yet
-camera-tested in a composite. Host tests do not prove hardware behaviour.
+Keep the LOG/CSV/DNG from the card root: they are written at every stage. A
+refusal message (wrong mode, Auto ISO, FPS override on, another RAW tool)
+changes nothing: fix it and press SET again. Only if Status says "Reboot"
+(RAW DMA ownership uncertain) must the camera be restarted. If the camera
+ever freezes, remove the battery, then collect the LOG.

@@ -57,10 +57,9 @@ int main(void) {
 '''
     # Check every member the module accesses in core-owned/shared structures.
     layouts={
-        'lens_info':'raw_iso raw_aperture raw_shutter wb_mode kelvin WBGain_R WBGain_B wbs_gm wbs_ba job_state aperture focal_len',
-        'raw_info':'buffer width height pitch frame_size bits_per_pixel black_level white_level active_area dng_active_area color_matrix1 calibration_illuminant1 cfa_pattern',
+        'lens_info':'raw_iso wb_mode kelvin WBGain_R WBGain_G WBGain_B job_state aperture focal_len',
+        'raw_info':'white_level color_matrix1 calibration_illuminant1 cfa_pattern',
         'card_info':'drive_letter',
-        'display_filter_buffers':'src_buf dst_buf',
         'event':'type param arg',
     }
     entries=[]

@@ -11,6 +11,7 @@ struct lc_dng_metadata {
     uint32_t width,height,pitch,bytes,black,white,cfa,active[4];
     int32_t matrix[18];
     uint32_t iso,tvr,aperture,focal,fps,illuminant;
+    uint32_t exposure_ms;  /* nonzero: ExposureTime = exposure_ms/1000 s (long shutters) */
     int32_t neutral[3];   /* AsShotNeutral x1e6 (R,G,B); all zero = fixed daylight */
 };
 static void lc_dng_u16(uint8_t *p,uint32_t v) { p[0]=v;p[1]=v>>8; }
@@ -83,7 +84,9 @@ static int lc_dng_header(uint8_t *h,const struct lc_dng_metadata *m)
     lc_dng_u32(v,m->fps);lc_dng_u32(v+4,1000);lc_dng_entry(&b,51044,10,1,v,8);
     if (b.entry!=10+30*12) return 0;
     lc_dng_u16(h+512,4);b.entry=514;
-    lc_dng_u32(v,1000);lc_dng_u32(v+4,m->tvr);lc_dng_entry(&b,33434,5,1,v,8);
+    if (m->exposure_ms) { lc_dng_u32(v,m->exposure_ms);lc_dng_u32(v+4,1000); }
+    else { lc_dng_u32(v,1000);lc_dng_u32(v+4,m->tvr); }
+    lc_dng_entry(&b,33434,5,1,v,8);
     lc_dng_u32(v,m->aperture);lc_dng_u32(v+4,10);lc_dng_entry(&b,33437,5,1,v,8);
     lc_dng_scalar(&b,34855,3,m->iso);
     lc_dng_u32(v,m->focal);lc_dng_u32(v+4,1);lc_dng_entry(&b,37386,5,1,v,8);

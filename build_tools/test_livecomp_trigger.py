@@ -20,7 +20,8 @@ struct lc_camera_profile livecomp_camera;
 struct event { int type,param; void *obj; int arg; };
 #define IS_FAKE(e) ((e)->arg == -123456)
 static unsigned initialized=1,set_release_blocked;
-static unsigned enabled,attempted,running,requested,trigger_ms,display_setup,now,stops;
+#include "fullres-lv.h"
+static unsigned enabled,attempted,running,requested,trigger_ms,now,stops,frlv_phase,frlv_go;
 static int ml_shutdown_requested,menu,gui_state,lv,LV_PAUSED,movie,lv_dispsize,RECORDING,half;
 static struct { int job_state; } lens_info;
 static const char *status;
@@ -60,7 +61,18 @@ int main(void) {
     running=attempted=1;requested=0;
     now=1100;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);
     now=1600;assert(livecomp_lv_key(MODULE_KEY_Q)==0 && stops==1);
-    display_setup=1;assert(livecomp_lv_key(MODULE_KEY_INFO)==1);display_setup=0;
+    assert(livecomp_lv_key(MODULE_KEY_INFO)==0);   /* other keys are held while running */
+    /* Exposure preview: SET starts the composite (once), half-shutter
+     * cancels; during the composite SET stops and half-shutter does nothing. */
+    stops=0;frlv_phase=LC_FRLV_PREVIEW;frlv_go=0;
+    now=2200;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && frlv_go && !stops && trigger_ms==2200);
+    now=2300;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);      /* same press */
+    assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);       /* already starting */
+    frlv_go=0;assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && stops==1);
+    stops=0;frlv_phase=LC_FRLV_COMPOSE;
+    assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==0 && !stops);
+    now=3000;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && stops==1 && !frlv_go);
+    frlv_phase=LC_FRLV_SETUP;stops=1;
     assert(livecomp_lv_key(0)==1);
     running=0;assert(livecomp_lv_key(MODULE_KEY_Q)==1 && !requested); /* reboot guard */
     /* Real physical down in idle LV was consumed upstream. Release survives. */
@@ -94,7 +106,7 @@ int main(void) {
         subprocess.run([os.environ.get('CC','cc'),'-std=c99','-Wall','-Wextra','-Werror',
                         '-I'+str(ROOT/'src'),'-I'+str(ROOT/'modules/livecomp'),str(p/'test.c'),'-o',str(p/'test')],check=True)
         subprocess.run([str(p/'test')],check=True)
-    print('PASS: short physical SET release, long synthetic/physical release suppression, menu-exit isolation, existing trigger/Stop gates')
+    print('PASS: short physical SET release, long synthetic/physical release suppression, menu-exit isolation, trigger/Stop gates, preview start/cancel keys')
 
 if __name__ == '__main__':
     main()
