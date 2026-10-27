@@ -120,6 +120,10 @@ static MENU_UPDATE_FUNC(update_lv)
         attempted ? "Capture ownership uncertain. Reboot required.":
         enabled ? "Armed. Close the menu, then press SET in Movie Live View.":
         "Enable, close the menu, then press SET. Normal photos never start a session.");
+    /* Sessions need Movie mode (the full-res x5 readout is a movie-mode
+     * Live View); in photo mode the module stays inert (SET is Canon's). */
+    if (!is_movie_mode() && !running)
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Switch the camera to Movie mode to use Live Composite.");
 }
 static MENU_UPDATE_FUNC(update_shutter)
 {
@@ -136,8 +140,14 @@ static MENU_UPDATE_FUNC(update_preview)
 }
 static MENU_UPDATE_FUNC(update_status)
 {
+    if (!running && !attempted && !is_movie_mode()) {
+        MENU_SET_VALUE("Needs Movie mode");
+        MENU_SET_HELP("%s","Switch the camera to Movie mode (video); the module is inactive in photo mode.");
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Switch the camera to Movie mode.");
+        return;
+    }
     MENU_SET_VALUE("%s",running ? "Running":attempted ? "Reboot":requested ? "Starting":enabled ? "Armed":"Off");
-    MENU_SET_HELP("%s",status ? status:"Movie M, fixed ISO/WB, x1 view, ML FPS override OFF, Global Draw OFF.");
+    MENU_SET_HELP("%s",status ? status:"Movie M, fixed ISO/WB, x1 view, ML FPS override OFF.");
 }
 static struct menu_entry lv_children[]={
     {.name="Shutter",.priv=&shutter,.max=LC_FRR_FPS_CHOICES-1,.update=update_shutter,

@@ -1,4 +1,4 @@
-Live Composite LCM51 - Canon EOS M firmware 2.0.2
+Live Composite LCM52 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M at full sensor resolution
 (5208x3478): the camera keeps exposing frames of the chosen shutter speed,
@@ -36,7 +36,9 @@ MENU (Shoot > Live Composite)
                     set Preview only OFF for the real composite.
    Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
    Status           Off / Armed / Starting / Running / Reboot, with the
-                    setup reminder or the last result.
+                    setup reminder or the last result. In photo mode it shows
+                    "Needs Movie mode" and the module does nothing (SET keeps
+                    its normal Canon function).
 
 RUN
  1. (Optional) Preview only ON, close the menu, press SET: after one shutter
