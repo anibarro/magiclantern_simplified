@@ -142,6 +142,7 @@ int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap); void NotifyBoxHi
 static inline uint32_t cli(void){ return 0; } static inline void sei(uint32_t x){ (void)x; }
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
+int FIO_CreateDirectory(const char *p); int is_dir(const char *p);
 '''
 
 SIM = r'''
@@ -221,11 +222,14 @@ int get_global_draw_setting(void){ return gd_setting; }
 static int file_token; static unsigned dng_bytes,log_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
 static int dng_created,cur_dng,cur_log;static char last_log[8192],last_log_path[64];static unsigned last_log_n;
-FILE *FIO_CreateFile(const char *p){ if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
+static int dirs_created,dir_fail,dng_in_live,log_in_live;static char last_dir[64];
+FILE *FIO_CreateFile(const char *p){ if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
 int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) dng_bytes+=n;
   if (cur_log && last_log_n+n<sizeof(last_log)) { memcpy(last_log+last_log_n,b,n);last_log_n+=n;last_log[last_log_n]=0; } return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
 static unsigned dng_size_ok;
+int FIO_CreateDirectory(const char *p){ dirs_created++;snprintf(last_dir,sizeof(last_dir),"%s",p);return dir_fail ? -1:0; }
+int is_dir(const char *p){ return !dir_fail && !strcmp(p,"B:/DCIM/LIVE"); }
 int FIO_GetFileSize(const char *p,uint32_t *s){ if (strstr(p,".DNG") && dng_created) { *s=dng_size_ok; return 0; } return 1; }
 /* Canon-like reconfiguration through the installed hooks. */
 static void canon_reconfigure(unsigned z)
@@ -292,12 +296,13 @@ static void reset(void)
     reg6800=0x10012;reg6804=0x4540298;nhooks=0;patch_fail_at=-1;unpatched=0;stall_after_zoom=0;
     no_window=0;dma_stuck=0;partial_frames=0;overrun_sim=0;csv_written=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
     dng_bytes=0;dng_size_ok=0;locked=0;dng_created=0;
+    dirs_created=dir_fail=dng_in_live=log_in_live=0;log_files=0;
 }
 int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={0,6,0};   /* 2.5 s shutter, stop after 6 frames */
+    struct lc_frlv_options o={0,6,0,1};   /* 2.5 s shutter, stop after 6 frames, Debug ON */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -310,6 +315,8 @@ int main(void)
     assert(slurp_w==(int)(w*14/8) && slurp_h==(int)h && allocs==frees);
     assert(strstr(status,"saved: 6 frames") && dng_bytes==2048+bytes && locked==0 && csv_written);
     assert(!strstr(last_log,"HW_"));               /* no engine code in the product */
+    /* Output folder DCIM/LIVE (created), LOG next to the DNG with Debug. */
+    assert(dirs_created==2 && dng_in_live && log_in_live && strstr(last_log,"DNG: B:/DCIM/LIVE/LVFR0000.DNG"));
     /* Fast start (LCM50): x5 entered at 3 fps, shutter switched in at a
      * vsync, so the first usable frame is done one shutter + ~1 s after the
      * zoom; the exit switch back to 3 fps is logged; Canon's zoom overlay
@@ -327,6 +334,20 @@ int main(void)
       printf("first arm %u ms after vsync\n",fa);assert(fa>=40 && fa<100); }
     /* The 2.5 s timers (A 0x56B, B 57635 = 0xE123) are what the hooks apply. */
     assert(strstr(last_log,"Shutter_ms_timerA_timerB_blanking: 2500,56b,e123,"));
+    /* Debug OFF: the same session writes the DNG only, no LOG and no CSV. */
+    reset();o.debug=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("debug off: %s logs=%d csv=%d\n",status,log_files,csv_written);
+    assert(!unsafe && strstr(status,"saved: 6 frames") && dng_in_live && log_files==0 && !csv_written);
+    /* ...and Preview only with Debug OFF writes nothing at all. */
+    reset();o.preview_only=1;o.limit=0;hold_cancel_vsyncs=3;hold_vsyncs=0;cancel_ptr=&cancel;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && strstr(status,"Preview: clipped") && log_files==0 && !dng_created && !csv_written);
+    o.preview_only=0;o.limit=6;cancel=0;hold_cancel_vsyncs=0;
+    /* The folder cannot be created: refused before any hook, nothing kept. */
+    reset();dir_fail=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && nhooks==0 && allocs==0 && strstr(status,"DCIM/LIVE"));
+    o.debug=1;
     /* Refusals before any hook: FPS override on, other RAW user. */
     reset();fps_now=3000;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && nhooks==0 && strstr(status,"FPS"));

@@ -11,7 +11,8 @@ Full-sensor (5208x3478) composite, 2.5-60 s shutter, RAW DNG output.
 Movie M, fixed ISO/WB, x1 view, FPS override OFF (Global Draw: automatic).
 Set ISO and aperture on the camera, the shutter in this menu.
 Preview only ON: SET shows one frame with these settings, nothing saved.
-SET starts the composite, SET stops and saves LVFRnnnn.DNG.
+SET starts the composite, SET stops and saves DCIM/LIVE/LVFRnnnn.DNG
+(diagnostic LOG/CSV only with Debug ON).
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
 Standalone module
@@ -32,5 +33,17 @@ livecomp.mo. The validation core is never included in the install ZIP.
 Validation
 ----------
 
-The full-res composite ran on camera with 2, 2.5 and 4 s frames (LCM23-LCM42)
-with exact merges, preview and DNG. 6-60 s shutters still need a camera run.
+Camera-tested on an EOS M 2.0.2: full-res composites with 2.5, 3, 4, 5 and
+10 s shutters (LCM23-LCM52), exact merges, LCD preview, focus-pixel fix,
+white balance and DNG; 6-60 s still need a camera run. Host tests cover the
+register rewriting, a simulated session, the merge kernel, the DNG writer,
+the key gating and the ARM structure layouts.
+
+Documentation
+-------------
+
+- INSTALL.txt: installation and use.
+- HOW-IT-WORKS.md: the implementation.
+- HARDWARE-MERGE.md: why Canon's image engine is not used.
+- FULLRES.md: the chronological development log with camera results.
+- DEVELOPMENT.md: conventions, build, checks, provenance.

@@ -16,12 +16,13 @@
  *     already running. Every frame is a 100% exposure of the frame period
  *     (no gap between sub-exposures). A 360x240 preview of the accumulator
  *     replaces Canon's LV image.
- *  5. Leave x5, remove the hooks, fix the PDAF pixels, save DNG + LOG + CSV.
+ *  5. Leave x5, remove the hooks, fix the PDAF pixels, save the DNG in
+ *     DCIM/LIVE (+ LOG and CSV when Debug is ON).
  * If the RAW DMA does not finish, buffer ownership is uncertain: the buffers
  * are kept allocated and the user is told to reboot.
  *
- * Canon's own image-max engine was investigated as a faster merge (LCM20-40)
- * and found unusable while Live View runs; see FULLRES.md. */
+ * Canon's own image-max engine was investigated as a faster merge (LCM9-40,
+ * LCX1-2) and cannot merge while the sensor runs; see HARDWARE-MERGE.md. */
 #include "dryos.h"
 #include "module.h"
 #include "lens.h"
@@ -213,13 +214,28 @@ struct frlv_result {
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
 
-static int choose_paths(struct frlv_result *r,struct card_info *card)
+/* Output folder: DCIM/LIVE on the ML card (created if missing). Canon's
+ * playback ignores it (not a DCF folder name). Debug logs, when enabled, go
+ * next to the DNGs with the same number. */
+static int output_dir(struct card_info *card,char *dir,unsigned size)
+{
+    char dcim[16];
+    snprintf(dcim,sizeof(dcim),"%s:/DCIM",card->drive_letter);
+    snprintf(dir,size,"%s:/DCIM/LIVE",card->drive_letter);
+    FIO_CreateDirectory(dcim);                     /* no-op when present */
+    FIO_CreateDirectory(dir);
+    return is_dir(dir);
+}
+static int choose_paths(struct frlv_result *r,const char *dir,unsigned debug)
 {
     uint32_t size;
     for (unsigned i=0;i<10000;i++) {
-        snprintf(r->dng,sizeof(r->dng),"%s:/LVFR%04d.DNG",card->drive_letter,i);
-        snprintf(r->log,sizeof(r->log),"%s:/LVFR%04d.LOG",card->drive_letter,i);
-        if (FIO_GetFileSize(r->dng,&size) && FIO_GetFileSize(r->log,&size)) return 1;
+        snprintf(r->dng,sizeof(r->dng),"%s/LVFR%04d.DNG",dir,i);
+        snprintf(r->log,sizeof(r->log),"%s/LVFR%04d.LOG",dir,i);
+        if (FIO_GetFileSize(r->dng,&size) && (!debug || FIO_GetFileSize(r->log,&size))) {
+            if (!debug) r->log[0]=0;               /* Debug OFF: no LOG/CSV */
+            return 1;
+        }
     }
     return 0;
 }
@@ -228,7 +244,7 @@ static int write_text(FILE *f,const char *text,int n)
 /* Rewritten at each stage so an interrupted run still leaves evidence. */
 static void write_log(const struct frlv_result *r,const char *status)
 {
-    if (ml_shutdown_requested) return;
+    if (ml_shutdown_requested || !r->log[0]) return;
     FILE *f=FIO_CreateFile(r->log);
     if (!f) return;
     static char t[2048];int ok=1;
@@ -517,7 +533,7 @@ static void preview_setup(void)
 }
 static void write_csv(const struct frlv_result *r)
 {
-    if (ml_shutdown_requested) return;
+    if (ml_shutdown_requested || !r->log[0]) return;
     char path[FIO_MAX_PATH_LENGTH];strcpy(path,r->log);memcpy(path+strlen(path)-3,"CSV",3);
     FILE *f=FIO_CreateFile(path);
     if (!f) return;
@@ -822,9 +838,18 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
 
     /* 1: state and fingerprints. Only EOS M 2.0.2 reaches this (camera guard). */
     if (o->preview_only && card) {
-        /* Preview: one log, overwritten each time; no DNG. */
-        snprintf(r.log,sizeof(r.log),"%s:/LVPREVW.LOG",card->drive_letter);r.dng[0]=0;
-    } else if (!card || !choose_paths(&r,card)) { r.error|=FE_IO;msg="No card/filename";goto out; }
+        /* Preview: nothing saved; with Debug one log, overwritten each time. */
+        r.dng[0]=r.log[0]=0;
+        if (o->debug) {
+            char dir[24];
+            if (output_dir(card,dir,sizeof(dir))) snprintf(r.log,sizeof(r.log),"%s/LVPREVW.LOG",dir);
+        }
+    } else {
+        char dir[24];
+        if (!card) { r.error|=FE_IO;msg="No card";goto out; }
+        if (!output_dir(card,dir,sizeof(dir))) { r.error|=FE_IO;msg="Cannot create DCIM/LIVE";goto out; }
+        if (!choose_paths(&r,dir,o->debug)) { r.error|=FE_IO;msg="DCIM/LIVE full (10000 files)";goto out; }
+    }
     if (!base_state_ok(cancel,card) || lv_dispsize!=1 || raw_lv_is_enabled() ||
         raw_write_chan!=livecomp_camera.raw_channel) {
         r.error|=FE_STATE|(raw_lv_is_enabled() ? FE_RAWUSER:0);

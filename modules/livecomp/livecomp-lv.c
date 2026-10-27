@@ -35,6 +35,8 @@ static CONFIG_INT("livecomp.shutter",shutter,LC_FRR_FPS_DEFAULT);
 static CONFIG_INT("livecomp.frames",frame_limit,0);
 /* Preview only: one frame with the current settings on the LCD, not saved. */
 static CONFIG_INT("livecomp.preview",preview_only,0);
+/* Debug: LOG/CSV diagnostics next to the DNG. OFF: no log files at all. */
+static CONFIG_INT("livecomp.debug",debug,0);
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
 static const char *status;   /* last result; NULL = show the setup hint */
@@ -91,7 +93,7 @@ static void run(void *unused)
 {
     (void)unused;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
-    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only};
+    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
     /* A message still on screen would call redraw() when it expires and
@@ -118,7 +120,7 @@ static MENU_UPDATE_FUNC(update_lv)
 {
     MENU_SET_HELP("%s",running ? "SET stops (and saves the composite).":
         attempted ? "Capture ownership uncertain. Reboot required.":
-        enabled ? "Armed. Close the menu, then press SET in Movie Live View.":
+        enabled ? "Armed. Close the menu, then press SET. DNG: DCIM/LIVE.":
         "Enable, close the menu, then press SET. Normal photos never start a session.");
     /* Sessions need Movie mode (the full-res x5 readout is a movie-mode
      * Live View); in photo mode the module stays inert (SET is Canon's). */
@@ -160,6 +162,9 @@ static struct menu_entry lv_children[]={
     {.name="Frame limit",.priv=&frame_limit,.max=COUNT(frame_limits)-1,
      .choices=CHOICES("No limit","30 frames","60 frames","120 frames","240 frames"),
      .help="Stop and save automatically after this many frames. SET stops earlier."},
+    {.name="Debug",.priv=&debug,.max=1,
+     .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
+     .help2="OFF: no log files; only the composite DNG is saved."},
     {.name="Status",.update=update_status,
      .help="SET: start (or preview). SET again: stop and save."},
     MENU_EOL
@@ -187,4 +192,5 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(shutter)
     MODULE_CONFIG(frame_limit)
     MODULE_CONFIG(preview_only)
+    MODULE_CONFIG(debug)
 MODULE_CONFIGS_END()

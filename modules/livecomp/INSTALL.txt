@@ -1,10 +1,10 @@
-Live Composite LCM52 - Canon EOS M firmware 2.0.2
+Live Composite LCM53 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M at full sensor resolution
 (5208x3478): the camera keeps exposing frames of the chosen shutter speed,
 and every frame is merged into a composite that keeps the brightest value
 of each pixel (light trails, light painting, star trails over a fixed
-foreground). The result is an uncompressed RAW DNG at the card root.
+foreground). The result is an uncompressed RAW DNG in DCIM/LIVE on the card.
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
@@ -35,6 +35,10 @@ MENU (Shoot > Live Composite)
                     saved. SET returns to Live View; adjust and repeat, then
                     set Preview only OFF for the real composite.
    Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
+   Debug            OFF (default): only the DNG is written, no log files.
+                    ON: diagnostic LVFRnnnn.LOG and .CSV next to each DNG
+                    (and DCIM/LIVE/LVPREVW.LOG for Preview only). Turn it on
+                    when reporting a problem.
    Status           Off / Armed / Starting / Running / Reboot, with the
                     setup reminder or the last result. In photo mode it shows
                     "Needs Movie mode" and the module does nothing (SET keeps
@@ -54,9 +58,11 @@ RUN
  3. "COMPOSITE n  SET=stop": the LCD shows the growing composite. Press SET
     to stop: the exposure in progress is completed and merged. Or wait for
     the frame limit.
- 4. The camera returns to normal view and saves LVFRnnnn.DNG (composite,
-    camera WB as DNG white balance, EOS M focus pixels removed), .LOG and
-    .CSV. Press SET again for another session; no reboot needed.
+ 4. The camera returns to normal view and saves DCIM/LIVE/LVFRnnnn.DNG
+    (composite, camera WB as DNG white balance, EOS M focus pixels removed;
+    the folder is created if needed; Canon's playback does not show it).
+    With Debug ON also .LOG and .CSV. Press SET again for another session;
+    no reboot needed.
  While a session runs only SET acts; the other buttons are held so the
  camera does not react to them in the full-sensor mode.
 
@@ -75,8 +81,9 @@ GOOD TO KNOW
    marked for the raw converter.
 
 IF SOMETHING GOES WRONG
-Keep the LOG/CSV/DNG from the card root: they are written at every stage. A
+Turn Debug ON and repeat: the LOG/CSV in DCIM/LIVE are written at every
+stage, so they survive an interrupted session. A
 refusal message (wrong mode, Auto ISO, FPS override on, another RAW tool)
 changes nothing: fix it and press SET again. Only if Status says "Reboot"
 (RAW DMA ownership uncertain) must the camera be restarted. If the camera
-ever freezes, remove the battery, then collect the LOG.
+ever freezes, remove the battery, then collect the LOG (Debug ON).
