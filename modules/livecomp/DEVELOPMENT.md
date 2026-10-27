@@ -4,8 +4,8 @@
 
 The module provides an Olympus-style live composite at full sensor resolution
 (5208x3478) on the EOS M 2.0.2: an optional one-frame preview, then gapless frames of the
-chosen shutter merged into an exact per-pixel RAW maximum, an LCD preview of the
-composite and a RAW DNG. EOS M firmware 2.0.2 is the only supported camera.
+chosen shutter merged into an exact per-pixel RAW maximum (Live Composite) or
+sum (Live Bulb, LCM54), an LCD preview of the result and a RAW DNG. EOS M firmware 2.0.2 is the only supported camera.
 The first versions (LCM1-LCM14) composited Live View resolution frames at 3 fps;
 that mode was removed in LCM43. HOW-IT-WORKS.md describes the implementation,
 FULLRES.md is the chronological design log, HARDWARE-MERGE.md the investigation
@@ -18,6 +18,7 @@ of Canon's image engine.
 | `fullres-lv.c` | full-sensor session: hooks, x5 switch, RAW slurp, preview, merge, DNG (DCIM/LIVE), LOG/CSV with Debug ON |
 | `fullres-regs.h` | CROP_Full_Res register values, shutter (timer) table, list rewriting |
 | `raw14-max.h` | packed RAW14 select-max merge kernel (+ reference maximum for tests) |
+| `raw14-add.h` | packed RAW14 sum kernel for Live Bulb |
 | `fullres-fix.h` | EOS M focus-pixel fix, DNG white balance from Canon's WB |
 | `fullres-gamma.h` | preview gamma table |
 | `lv-dng.h` | DNG header writer |
@@ -75,7 +76,7 @@ run `RUN_LIVECOMP_BUILD.cmd` with the toolchain in WSL. Scripts use LF endings.
 Checks: register rewriting against the crop_rec reference and the shutter
 table; a simulated camera session (switch, capture, preview, merge, every
 shutter, no limit, partial/late/skipped frames, battery stop, refusals, DMA
-quarantine); merge kernel exactness; focus-pixel fix and WB mapping; DNG
+quarantine, Live Bulb sessions); merge and sum kernel exactness; focus-pixel fix and WB mapping; DNG
 header and RAW14 byte order; SET/half-shutter gating; camera rejection and ARM
 structure layouts. They do not establish hardware behaviour.
 

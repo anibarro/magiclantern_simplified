@@ -68,6 +68,7 @@ ARM = r'''
 #include <stdint.h>
 void *memcpy(void *d,const void *s,unsigned n){char*a=d;const char*b=s;while(n--)*a++=*b++;return d;}
 #include "raw14-max.h"
+#include "raw14-add.h"
 static uint32_t st=3; static uint32_t rnd(void){ st=st*1664525u+1013904223u; return st>>8; }
 enum{B=6000}; static uint16_t a[7*B] __attribute__((aligned(4))),b[7*B] __attribute__((aligned(4))),c[7*B];
 static void sys_exit(int code){ register int r0 asm("r0")=code; register int r7 asm("r7")=1; asm volatile("svc 0"::"r"(r0),"r"(r7)); for(;;); }
@@ -80,6 +81,10 @@ void _start(void){
     for (int i=0;i<7*B;i++) c[i]=a[i];
     lc_raw14_max(c,b,B); lc_raw14_max_sel((uint32_t *)(void *)a,(const uint32_t *)(const void *)b,B/2);
     for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(4);
+    /* Live Bulb word kernel (LCM55) on the camera's CPU type: same as the reference */
+    for (int i=0;i<7*B;i++) c[i]=a[i];
+    lc_raw14_add(c,b,B,2048-r,15000+r*500); lc_raw14_add_sel((uint32_t *)(void *)a,(const uint32_t *)(const void *)b,B/2,2048-r,15000+r*500);
+    for (int i=0;i<7*B;i++) if (a[i]!=c[i]) sys_exit(5);
   }
   sys_exit(0);
 }
@@ -100,7 +105,7 @@ def main():
                             '-I' + str(MOD), str(tmp / 'arm.c'), '-o', str(tmp / 'arm'), '-Wl,-Ttext=0x10000'], check=True)
             rc = subprocess.run([qemu, '-cpu', 'arm946', str(tmp / 'arm')]).returncode
             assert rc == 0, rc
-            print('ARM946 (qemu) merge check ok')
+            print('ARM946 (qemu) merge check ok: select max and Live Bulb add')
         else:
             print('ARM946 merge check skipped (set LIVECOMP_QEMU_ARM to run it)')
     print('PASS: focus-pixel fix (200,942 exact positions), WB neutral mapping')

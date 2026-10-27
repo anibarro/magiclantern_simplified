@@ -1,7 +1,12 @@
-/* GPL-2.0-or-later. Live Composite controller: menu, start/stop keys and the
- * worker task. The capture itself (full-sensor x5 readout, CPU merge, LCD
+/* GPL-2.0-or-later. Live Composite / Live Bulb controller: menu, start/stop
+ * keys and the worker task. The capture itself (full-sensor x5 readout, CPU merge, LCD
  * preview, DNG) is fullres-lv.c. AI-assisted implementation
  * (OpenAI Codex LCM1-LCM14, Anthropic Claude LCM15 onwards).
+ *
+ * Mode: Live Composite keeps the brightest value of each pixel (moving
+ * lights accumulate, the static scene stays at one frame's exposure); Live
+ * Bulb adds the frames, like one bulb exposure of frames x shutter that the
+ * LCD shows building up.
  *
  * Exposure: the shutter is the length of each frame (menu); ISO and aperture
  * are Canon's own Movie M settings and stay fixed for the whole session.
@@ -29,6 +34,8 @@
 static volatile unsigned requested,attempted,running,stop_requested;
 static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
+/* Mode: LC_MODE_COMPOSITE (0, maximum) or LC_MODE_BULB (1, sum). */
+static CONFIG_INT("livecomp.mode",live_mode,LC_MODE_COMPOSITE);
 /* Shutter: index into lc_frr_timing (fullres-regs.h). */
 /* New key in LCM51 (2 s removed from the table: old indices are invalid). */
 static CONFIG_INT("livecomp.shutter",shutter,LC_FRR_FPS_DEFAULT);
@@ -40,6 +47,8 @@ static CONFIG_INT("livecomp.debug",debug,0);
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
 static const char *status;   /* last result; NULL = show the setup hint */
+static int bulb(void) { return live_mode==(int)LC_MODE_BULB; }
+static const char *mode_name(void) { return bulb() ? "Live Bulb":"Live Composite"; }
 
 int livecomp_lv_busy(void) { return requested || attempted; }
 int livecomp_lv_running(void) { return running; }
@@ -68,7 +77,7 @@ static int session_key(unsigned code)
     if (!running) {
         if (trigger && trigger_ready()) {
             requested=1;trigger_ms=get_ms_clock();
-            status=preview_only ? "Starting the preview":"Starting the composite";
+            status=preview_only ? "Starting the preview":bulb() ? "Starting the bulb":"Starting the composite";
             return 0;
         }
         if (requested && (trigger || code==MODULE_KEY_UNPRESS_SET)) return 0;
@@ -93,7 +102,8 @@ static void run(void *unused)
 {
     (void)unused;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
-    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug};
+    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug,
+        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
     /* A message still on screen would call redraw() when it expires and
@@ -118,23 +128,47 @@ static MENU_SELECT_FUNC(toggle_enabled)
 }
 static MENU_UPDATE_FUNC(update_lv)
 {
-    MENU_SET_HELP("%s",running ? "SET stops (and saves the composite).":
+    MENU_SET_NAME("%s",mode_name());
+    MENU_SET_HELP("%s",running ? (bulb() ? "SET stops (and saves the bulb exposure).":"SET stops (and saves the composite)."):
         attempted ? "Capture ownership uncertain. Reboot required.":
         enabled ? "Armed. Close the menu, then press SET. DNG: DCIM/LIVE.":
         "Enable, close the menu, then press SET. Normal photos never start a session.");
     /* Sessions need Movie mode (the full-res x5 readout is a movie-mode
      * Live View); in photo mode the module stays inert (SET is Canon's). */
     if (!is_movie_mode() && !running)
-        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Switch the camera to Movie mode to use Live Composite.");
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Switch the camera to Movie mode to use %s.",mode_name());
 }
 static MENU_UPDATE_FUNC(update_shutter)
 {
     const unsigned iso=lens_info.raw_iso ? (unsigned)raw2iso(lens_info.raw_iso):0;
     if (iso) MENU_SET_RINFO("ISO %d f/%d.%d",iso,lens_info.aperture/10,lens_info.aperture%10);
     else MENU_SET_RINFO("Auto ISO!");
-    MENU_SET_HELP("%s","Length of each frame, no gaps. The LCD shows the composite after every frame.");
+    MENU_SET_HELP("%s",bulb() ? "Length of each frame, no gaps. Bulb total = frames x shutter.":
+        "Length of each frame, no gaps. The LCD shows the composite after every frame.");
     if (!iso) MENU_SET_WARNING(MENU_WARN_ADVICE,"Auto ISO: set a fixed ISO on the camera (Movie M).");
+    /* LCM55 camera: adding a frame takes ~2.3 s, plus ~0.25 s preview; at
+     * 2.5 s the next readout overtakes it and the session stops. */
+    else if (bulb() && lc_frr_timing[shutter>=0 && shutter<(int)LC_FRR_FPS_CHOICES ? shutter:(int)LC_FRR_FPS_DEFAULT].period_ms<3000u)
+        MENU_SET_WARNING(MENU_WARN_ADVICE,"Live Bulb needs 3 s or longer: adding a frame takes ~2.3 s.");
     else if (shutter>=(int)LC_FRR_TESTED && lc_frr_timing[shutter].period_ms!=10000u) MENU_SET_WARNING(MENU_WARN_ADVICE,"This shutter is not yet tested on the camera.");
+}
+static MENU_UPDATE_FUNC(update_mode)
+{
+    MENU_SET_HELP("%s",bulb() ? "Live Bulb: frames add up like one long bulb exposure, built up on the LCD.":
+        "Live Composite: only brighter light is added (trails); the scene keeps one frame's exposure.");
+    if (bulb()) MENU_SET_WARNING(MENU_WARN_ADVICE,"Expose for the total time (frames x shutter). Shutter 3 s or longer.");
+}
+static MENU_UPDATE_FUNC(update_frames)
+{
+    const unsigned n=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
+    const unsigned ms=lc_frr_timing[shutter>=0 && shutter<(int)LC_FRR_FPS_CHOICES ? shutter:(int)LC_FRR_FPS_DEFAULT].period_ms;
+    if (bulb() && n) {
+        const unsigned s=n*ms/1000u;
+        if (s>=60) MENU_SET_RINFO("= %dm%02ds bulb",s/60,s%60);
+        else MENU_SET_RINFO("= %ds bulb",s);
+    }
+    MENU_SET_HELP("%s",bulb() ? "Stop and save after this many frames (total = frames x shutter). SET stops earlier.":
+        "Stop and save automatically after this many frames. SET stops earlier.");
 }
 static MENU_UPDATE_FUNC(update_preview)
 {
@@ -152,6 +186,10 @@ static MENU_UPDATE_FUNC(update_status)
     MENU_SET_HELP("%s",status ? status:"Movie M, fixed ISO/WB, x1 view, ML FPS override OFF.");
 }
 static struct menu_entry lv_children[]={
+    {.name="Mode",.priv=&live_mode,.max=1,.update=update_mode,
+     .choices=CHOICES("Live Composite","Live Bulb"),
+     .help="Live Composite: brightest pixels. Live Bulb: frames add up (one long exposure).",
+     .help2="Both show the result on the LCD after every frame and save a RAW DNG."},
     {.name="Shutter",.priv=&shutter,.max=LC_FRR_FPS_CHOICES-1,.update=update_shutter,
      .choices=CHOICES("2.5 s","3 s","4 s","5 s","6 s","8 s","10 s","13 s","15 s",
                       "20 s","25 s","30 s","40 s","50 s","60 s"),
@@ -159,7 +197,7 @@ static struct menu_entry lv_children[]={
     {.name="Preview only",.priv=&preview_only,.max=1,.update=update_preview,
      .help="ON: SET shows one frame with the current shutter/ISO/aperture.",
      .help2="Nothing is saved. Adjust, then turn it OFF for the composite."},
-    {.name="Frame limit",.priv=&frame_limit,.max=COUNT(frame_limits)-1,
+    {.name="Frame limit",.priv=&frame_limit,.max=COUNT(frame_limits)-1,.update=update_frames,
      .choices=CHOICES("No limit","30 frames","60 frames","120 frames","240 frames"),
      .help="Stop and save automatically after this many frames. SET stops earlier."},
     {.name="Debug",.priv=&debug,.max=1,
@@ -171,7 +209,7 @@ static struct menu_entry lv_children[]={
 };
 static struct menu_entry lv_menu[]={
     {.name="Live Composite",.priv=&enabled,.max=1,.select=toggle_enabled,.update=update_lv,
-     .help="Olympus-style live composite: brightest pixels accumulate into a RAW DNG.",
+     .help="Live Composite (brightest pixels) or Live Bulb (added light), into a RAW DNG.",
      .submenu_width=700,
      .children=lv_children}
 };
@@ -189,6 +227,7 @@ void livecomp_lv_poll(struct card_info *card)
 }
 MODULE_CONFIGS_START()
     MODULE_CONFIG(enabled)
+    MODULE_CONFIG(live_mode)
     MODULE_CONFIG(shutter)
     MODULE_CONFIG(frame_limit)
     MODULE_CONFIG(preview_only)

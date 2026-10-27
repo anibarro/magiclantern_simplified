@@ -3,7 +3,8 @@
 
 1. fullres-regs.h: reference register values, NRZI, blanking, list rewriting.
 2. fullres-lv.c compiled against stub headers and a simulated camera:
-   hooks, x5 switch, our RAW slurp, merge, DNG, restore and fault paths.
+   hooks, x5 switch, our RAW slurp, merge, DNG, restore and fault paths,
+   in Live Composite (maximum) and Live Bulb (sum) mode.
 """
 from pathlib import Path
 import subprocess
@@ -19,7 +20,64 @@ REGS_TEST = r'''
 #include "fullres-regs.h"
 #include <stdlib.h>
 #include "raw14-max.h"
+#include "raw14-add.h"
 int main(void) {
+    { /* Live Bulb add == reference: acc + (frame - black), clamped to
+       * [0,white], saturated samples stay; every sample, random data. */
+        enum { B=8000 }; static uint16_t a[7*B],b[7*B],ref[7*B];
+        srand(5);
+        for (int i=0;i<7*B;i++) { a[i]=(uint16_t)rand();b[i]=(uint16_t)rand(); }
+        memcpy(ref,a,sizeof(a));
+        for (unsigned n=0;n<B;n++) {
+            uint16_t x[8],y[8];lc_raw14_unpack(ref+7*n,x);lc_raw14_unpack(b+7*n,y);
+            for (int p=0;p<8;p++) {
+                if (x[p]>=15000) continue;
+                int v=x[p]+y[p]-2048;x[p]=(uint16_t)(v<0 ? 0:v>15000 ? 15000:v);
+            }
+            lc_raw14_pack(ref+7*n,x);
+        }
+        lc_raw14_add(a,b,B,2048,15000);
+        assert(!memcmp(a,ref,sizeof(a)));
+    }
+    { /* LCM55 word kernel == reference kernel, bit for bit: random words,
+       * realistic values with edges (0, black, white, 16383), several
+       * black/white levels incl. white > 16383 */
+        enum { P=4000 }; static uint32_t a[7*P],b[7*P],c[7*P];
+        static const unsigned edge[]={0,1,2047,2048,2049,14999,15000,15001,16382,16383};
+        static const unsigned bl[]={2048,2047,2063,512},wh[]={15000,16383,14000,20000};
+        srand(13);
+        for (int round=0;round<16;round++) {
+            for (unsigned n=0;n<2*P;n++) {
+                uint16_t x[8],y[8];
+                for (int p=0;p<8;p++) {
+                    x[p]=(uint16_t)(round&1 ? edge[rand()%10]:rand()%5 ? 2000u+(unsigned)rand()%400u:(unsigned)rand()&16383u);
+                    y[p]=(uint16_t)(round&2 ? edge[rand()%10]:rand()%5 ? 2000u+(unsigned)rand()%400u:(unsigned)rand()&16383u);
+                }
+                lc_raw14_pack((uint16_t *)a+7*n,x);lc_raw14_pack((uint16_t *)b+7*n,y);
+            }
+            if (round>=12) for (int i=0;i<7*P;i++) { a[i]=((uint32_t)rand()<<16)^rand();b[i]=((uint32_t)rand()<<16)^rand(); }
+            memcpy(c,a,sizeof(a));
+            lc_raw14_add((uint16_t *)c,(const uint16_t *)b,2*P,bl[round&3],wh[(round>>2)&3]);
+            lc_raw14_add_sel(a,b,P,bl[round&3],wh[(round>>2)&3]);
+            assert(!memcmp(a,c,sizeof(a)));
+        }
+    }
+    { /* Bulb physics: 10 frames of black+100 sum to black+1000; noise around
+       * black does not drift the sum; bright light clips at white. */
+        enum { B=64 }; static uint16_t acc[7*B],f[7*B];uint16_t s[8];
+        for (unsigned n=0;n<B;n++) { for (int p=0;p<8;p++) s[p]=2048+100;lc_raw14_pack(f+7*n,s); }
+        memcpy(acc,f,sizeof(f));
+        for (int k=1;k<10;k++) lc_raw14_add(acc,f,B,2048,15000);
+        for (unsigned n=0;n<B;n++) { lc_raw14_unpack(acc+7*n,s);for (int p=0;p<8;p++) assert(s[p]==2048+1000); }
+        for (unsigned n=0;n<B;n++) { for (int p=0;p<8;p++) s[p]=(uint16_t)(p&1 ? 2048+40:2048-40);lc_raw14_pack(f+7*n,s); }
+        memcpy(acc,f,sizeof(f));
+        for (int k=1;k<100;k++) { lc_raw14_add(acc,f,B,2048,15000); }
+        for (unsigned n=0;n<B;n++) { lc_raw14_unpack(acc+7*n,s);for (int p=0;p<8;p++) assert(s[p]==(p&1 ? 2048+4000:0)); }
+        for (unsigned n=0;n<B;n++) { for (int p=0;p<8;p++) s[p]=9000;lc_raw14_pack(f+7*n,s); }
+        memcpy(acc,f,sizeof(f));
+        for (int k=1;k<4;k++) lc_raw14_add(acc,f,B,2048,15000);
+        for (unsigned n=0;n<B;n++) { lc_raw14_unpack(acc+7*n,s);for (int p=0;p<8;p++) assert(s[p]==15000); }
+    }
     { /* select max == reference max, every sample, incl. ties/edges */
         enum { P=10000 }; static uint32_t a[7*P],b[7*P],c[7*P];
         srand(11);
@@ -302,7 +360,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={0,6,0,1};   /* 2.5 s shutter, stop after 6 frames, Debug ON */
+    struct lc_frlv_options o={0,6,0,1,LC_MODE_COMPOSITE};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -334,6 +392,31 @@ int main(void)
       printf("first arm %u ms after vsync\n",fa);assert(fa>=40 && fa<100); }
     /* The 2.5 s timers (A 0x56B, B 57635 = 0xE123) are what the hooks apply. */
     assert(strstr(last_log,"Shutter_ms_timerA_timerB_blanking: 2500,56b,e123,"));
+    /* Live Bulb: the same session with the add kernel. Own file prefix
+     * (LVBL), exposure = frames x shutter in the LOG/DNG and the status. */
+    reset();o.mode=LC_MODE_BULB;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb: %s\n",status);
+    assert(!unsafe && strstr(status,"Bulb saved: 6 frames, 15 s") && dng_bytes==2048+bytes && allocs==frees &&
+           zoom==1 && unpatched==4 && locked==0);
+    assert(strstr(last_log,"Full-res live bulb") && strstr(last_log,"DNG: B:/DCIM/LIVE/LVBL0000.DNG") &&
+           strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: bulb,15000,") && !strstr(status,"longer frames") && strstr(last_log,"strips: add,"));
+    /* Live Bulb with partial frames: only the delivered rows are added. */
+    reset();partial_frames=2;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb partial: %s\n",status);
+    assert(!unsafe && strstr(status,"saved") && zoom==1);
+    /* Live Bulb, no limit, SET at frame 9; and every shutter choice. */
+    reset();o.limit=0;cancel_at=9;cancel_ptr=&cancel;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb no limit: %s\n",status);
+    assert(!unsafe && strstr(status,"Bulb saved") && zoom==1);
+    cancel=0;cancel_at=0;o.limit=6;
+    o.mode=LC_MODE_COMPOSITE;
+    /* Composite again: back to LVFR and the select kernel. */
+    reset();dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && strstr(status,"Composite saved: 6 frames") && strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: composite,2500,0,0"));
     /* Debug OFF: the same session writes the DNG only, no LOG and no CSV. */
     reset();o.debug=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -398,6 +481,14 @@ int main(void)
     reset();overrun_sim=1;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("overrun: %s\n",status);
     assert(!unsafe && strstr(status,"saved") && zoom==1);
+    /* LCM55: the same overrun in Live Bulb stops the session (a lost band
+     * would leave part of the image with fewer frames) and says why. */
+    {   const unsigned old_mode=o.mode;
+        reset();overrun_sim=1;o.mode=LC_MODE_BULB;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+        printf("bulb overrun: %s\n",status);
+        assert(!unsafe && strstr(status,"Bulb saved:") && strstr(status,"use longer frames") && zoom==1 && unpatched==4 &&
+               strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: bulb,") && strstr(last_log,",1\n"));
+        o.mode=old_mode; }
     /* Frames arrive faster than the (simulated 80 ms) merge: the session
      * keeps going (behind/skipped frames counted) and saves. */
     reset();sim_period_us=2500000;sim_slow=40;o.limit=8;dng_size_ok=2048+bytes;   /* merge ~3.2 s > 2.5 s frames */

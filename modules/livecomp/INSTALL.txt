@@ -1,10 +1,15 @@
-Live Composite LCM53 - Canon EOS M firmware 2.0.2
+Live Composite / Live Bulb LCM55 - Canon EOS M firmware 2.0.2
 
-Olympus-style Live Composite for the EOS M at full sensor resolution
-(5208x3478): the camera keeps exposing frames of the chosen shutter speed,
-and every frame is merged into a composite that keeps the brightest value
-of each pixel (light trails, light painting, star trails over a fixed
-foreground). The result is an uncompressed RAW DNG in DCIM/LIVE on the card.
+Olympus-style Live Composite and Live Bulb for the EOS M at full sensor
+resolution (5208x3478): the camera keeps exposing frames of the chosen
+shutter speed, and the LCD shows the result building up after every frame.
+ - Live Composite keeps the brightest value of each pixel: moving lights
+   accumulate (light trails, light painting, star trails over a fixed
+   foreground) while the rest of the scene keeps one frame's exposure.
+ - Live Bulb adds the frames together, exactly like one long bulb exposure
+   of (frames x shutter): everything gets brighter as the exposure goes on,
+   and you can watch it and stop when it looks right.
+The result is an uncompressed RAW DNG in DCIM/LIVE on the card.
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
@@ -19,8 +24,10 @@ CAMERA SETUP
    silent pictures). Global Draw may stay ON: it is turned off while a
    session runs and restored afterwards.
 
-MENU (Shoot > Live Composite)
+MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
    Live Composite   ON arms the module. Nothing starts until you press SET.
+   Mode             Live Composite (default) / Live Bulb. See above.
+                    Live Bulb needs a shutter of 3 s or longer.
    Shutter          2.5 s ... 60 s (default 2.5 s): the exposure of every
                     frame; frames follow each other with no gap. The right
                     side shows the camera's ISO and aperture.
@@ -35,6 +42,8 @@ MENU (Shoot > Live Composite)
                     saved. SET returns to Live View; adjust and repeat, then
                     set Preview only OFF for the real composite.
    Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
+                    In Live Bulb the right side shows the total exposure
+                    (frames x shutter), e.g. "= 1m15s bulb".
    Debug            OFF (default): only the DNG is written, no log files.
                     ON: diagnostic LVFRnnnn.LOG and .CSV next to each DNG
                     (and DCIM/LIVE/LVPREVW.LOG for Preview only). Turn it on
@@ -55,11 +64,13 @@ RUN
     shutter starts: it is ready after one shutter time ("First frame in
     about n s") and is the base of the composite. Canon's zoom box and
     arrows are hidden while the session runs.
- 3. "COMPOSITE n  SET=stop": the LCD shows the growing composite. Press SET
-    to stop: the exposure in progress is completed and merged. Or wait for
-    the frame limit.
+ 3. "COMPOSITE n  SET=stop" (Live Bulb: "BULB n  45s  SET=stop", with the
+    exposure so far): the LCD shows the growing result. Press SET to stop:
+    the exposure in progress is completed and merged. Or wait for the frame
+    limit.
  4. The camera returns to normal view and saves DCIM/LIVE/LVFRnnnn.DNG
-    (composite, camera WB as DNG white balance, EOS M focus pixels removed;
+    (Live Bulb: LVBLnnnn.DNG, with ExposureTime = frames x shutter)
+    (camera WB as DNG white balance, EOS M focus pixels removed;
     the folder is created if needed; Canon's playback does not show it).
     With Debug ON also .LOG and .CSV. Press SET again for another session;
     no reboot needed.
@@ -71,12 +82,31 @@ When the battery indicator drops to its last (red) level during a session,
 the session stops like SET and the composite is saved while there is still
 power for the card write ("Battery low: composite saved").
 
+LIVE BULB EXPOSURE
+In Live Bulb the image keeps getting brighter: n frames of t seconds give
+the same exposure as one n x t bulb shot. Choose ISO and aperture for the
+TOTAL time you have in mind (Preview only shows a single frame, i.e. 1/n of
+it) and stop with SET when the LCD looks right. Highlights that reach the
+white level stay white. Shadow noise adds up like in any long exposure.
+Adding a Live Bulb frame touches every pixel and takes ~2.3 s (a Live
+Composite merge 1.5-1.9 s), so Live Bulb needs a shutter of 3 s or longer
+(camera-tested at 3 s with the LCD updated after every frame). If a frame
+cannot be added before the next one is read out, the session stops and
+saves what it has ("Too slow for n s frames: stopping", then "Bulb saved:
+n frames; use longer frames") instead of leaving part of the image with
+fewer frames: choose a longer shutter.
+Light painting looks much the same in both modes (a bright moving light
+reaches white either way); the difference is the scene itself, which in
+Live Bulb keeps brightening with every frame. For light painting in a lit
+room Live Composite keeps the background from burning out.
+
 GOOD TO KNOW
  - A frame that arrives while the previous merge is still running is skipped
    (a short gap) and counted; if that keeps happening the session stops and
    saves ("Merge too slow"): use a longer shutter.
  - Around the 5th frame Canon cuts one readout short. That frame is still
-   merged (the missing rows hold the previous frame) and logged.
+   merged (the missing rows hold the previous frame) and logged. In Live
+   Bulb only the rows that arrived are added, so those rows miss one frame.
  - The DNG holds the whole 5280-pixel-wide raster with the active area
    marked for the raw converter.
 

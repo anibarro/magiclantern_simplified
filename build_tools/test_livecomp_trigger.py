@@ -13,6 +13,7 @@ def main():
     code = r'''
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 #include "module.h"
 int is_camera(const char *a,const char *b) { (void)a;(void)b;return 1; }
 #include "camera-profile.h"
@@ -22,7 +23,8 @@ struct event { int type,param; void *obj; int arg; };
 static unsigned initialized=1,set_release_blocked;
 #include "fullres-lv.h"
 static unsigned enabled,attempted,running,requested,trigger_ms,now,stops;
-static int preview_only;
+static int preview_only,live_mode;
+static int bulb(void) { return live_mode==(int)LC_MODE_BULB; }
 static int ml_shutdown_requested,menu,gui_state,lv,LV_PAUSED,movie,lv_dispsize,RECORDING,half;
 static struct { int job_state; } lens_info;
 static const char *status;
@@ -61,6 +63,9 @@ int main(void) {
     assert(livecomp_lv_key(MODULE_KEY_PRESS_HALFSHUTTER)==1 && !requested);
     assert(livecomp_lv_key(MODULE_KEY_UNPRESS_SET)==1 && !requested);
     now=1000;assert(livecomp_lv_key(MODULE_KEY_Q)==0 && requested && trigger_ms==1000);
+    assert(!strcmp(status,"Starting the composite"));
+    requested=0;live_mode=1;assert(livecomp_lv_key(MODULE_KEY_Q)==0 && requested && !strcmp(status,"Starting the bulb"));
+    live_mode=0;
     assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && requested && !stops);
     running=attempted=1;requested=0;
     now=1100;assert(livecomp_lv_key(MODULE_KEY_PRESS_SET)==0 && !stops);

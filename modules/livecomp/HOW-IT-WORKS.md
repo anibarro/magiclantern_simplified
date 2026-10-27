@@ -1,4 +1,4 @@
-# How Live Composite works (EOS M 2.0.2)
+# How Live Composite and Live Bulb work (EOS M 2.0.2)
 
 Live Composite emulates Olympus Live Composite: the camera exposes frame
 after frame at a fixed shutter, and every frame is merged into a composite
@@ -6,6 +6,10 @@ that keeps the brightest value of each pixel. Static parts of the scene keep
 the exposure of a single frame, while moving lights (car trails, light
 painting, stars) accumulate. The result is one RAW DNG at full sensor
 resolution.
+
+Live Bulb (menu Mode, LCM54) uses the same capture and replaces the merge
+with a sum: the result is one long exposure of frames x shutter, shown on the
+LCD as it builds up (section 5a).
 
 Usage is in INSTALL.txt. This document explains the implementation. The
 development history is in FULLRES.md, and the failed hardware-merge work in
@@ -36,7 +40,8 @@ Files:
 | `livecomp-lv.c` | menu, start/stop logic, Global Draw handling, worker task |
 | `fullres-lv.c` | the session: hooks, x5 switch, timers, RAW DMA, merge, preview, DNG, LOG |
 | `fullres-regs.h` | sensor register values and the shutter (timer) table; pure, host-tested |
-| `raw14-max.h` | merge kernel on packed 14-bit RAW |
+| `raw14-max.h` | merge kernel on packed 14-bit RAW (Live Composite) |
+| `raw14-add.h` | sum kernel on packed 14-bit RAW (Live Bulb) |
 | `fullres-fix.h` | focus-pixel fix and DNG white balance |
 | `fullres-gamma.h` | preview gamma table |
 | `lv-dng.h` | DNG header writer |
@@ -135,6 +140,41 @@ exposure.
 
 Canon's hardware max engine (~0.12 s per frame) cannot be used while the
 sensor runs; see HARDWARE-MERGE.md.
+
+## 5a. Live Bulb
+
+With Mode = Live Bulb the frames are added instead (`lc_raw14_add`,
+raw14-add.h). The first frame is copied as for the composite; it carries the
+black level once. Every later frame adds only its signal:
+
+```
+acc = clamp(acc + frame - black, 0, white)      per sample
+```
+
+- `black` is the optical-black mean of the first frame (as for the
+  composite). The subtraction is signed, so noise below black is added as
+  it is and the dark parts do not drift upwards.
+- `white` is the DNG white level. A sample that reaches it stays there, like
+  a saturated photosite in a single long exposure.
+- After every frame the optical-black columns of the accumulator are
+  measured again (`acc_black`, rounded mean). The DNG black level and the
+  preview use that value, so the integer rounding of the per-frame black
+  cannot add up over many frames.
+- Partial frames: only the 2-block pairs the readout delivered are added
+  (the rest of the capture buffer still holds the previous frame, which
+  would otherwise be counted twice). Those rows lack one sub-exposure.
+- A frame that arrives while a merge is still running is skipped as usual;
+  the total exposure counts merged frames only, so the DNG ExposureTime
+  (`merged x period`) stays true.
+- Output: `DCIM/LIVE/LVBLnnnn.DNG` (own numbering), LOG/CSV the same as for
+  the composite. The LOG line `Mode_total_exposure_ms_acc_black` records the
+  mode, total exposure and accumulator black level; the merge-kernel line
+  says `add`.
+
+Every word changes, so there is no select-max shortcut: the kernel unpacks,
+adds, clamps and packs (O3). Its time per frame on the camera is not yet
+measured (LOG: `Merge_max_us`); at short shutters it may miss frames, which
+the session handles as for a slow composite.
 
 ## 6. Preview and display
 

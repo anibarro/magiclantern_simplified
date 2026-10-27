@@ -1,4 +1,4 @@
-/* GPL-2.0-or-later. Full-sensor Live View composite for the EOS M 2.0.2.
+/* GPL-2.0-or-later. Full-sensor Live Composite / Live Bulb for the EOS M 2.0.2.
  * AI-assisted implementation (Claude); design log and evidence in FULLRES.md.
  *
  * Sequence (worker task, started with SET from the livecomp menu):
@@ -16,6 +16,8 @@
  *     already running. Every frame is a 100% exposure of the frame period
  *     (no gap between sub-exposures). A 360x240 preview of the accumulator
  *     replaces Canon's LV image.
+ *     Live Bulb (LC_MODE_BULB) adds the frames instead (raw14-add.h): the
+ *     accumulator is one long exposure of frames x shutter, built up live.
  *  5. Leave x5, remove the hooks, fix the PDAF pixels, save the DNG in
  *     DCIM/LIVE (+ LOG and CSV when Debug is ON).
  * If the RAW DMA does not finish, buffer ownership is uncertain: the buffers
@@ -39,6 +41,7 @@
 #include "fullres-lv.h"
 #include "fullres-regs.h"
 #include "raw14-max.h"
+#include "raw14-add.h"
 #include "lv-dng.h"
 #include "vram.h"
 #include "fullres-gamma.h"
@@ -211,6 +214,9 @@ struct frlv_result {
     unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms,switch_ms,exit_switched,target_a,target_b,short_skipped;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
+    unsigned mode;        /* LC_MODE_COMPOSITE / LC_MODE_BULB */
+    unsigned acc_black;   /* Live Bulb: black level measured on the accumulator */
+    unsigned too_slow;    /* Live Bulb stopped: merge overtaken by the next readout */
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
 
@@ -226,12 +232,23 @@ static int output_dir(struct card_info *card,char *dir,unsigned size)
     FIO_CreateDirectory(dir);
     return is_dir(dir);
 }
+static int is_bulb(const struct frlv_result *r) { return r->mode==LC_MODE_BULB; }
+static const char *mode_word(const struct frlv_result *r) { return is_bulb(r) ? "Bulb":"Composite"; }
+/* Exposure of the result: one frame for a maximum, all merged frames for a
+ * sum (missed frames are gaps and do not count). */
+static unsigned total_exposure_ms(const struct frlv_result *r)
+{ return is_bulb(r) ? r->merged*r->period_ms:r->period_ms; }
+/* White level of the DNG; Live Bulb clamps its sum to the same value. */
+static unsigned frlv_white(unsigned black)
+{ return raw_info.white_level>(int)black && raw_info.white_level<=16383 ? (unsigned)raw_info.white_level:15000u; }
+/* Composite LVFRnnnn, Live Bulb LVBLnnnn (each with its own numbering). */
 static int choose_paths(struct frlv_result *r,const char *dir,unsigned debug)
 {
     uint32_t size;
+    const char *prefix=is_bulb(r) ? "LVBL":"LVFR";
     for (unsigned i=0;i<10000;i++) {
-        snprintf(r->dng,sizeof(r->dng),"%s/LVFR%04d.DNG",dir,i);
-        snprintf(r->log,sizeof(r->log),"%s/LVFR%04d.LOG",dir,i);
+        snprintf(r->dng,sizeof(r->dng),"%s/%s%04d.DNG",dir,prefix,i);
+        snprintf(r->log,sizeof(r->log),"%s/%s%04d.LOG",dir,prefix,i);
         if (FIO_GetFileSize(r->dng,&size) && (!debug || FIO_GetFileSize(r->log,&size))) {
             if (!debug) r->log[0]=0;               /* Debug OFF: no LOG/CSV */
             return 1;
@@ -248,7 +265,7 @@ static void write_log(const struct frlv_result *r,const char *status)
     FILE *f=FIO_CreateFile(r->log);
     if (!f) return;
     static char t[2048];int ok=1;
-    int n=snprintf(t,sizeof(t),LIVECOMP_BUILD_ID "\nFull-res composite\nStatus: %s\n"
+    int n=snprintf(t,sizeof(t),LIVECOMP_BUILD_ID "\nFull-res %s\nStatus: %s\n"
         "Stage_error_unsafe: %d,%d,%d\n"
         "Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved\n"
         "Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user\n"
@@ -262,7 +279,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Zoom_ms_max_vsync_gap_ms: %d,%d\n"
         "Timer_fixes_last_seen_B: %d,%x\n"
         "PathDriveMode_words: %x,%x,%x,%x,%x,%x\n",
-        status,r->stage,r->error,r->unsafe,r->period_ms,r->target_a,r->target_b,cfg.blanking,
+        is_bulb(r) ? "live bulb":"composite",status,r->stage,r->error,r->unsafe,r->period_ms,r->target_a,r->target_b,cfg.blanking,
         r->iso,r->aperture,r->battery_start,r->battery_end,r->battery_stop,r->preview_only,r->clip_x10,r->mode_lost,r->dma_aborts,r->first_arm_after_vsync_ms,r->switch_ms,r->exit_switched,r->short_skipped,
         r->rom_engdrvout,r->hooks,r->top_left,r->bottom_right,r->reg_6008,r->reg_6010,r->reg_6014,r->reg_38024,
         r->reg_6804_after,r->width,r->height,r->pitch,r->bytes,
@@ -281,7 +298,8 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Limit_overrun_offset_missed_partials: %d,%d,%d,%d\n"
         "Merge_max_us_sum_ms_preview_ok_render_us_copy_us: %d,%d,%d,%d,%d\n"
         "WB_mode_kelvin_neutral_r_g_b: %d,%d,%d,%d,%d\nFocus_pixels_fixed_us: %d,%d\n"
-        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped_behind_strips: select,%d,%d,%d,%d\n",
+        "Zoom_done_ms_late_frames: %d,%d\nMerge_kernel_bands_preview_skipped_behind_strips: %s,%d,%d,%d,%d\n"
+        "Mode_total_exposure_ms_acc_black_too_slow: %s,%d,%d,%d\n",
         stats.cmos_calls,stats.cmos_changes,stats.adtg_calls,stats.adtg_changes,stats.blanking_seen,
         stats.engio_calls,stats.engio_changes,stats.drv_changes,stats.overflow,
         stats.orig_6804,stats.orig_timer_a,stats.orig_timer_b,stats.orig_blanking,
@@ -294,7 +312,8 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->limit,r->overrun_offset,r->missed,r->partials,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
-        r->zoom_done_ms,r->late_frames,FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips);
+        r->zoom_done_ms,r->late_frames,is_bulb(r) ? "add":"select",FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips,
+        is_bulb(r) ? "bulb":"composite",total_exposure_ms(r),r->acc_black,r->too_slow);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Keys (%d; ms:code:phase:passed, raw events 0x1000+param):",key_n);
     for (unsigned k=0;k<key_n && k<FRLV_KEYS;k++)
@@ -330,6 +349,13 @@ static unsigned sample(const uint8_t *buf,unsigned pitch,unsigned x,unsigned y)
     uint16_t p[8];
     lc_raw14_unpack((const uint16_t *)(buf+y*pitch+(x/8)*14),p);
     return p[x%8];
+}
+/* Mean of the left optical-black columns (16..63, every 8th row). */
+static unsigned ob_mean(const struct frlv_result *r,const uint8_t *buf)
+{
+    uint64_t sum=0;unsigned n=0;
+    for (unsigned y=40;y+40<r->height;y+=8) for (unsigned x=16;x<64;x+=3) { sum+=sample(buf,r->pitch,x,y);n++; }
+    return n ? (unsigned)((sum+n/2)/n):0;
 }
 static void statistics(struct frlv_result *r,const uint8_t *buf)
 {
@@ -369,8 +395,10 @@ static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
 {
     struct lc_dng_metadata m={0};
     m.width=r->width;m.height=r->height;m.pitch=r->pitch;m.bytes=r->bytes;
-    m.black=r->black ? r->black:2048;
-    m.white=raw_info.white_level>(int)m.black && raw_info.white_level<=16383 ? (uint32_t)raw_info.white_level:15000u;
+    /* Live Bulb: the black level as it is in the sum (the per-frame estimate
+     * is an integer; its rounding error would add up over many frames). */
+    m.black=is_bulb(r) && r->acc_black ? r->acc_black:r->black ? r->black:2048;
+    m.white=frlv_white(m.black);
     m.cfa=raw_info.cfa_pattern;
     /* Crop guess only (left OB ~72 px, top ~28 rows); full raster is stored. */
     m.active[0]=MIN(28u,r->height-2);m.active[1]=MIN(72u,r->width-8);
@@ -378,7 +406,7 @@ static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
     memcpy(m.matrix,raw_info.color_matrix1,sizeof(m.matrix));
     m.illuminant=raw_info.calibration_illuminant1;
     memcpy(m.neutral,r->neutral,sizeof(m.neutral));
-    m.iso=raw2iso(lens_info.raw_iso);m.tvr=MAX(1u,1000000u/r->period_ms);m.exposure_ms=r->period_ms;   /* shutter = frame period */
+    m.iso=raw2iso(lens_info.raw_iso);m.tvr=MAX(1u,1000000u/r->period_ms);m.exposure_ms=total_exposure_ms(r);   /* composite: frame period; bulb: frames x period */
     m.fps=MAX(1u,1000000u/r->period_ms);m.aperture=lens_info.aperture;m.focal=lens_info.focal_len;
     r->save_stage=1;
     uint8_t *scratch=fio_malloc(16384);
@@ -481,7 +509,8 @@ static __attribute__((optimize("O2"))) unsigned preview_render(const struct frlv
 {
     unsigned clipped=0;
     const unsigned x0=72,y0=28,aw=r->width-x0,ah=r->height-y0;
-    const int black=r->black ? (int)r->black:2048;
+    const unsigned bl=r->acc_black ? r->acc_black:r->black;
+    const int black=bl ? (int)bl:2048;
     const unsigned range=15000-(unsigned)black;
     const unsigned scale=(4095u<<16)/range,sw=MIN(preview_w/2,360u),sh=preview_h/2;
     /* white balance gains (x256) = 1/AsShotNeutral */
@@ -632,9 +661,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     write_log(r,"capturing");                    /* after arming: not on the critical path */
     {
         static char t[48];
-        snprintf(t,sizeof(t),"%s: first frame in %d.%d s",preview_only ? "Preview":"Composite",
+        snprintf(t,sizeof(t),"%s: first frame in %d.%d s",preview_only ? "Preview":mode_word(r),
             period_ms/1000,period_ms%1000/100);
-        *msg=preview_only ? "Preview: exposing":"Composite: first frame...";show_text(t);
+        *msg=preview_only ? "Preview: exposing":is_bulb(r) ? "Bulb: first frame...":"Composite: first frame...";show_text(t);
     }
     for (;;) {
         if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled() || r->merged>=r->limit || battery_low(r)) {
@@ -720,6 +749,13 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         const uint8_t *src=(const uint8_t *)physical(cap);
         unsigned s0=(unsigned)get_us_clock(),changed=0;
         if (!r->merged) { statistics(r,src);s0=(unsigned)get_us_clock(); }
+        /* Live Bulb adds only the 2-block pairs this readout delivered: in a
+         * partial frame the remaining rows still hold the previous frame,
+         * which is harmless for a maximum but would be counted twice in a
+         * sum. Those rows then lack one sub-exposure (logged as partial). */
+        const unsigned got=pointer-(unsigned)physical(cap);   /* wraps if below: 0 pairs */
+        const unsigned valid=pointer==end ? pairs:got<=r->bytes ? got/28u:0u;
+        const unsigned add_black=r->black ? r->black:2048,add_white=frlv_white(add_black);
         /* 8 bands with a scheduler tick between them keep the camera UI alive
          * (LCM24: was 16; the 10 ms ticks cost 160 ms per frame). Bands are
          * whole 2-block pairs (28 bytes, 16 pixels) for the select kernel. */
@@ -730,12 +766,23 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
             if (off && off<=r->bytes && off>b0*28) { c->lost_bands=FRLV_BANDS-b;r->late_frames++;break; }
             if (!r->merged) memcpy(acc+b0*28,src+b0*28,(b1-b0)*28);
+            else if (is_bulb(r)) {
+                const unsigned e=MIN(b1,valid);
+                if (b0<e) lc_raw14_add_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),e-b0,add_black,add_white);
+                changed+=b1-b0;
+            }
             else changed+=lc_raw14_max_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             msleep(10);
             /* Acknowledge Q/SET during the ~1.7 s merge too (LCM25). */
             if (*cancel && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
         }
+        /* LCM55: in Live Bulb a lost band is not harmless (LCM54 LVBL0003:
+         * 26 of 30 frames lost the bottom quarter, which then had ~4 frames
+         * of exposure instead of 30). Stop after the frame already armed,
+         * which is complete, and say the frames are too short. */
+        if (is_bulb(r) && c->lost_bands && cont_arm) { cont_arm=0;r->too_slow=1; }
         c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/pairs):100;
+        if (is_bulb(r)) r->acc_black=ob_mean(r,acc);   /* ~7k samples: cheap */
         c->merge_us=(unsigned)get_us_clock()-s0;
         r->merge_max_us=MAX(r->merge_max_us,c->merge_us);r->merge_sum_ms+=c->merge_us/1000;
         /* Did the next frame's readout start writing while we were reading? */
@@ -744,7 +791,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         r->merged++;
         if (off && off<=r->bytes) r->overrun_offset=MAX(r->overrun_offset,off);
         /* The next frame completed while we merged the last band(s): those
-         * rows hold a mix of two real exposures, harmless for a maximum.
+         * rows hold a mix of two real exposures, harmless for a maximum
+         * (for Live Bulb such rows may get one sub-exposure too many or too
+         * few; the band check above keeps this to the band in progress).
          * Merge that frame right away, without preview (LCM26: was fatal;
          * 0.5 fps at 99 % changed pixels needs 1.89 s). */
         if (frames_done!=seen) { r->behind++;r->preview_skipped++;continue; }
@@ -775,10 +824,18 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
          * "Stopping" box with the frame count, so Q/SET looked ignored). */
         if (preview_only) { *msg="Preview";continue; }
         if (!cont_arm) {
-            snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);*msg=line;
+            if (r->too_slow) snprintf(line,sizeof(line),"Too slow for %d s frames: stopping",r->period_ms/1000u);
+            else snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);
+            *msg=line;
             show_text(line);
         } else {
-            snprintf(line,sizeof(line),"COMPOSITE %d  SET=stop",r->merged);*msg=line;
+            if (is_bulb(r)) {
+                const unsigned s=total_exposure_ms(r)/1000u;
+                if (s>=60) snprintf(line,sizeof(line),"BULB %d  %dm%02ds  SET=stop",r->merged,s/60,s%60);
+                else snprintf(line,sizeof(line),"BULB %d  %ds  SET=stop",r->merged,s);
+            }
+            else snprintf(line,sizeof(line),"COMPOSITE %d  SET=stop",r->merged);
+            *msg=line;
             show_text(line);
         }
         if (r->merged%10==1) write_log(r,"composing");
@@ -828,6 +885,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.iso=raw2iso(lens_info.raw_iso);r.aperture=lens_info.aperture;r.battery_start=battery_level_bars;
     r.limit=o->preview_only ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */
     r.preview_only=o->preview_only;
+    r.mode=o->mode==LC_MODE_BULB ? LC_MODE_BULB:LC_MODE_COMPOSITE;
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
@@ -962,7 +1020,7 @@ restore:
         for (unsigned k=0;k<FRLV_VSYNC_RING;k++) r.vsync_us[k]=vsync_us[k];
     }
     active=0;
-    msg=r.error ? msg:"Full-res composite: restoring";*status=msg;
+    msg=r.error ? msg:is_bulb(&r) ? "Live Bulb: restoring":"Full-res composite: restoring";*status=msg;
     if (finish_dma(&r,period_ms)) dma_uncertain=1;
     if (gui_hidden) { canon_gui_enable_front_buffer(0);gui_hidden=0; }
     if (zoomed) leave_x5(&r,cancel);
@@ -1006,12 +1064,15 @@ out:
         snprintf(pv,sizeof(pv),"Preview: clipped %d.%d%%",r.clip_x10/10,r.clip_x10%10);
         msg=pv;
     }
-    else if (!r.error) msg=r.saved ? "Full-res composite saved":"Full-res: no frame saved";
+    else if (!r.error) msg=r.saved ? (is_bulb(&r) ? "Live Bulb saved":"Full-res composite saved"):"Full-res: no frame saved";
     else if (r.saved) msg="Saved; stopped early, see LOG";
     if (r.saved && !r.error && !r.unsafe) {
         static char done[64];
-        if (r.late_frames || r.missed) snprintf(done,sizeof(done),"Composite saved: %d (%d late)",r.merged,r.late_frames+r.missed);
+        const unsigned s=total_exposure_ms(&r)/1000u;
+        if (r.too_slow) snprintf(done,sizeof(done),"Bulb saved: %d frames; use longer frames",r.merged);
+        else if (r.late_frames || r.missed) snprintf(done,sizeof(done),"%s saved: %d (%d late)",mode_word(&r),r.merged,r.late_frames+r.missed);
         else if (r.battery_stop) snprintf(done,sizeof(done),"Battery low: saved %d frames",r.merged);
+        else if (is_bulb(&r)) snprintf(done,sizeof(done),"Bulb saved: %d frames, %d s",r.merged,s);
         else snprintf(done,sizeof(done),"Composite saved: %d frames",r.merged);
         msg=done;
     }

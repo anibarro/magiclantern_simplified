@@ -1110,3 +1110,48 @@ Product summary (EOS M 2.0.2):
   nothing); ON writes them next to the DNG.
 - Output in DCIM/LIVE (DCIM and LIVE created when missing; failure refuses
   the session before any hook).
+
+## LCM54: Live Bulb mode (branch live-bulb)
+
+- Menu "Mode": Live Composite (maximum, unchanged) or Live Bulb (sum). The
+  parent entry is named after the mode; Frame limit shows the total bulb
+  time in Live Bulb.
+- Live Bulb: acc = clamp(acc + frame - black, 0, white), saturated samples
+  stay (raw14-add.h). Partial frames add only the delivered rows. DNG black
+  level = optical black measured on the accumulator; ExposureTime = merged
+  frames x shutter. Output LVBLnnnn.DNG; status "BULB n  45s  SET=stop",
+  "Bulb saved: n frames, t s".
+- Host-tested (kernel exactness against a reference, bulb arithmetic,
+  simulated bulb sessions incl. partial frames and no limit). Not yet run on
+  the camera: merge time per frame still to be measured.
+
+## LCM54 camera result (LVBL0003, 3 s, limit 30)
+
+- Live Bulb ran but **the merge did not keep up**: the add kernel took
+  3.85 s per full frame (select max: 1.6-1.9 s). From the 4th frame the next
+  readout overtook the merge: 26 of 30 frames lost their last 2 of 8 bands
+  (`lost_bands`), so the bottom quarter of the DNG holds ~4 frames of
+  exposure instead of 30. Preview skipped on 28/30 frames; SET reached the
+  module only after the session (limit) had ended.
+- Cause: lc_raw14_add unpacks halfwords into stack arrays; ARM946 (qemu)
+  376 instructions per 16 pixels.
+
+## LCM55
+
+- **Word kernel for Live Bulb** (`lc_raw14_add_sel`, raw14-add.h): works on
+  32-bit stream words like the select-max kernel, one shift + mask per field
+  (6 crossing fields: two words), branch-light clamps. Bit-exact against
+  lc_raw14_add on host (random words, realistic data, 0/black/white/16383
+  edges, several black/white levels) and on emulated ARM946. 241
+  instructions per 16 pixels (-36 %): expected ~2.4-2.5 s per full frame.
+  GCC is close to the floor for this arithmetic (~10 per pixel: extract x2,
+  add, black, two clamps, saturated-stays, insert); folding the halfword
+  rotations into the shifts spilled registers (263).
+- **Live Bulb stops instead of losing bands**: if the next readout overtakes
+  the merge, the frame already armed (complete) is merged and the session
+  stops: "Too slow for N s frames: stopping", status "Bulb saved: n frames;
+  use longer frames"; LOG `Mode_total_exposure_ms_acc_black_too_slow`.
+  Composite is unchanged (a lost band is harmless for a maximum).
+- To measure on the camera: merge_us per frame at 3 s and 4 s. Expect 3 s
+  to be marginal with the preview (~2.45 s merge + ~0.24 s preview + band
+  ticks), 4 s comfortable.
