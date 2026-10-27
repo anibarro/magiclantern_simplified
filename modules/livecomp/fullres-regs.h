@@ -20,17 +20,18 @@
 #define LC_FRR_RAW_V 0xDB2u
 #define LC_FRR_TIMER_A 0x56Bu
 #define LC_FRR_CLOCK 32000000u
-#define LC_FRR_FPS_CHOICES 16u
-#define LC_FRR_FPS_DEFAULT 1u        /* 2.5 s */
-#define LC_FRR_TESTED 5u             /* entries 0..4 ran on the camera */
+#define LC_FRR_FPS_CHOICES 15u
+#define LC_FRR_FPS_DEFAULT 0u        /* 2.5 s */
+#define LC_FRR_TESTED 4u             /* 2.5, 3, 4, 5 s ran on the camera (10 s: LCM50) */
 /* Shutter (= frame period) choices, in menu order; register values = timer-1.
  * period = (A+1)(B+1) / 32 MHz, every row exposed for the whole period (no
  * gap between frames). B is 16 bits, so long periods stretch timer A in
  * multiples of the reference 0x56B+1 = 1388 (k); the sensor readout lasts
  * ~150 ms x k at the end of each period. The composite needs the CPU merge
  * (1.5-1.9 s) plus the LCD preview to finish before the next readout:
- *  - 2 s: merge fits, a full preview does not -> rolling quarter strips.
  *  - 2.5 s and longer: full preview after every frame.
+ *  - 2 s was removed (LCM51): the merge (up to 1.9 s) left the camera's
+ *    GUI task no time - SET was not handled, the preview only in strips.
  * Shorter shutters (Olympus allows 1/2 s) cannot be merged without gaps on
  * the CPU and are not offered. 2-5 s are camera-tested (LCM16-LCM41,
  * k = 1 and 3); 6-60 s use the same scheme with k up to 22 (readout up to
@@ -43,7 +44,6 @@
 #define LC_FRR_ENTRY_MS 333u
 struct lc_frr_timing { uint32_t timer_a,timer_b,period_ms; };
 static const struct lc_frr_timing lc_frr_timing[LC_FRR_FPS_CHOICES]={
-    {1387u,46107u,2000u},       /* 2 s,  k=1, rolling preview (LCM27) */
     {1387u,57635u,2500u},       /* 2.5 s, k=1, default (LCM25-41) */
     {4163u,23053u,3000u},       /* 3 s,  k=3 */
     {4163u,30739u,4000u},       /* 4 s,  k=3 (LCM39/40 sessions) */

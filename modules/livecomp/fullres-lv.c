@@ -538,10 +538,21 @@ static void write_csv(const struct frlv_result *r)
 /* Battery: PROP_BATTERY_POWER reaching 0 (the last, red level) during a
  * session stops it like SET: the exposure in progress completes, then the
  * composite is saved while there is still power for the card write. */
+/* Session messages are drawn straight onto the BMP overlay. NotifyBox
+ * calls redraw() whenever its text changes or times out, and that redraw
+ * makes Canon draw its x5 zoom box and arrows again (LCM50 camera test).
+ * Each call also clears the overlay first, so a Canon redraw never stays. */
+static char session_line[48];
+static void show_text(const char *text)
+{
+    snprintf(session_line,sizeof(session_line),"%s",text);
+    clrscr();
+    bmp_printf(FONT(FONT_LARGE,COLOR_WHITE,COLOR_BLACK),30,20,"%s",session_line);
+}
 static unsigned battery_low(struct frlv_result *r)
 {
     if (r->battery_stop || !r->battery_start || battery_level_bars>0) return 0;
-    r->battery_stop=1;NotifyBox(8000,"Battery low: saving");
+    r->battery_stop=1;show_text("Battery low: saving");
     return 1;
 }
 /* ---- Preview only (menu option) -------------------------------------
@@ -570,7 +581,7 @@ static void preview_hold(struct frlv_result *r,const uint8_t *acc,const volatile
     unsigned v=vsyncs,t0=get_ms_clock(),drawn=t0;
     while (!*cancel && !ml_shutdown_requested && zoom5() && get_ms_clock()-t0<60000) {
         if (vsyncs!=v) { v=vsyncs;preview_show(); }
-        if (get_ms_clock()-drawn>1000) { preview_info(r);drawn=get_ms_clock(); }
+        if (get_ms_clock()-drawn>1000) { clrscr();preview_info(r);drawn=get_ms_clock(); }
         msleep(20);
     }
     clrscr();
@@ -603,16 +614,20 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     arm_from_task();
     r->first_arm_after_vsync_ms=((unsigned)get_us_clock()-last_vsync_us)/1000u;
     write_log(r,"capturing");                    /* after arming: not on the critical path */
-    if (preview_only) { *msg="Preview: exposing";NotifyBox(MIN(period_ms+3000,60000u),"Preview: exposing %d.%d s",period_ms/1000,period_ms%1000/100); }
-    else { *msg="Composite: first frame...";NotifyBox(8000,"Composite: first frame"); }
+    {
+        static char t[48];
+        snprintf(t,sizeof(t),"%s: first frame in %d.%d s",preview_only ? "Preview":"Composite",
+            period_ms/1000,period_ms%1000/100);
+        *msg=preview_only ? "Preview: exposing":"Composite: first frame...";show_text(t);
+    }
     for (;;) {
         if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled() || r->merged>=r->limit || battery_low(r)) {
-            if (cont_arm && *cancel) NotifyBox(5000,"Stopping after this frame");
+            if (cont_arm && *cancel) show_text("Stopping after this frame");
             cont_arm=0;
         }
         w0=get_ms_clock();
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
-            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping after this frame"); }
+            if (*cancel && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
             if (ml_shutdown_requested || battery_low(r)) cont_arm=0;
             /* Last frame in flight: go back to 3 fps at the vsync where it
              * completes, so leaving x5 does not wait another long frame. */
@@ -702,7 +717,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             else changed+=lc_raw14_max_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             msleep(10);
             /* Acknowledge Q/SET during the ~1.7 s merge too (LCM25). */
-            if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,"Stopping after this frame"); }
+            if (*cancel && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
         }
         c->changed_pct=r->merged ? (unsigned)((uint64_t)changed*100/pairs):100;
         c->merge_us=(unsigned)get_us_clock()-s0;
@@ -745,10 +760,10 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (preview_only) { *msg="Preview";continue; }
         if (!cont_arm) {
             snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);*msg=line;
-            NotifyBox(5000,"%s",line);
+            show_text(line);
         } else {
             snprintf(line,sizeof(line),"COMPOSITE %d  SET=stop",r->merged);*msg=line;
-            NotifyBox(MIN(period_ms+2000,60000u),"%s",line);
+            show_text(line);
         }
         if (r->merged%10==1) write_log(r,"composing");
     }
@@ -873,7 +888,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     {
         static char start[40];
         snprintf(start,sizeof(start),"First frame in about %d s",(period_ms+1999)/1000);
-        msg=start;*status=msg;NotifyBox(MIN(period_ms+3000,60000u),"%s",msg);
+        msg=start;*status=msg;
     }
     unsigned t0=get_ms_clock();
     set_lv_zoom(5);zoomed=1;

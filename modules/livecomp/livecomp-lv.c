@@ -30,7 +30,8 @@ static volatile unsigned requested,attempted,running,stop_requested;
 static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
 /* Shutter: index into lc_frr_timing (fullres-regs.h). */
-static CONFIG_INT("livecomp.subexp",shutter,LC_FRR_FPS_DEFAULT);
+/* New key in LCM51 (2 s removed from the table: old indices are invalid). */
+static CONFIG_INT("livecomp.shutter",shutter,LC_FRR_FPS_DEFAULT);
 static CONFIG_INT("livecomp.frames",frame_limit,0);
 /* Preview only: one frame with the current settings on the LCD, not saved. */
 static CONFIG_INT("livecomp.preview",preview_only,0);
@@ -93,6 +94,9 @@ static void run(void *unused)
     struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
+    /* A message still on screen would call redraw() when it expires and
+     * bring Canon's overlay back during the session: close it now. */
+    NotifyBoxHide();msleep(100);
     const int gd=get_config_var("global.draw");
     if (gd&1) { set_config_var("global.draw",gd&~1);msleep(300);clrscr(); }
     unsigned unsafe=livecomp_frlv_run(get_ml_card(),&o,&stop_requested,&status);
@@ -122,10 +126,9 @@ static MENU_UPDATE_FUNC(update_shutter)
     const unsigned iso=lens_info.raw_iso ? (unsigned)raw2iso(lens_info.raw_iso):0;
     if (iso) MENU_SET_RINFO("ISO %d f/%d.%d",iso,lens_info.aperture/10,lens_info.aperture%10);
     else MENU_SET_RINFO("Auto ISO!");
-    MENU_SET_HELP("%s",shutter==0 ? "Each frame 2 s. The LCD shows a quarter of the composite per frame.":
-        "Length of each frame, no gaps. The LCD shows the composite after every frame.");
+    MENU_SET_HELP("%s","Length of each frame, no gaps. The LCD shows the composite after every frame.");
     if (!iso) MENU_SET_WARNING(MENU_WARN_ADVICE,"Auto ISO: set a fixed ISO on the camera (Movie M).");
-    else if (shutter>=(int)LC_FRR_TESTED) MENU_SET_WARNING(MENU_WARN_ADVICE,"This shutter is not yet tested on the camera.");
+    else if (shutter>=(int)LC_FRR_TESTED && lc_frr_timing[shutter].period_ms!=10000u) MENU_SET_WARNING(MENU_WARN_ADVICE,"This shutter is not yet tested on the camera.");
 }
 static MENU_UPDATE_FUNC(update_preview)
 {
@@ -138,7 +141,7 @@ static MENU_UPDATE_FUNC(update_status)
 }
 static struct menu_entry lv_children[]={
     {.name="Shutter",.priv=&shutter,.max=LC_FRR_FPS_CHOICES-1,.update=update_shutter,
-     .choices=CHOICES("2 s","2.5 s","3 s","4 s","5 s","6 s","8 s","10 s","13 s","15 s",
+     .choices=CHOICES("2.5 s","3 s","4 s","5 s","6 s","8 s","10 s","13 s","15 s",
                       "20 s","25 s","30 s","40 s","50 s","60 s"),
      .help2="ISO and aperture: set them on the camera (Movie M); they stay fixed."},
     {.name="Preview only",.priv=&preview_only,.max=1,.update=update_preview,

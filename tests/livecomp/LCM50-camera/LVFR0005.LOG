@@ -1,0 +1,35 @@
+LCM50 fast start, no zoom overlay
+Full-res composite
+Status: Composite saved: 4 frames
+Stage_error_unsafe: 8,0,0
+Stages: 1=checked 2=allocated 3=hooked 4=zoomed 5=verified 6=captured 7=restored 8=saved
+Errors: 1=ROM 2=state 4=memory 8=hook 16=zoom 32=registers 64=stall 128=DMA 256=guard 512=size 1024=IO 2048=restore 4096=cancel 8192=raw_user
+Shutter_ms_timerA_timerB_blanking: 10000,15af,e124,10
+ISO_aperture_x10_battery_start_end_stop: 100,226,2,2,0
+Preview_only_clip_pct_x10_mode_lost_dma_aborts_first_arm_ms: 0,0,0,0,33
+Timer_switch_after_zoom_ms_exit_switched_short_skipped: 1026,1,1
+EngDrvOut_instr_hooks: e5801000,3
+Regs_6800_6804_6008_6010_6014_38024: 10010,db20538,56b056b,56b,1e03,4530287
+Reg_6804_after_restore: 4a601d4
+Width_height_pitch_bytes: 5280,3506,9240,32395440
+Zoom_ms_max_vsync_gap_ms: 171,10000
+Timer_fixes_last_seen_B: 2,e124
+PathDriveMode_words: 1,2,1,1,10000,0
+Hook_cmos_calls_changes: 10,20
+Hook_adtg_calls_changes_blanking_seen: 67,51,20
+Hook_engio_calls_changes_drv_changes_overflow: 175,21,0,0
+Canon_orig_6804_timerA_timerB_blanking: 4540298,100002cb,100005d2,10256
+Merged: 4
+Black_OBstdev_x10_center_mean_max: 2047,471,8337,14250
+Col_band_means_16px: 2047,2046,2047,2047,4870,7932,8058,8141,8215,8291,8367,8428
+Row_band_means_8px: 2035,2056,2049,4967,7905,7998,8076,8138,8175,8189
+Saved_stage_size: 1,6,32397488
+DNG: B:/LVFR0005.DNG
+Limit_overrun_offset_missed_partials: -1,0,0,1
+Merge_max_us_sum_ms_preview_ok_render_us_copy_us: 1976685,5911,1,133176,107593
+WB_mode_kelvin_neutral_r_g_b: 9,5700,441358,1000000,675944
+Focus_pixels_fixed_us: 200942,1113697
+Zoom_done_ms_late_frames: 104468,0
+Merge_kernel_bands_preview_skipped_behind_strips: select,8,0,0,0
+Keys (22; ms:code:phase:passed, raw events 0x1000+param): 105582:1ff9:0:9 105582:0:0:1 113542:1ff9:0:9 113542:0:0:1 128655:1ff9:0:9 128655:0:0:1 138622:1ff9:0:9 138622:0:0:1 139918:1054:0:9 139918:0:0:1 140059:1005:0:9 140059:1d:0:0 140082:1ff9:0:9 140082:0:0:1 140142:1ff9:0:9 140142:0:0:1 145102:1ff9:0:9 145102:0:0:1 153111:1ff9:0:9 153111:0:0:1 156165:1ff9:0:9 156165:0:0:1
+Vsync_intervals_us (last 32): 557406 332425 333201 789598 9999927 9999902 9999871 9999905

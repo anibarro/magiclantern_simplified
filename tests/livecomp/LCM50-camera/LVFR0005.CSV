@@ -1,0 +1,5 @@
+seq,done_ms,merge_us,changed_pct,dma_offset_after_merge,partial_bytes_plus1,arm_after_vsync_us,cb_kind,cb_after_arm_us,cb_offset,engio_calls,adtg_calls,lost_bands
+11,116280,542196,100,0,0,115505,1,9882590,32395440,37,12,0
+12,126280,1976685,97,0,0,108544,1,9889513,32395440,19,6,0
+13,136280,1928953,87,0,0,117519,1,9880525,32395440,19,6,0
+14,146280,1465256,0,0,46201,115806,2,9274831,46200,19,6,0

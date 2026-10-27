@@ -1,4 +1,4 @@
-Live Composite LCM50 - Canon EOS M firmware 2.0.2
+Live Composite LCM51 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M at full sensor resolution
 (5208x3478): the camera keeps exposing frames of the chosen shutter speed,
@@ -21,14 +21,14 @@ CAMERA SETUP
 
 MENU (Shoot > Live Composite)
    Live Composite   ON arms the module. Nothing starts until you press SET.
-   Shutter          2 s ... 60 s (default 2.5 s): the exposure of every
+   Shutter          2.5 s ... 60 s (default 2.5 s): the exposure of every
                     frame; frames follow each other with no gap. The right
                     side shows the camera's ISO and aperture.
-                      2 s: the LCD shows a quarter of the picture per frame.
-                      2.5 s and longer: the whole picture after every frame.
-                    2-5 s are camera-tested; 6-60 s are marked "not yet
-                    tested". Shorter shutters would leave gaps (merging a
-                    frame takes ~1.5-1.9 s) and are not offered.
+                    The LCD shows the whole composite after every frame.
+                    2.5-5 s and 10 s are camera-tested; the others are
+                    marked "not yet tested". Shorter shutters are not
+                    offered: merging a frame takes ~1.5-1.9 s, so at 2 s the
+                    camera had no time left for its buttons and display.
    Preview only     OFF (default) / ON. ON: SET takes ONE frame with the
                     current shutter, ISO and aperture and shows it with its
                     settings and the share of clipped highlights. Nothing is

@@ -36,7 +36,7 @@ int main(void) {
     lc_frr_configure(&c,LC_FRR_FPS_DEFAULT);
     assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==57635 && c.blanking==10);
     for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {   /* menu order, 2 s ... 60 s */
-        static const unsigned ms[]={2000,2500,3000,4000,5000,6000,8000,10000,13000,15000,20000,25000,30000,40000,50000,60000};
+        static const unsigned ms[]={2500,3000,4000,5000,6000,8000,10000,13000,15000,20000,25000,30000,40000,50000,60000};
         assert(LC_FRR_FPS_CHOICES==sizeof(ms)/sizeof(*ms) && lc_frr_timing[i].period_ms==ms[i]);
         /* timer A = k x 1388 - 1: the reference line time stretched k times */
         assert((lc_frr_timing[i].timer_a+1)%1388==0 && lc_frr_timing[i].timer_a<=0xFFFF);
@@ -133,11 +133,12 @@ void AbortEDmac(unsigned ch); int get_global_draw_setting(void);
 #define FONT(f,fg,bg) ((f)|((fg)<<8)|((bg)<<16))
 #define FONT_MED 1
 #define FONT_SMALL 2
+#define FONT_LARGE 3
 #define COLOR_WHITE 1
 #define COLOR_BLACK 2
 void bmp_printf(uint32_t font,int x,int y,const char *fmt,...); void clrscr(void);
 void canon_gui_disable_front_buffer(void); void canon_gui_enable_front_buffer(int r); void redraw(void);
-int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap);
+int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap); void NotifyBoxHide(void);
 static inline uint32_t cli(void){ return 0; } static inline void sei(uint32_t x){ (void)x; }
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
@@ -191,7 +192,8 @@ static unsigned last_written;
 uint32_t edmac_get_pointer(uint32_t ch){ (void)ch; if (!slurp_dst) return 0;
     return (uint32_t)(uintptr_t)slurp_dst+(slurp_armed ? (overrun_sim ? 9240u:0u):last_written); }
 static struct vram_info vram={0,720,1440,480};
-void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; }
+static int gui_off,notify_while_hidden;
+void NotifyBox(int ms,const char *fmt,...){ (void)ms;(void)fmt; if (gui_off) notify_while_hidden++; }
 uint32_t edmac_get_address(uint32_t ch){ (void)ch; return 0; }
 struct vram_info *get_yuv422_vram(void){ return &vram; }
 static void (*sim_cb)(void*);static void *sim_cb_ctx;
@@ -207,9 +209,9 @@ struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
 int raw2iso(int r){ return r; }
 static int hud_draws,hud_clears;static char hud_text[128];
-void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x; if (y<40) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
+void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x; if (y<20) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
 void clrscr(void){ hud_clears++; }
-static int gui_off;static unsigned gui_offs;
+static unsigned gui_offs;
 void canon_gui_disable_front_buffer(void){ gui_off=1;gui_offs++; } void canon_gui_enable_front_buffer(int r){ (void)r; gui_off=0; } void redraw(void){}
 int lens_set_rawiso(int iso){ lens_info.raw_iso=iso; return 1; }
 int lens_set_rawaperture(int ap){ lens_info.raw_aperture=ap; lens_info.aperture=ap; return 1; }
@@ -295,7 +297,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={1,6,0};   /* 2.5 s shutter, stop after 6 frames */
+    struct lc_frlv_options o={0,6,0};   /* 2.5 s shutter, stop after 6 frames */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -317,7 +319,7 @@ int main(void)
     assert(strstr(last_log,"Timer_switch_after_zoom_ms_exit_switched_short_skipped: "));
     { const char *k=strstr(last_log,"exit_switched_short_skipped: ");unsigned sw,ex,sk;
       assert(sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3 && ex==1 && sw<1500);printf("short frames skipped: %u\n",sk); }
-    assert(gui_offs==1 && gui_off==0);
+    assert(gui_offs==1 && gui_off==0 && !notify_while_hidden);   /* NotifyBox redraws Canon's zoom box */
     /* Start-up: armed right after the transitional frame (no full period
      * lost waiting for the next vsync), i.e. 40-100 ms after a vsync. */
     { const char *k=strstr(last_log,"first_arm_ms: ");unsigned po,cl,ml,da,fa;
@@ -360,7 +362,7 @@ int main(void)
         printf("sub-exposure %u: %s\n",i,status);
         assert(!unsafe && strstr(status,"saved: 6 frames") && zoom==1);
     }
-    o.fps_index=1;sim_period_us=2500000;
+    o.fps_index=0;sim_period_us=2500000;
     /* No frame limit: runs until SET (simulated at frame 9), then saves. */
     reset();o.limit=0;cancel_at=9;cancel_ptr=&cancel;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -384,14 +386,14 @@ int main(void)
       printf("behind: %s (behind=%u skipped_previews=%u)\n",status,behind,skip);
       assert(!unsafe && strstr(status,"saved") && zoom==1 && behind>0); }
     sim_slow=1;
-    /* 2 s: a full preview does not fit but a quarter strip does. */
-    reset();sim_period_us=2000000;o.fps_index=0;sim_slow=20;o.limit=8;dng_size_ok=2048+bytes;
+    /* Slow merge at 2.5 s: a full preview does not fit, a quarter strip does. */
+    reset();sim_period_us=2500000;o.fps_index=0;sim_slow=25;o.limit=8;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0,strips=0;
       assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u,%u",&bands,&skip,&behind,&strips)==4);
       printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
       assert(!unsafe && strstr(status,"saved") && strips>=2); }
-    sim_slow=1;o.fps_index=1;sim_period_us=2500000;o.limit=6;
+    sim_slow=1;o.fps_index=0;sim_period_us=2500000;o.limit=6;
     /* Preview only: exactly one frame captured, shown until SET (simulated
      * a few vsyncs later), nothing saved (no DNG, no CSV), clipped share in
      * the status; the next session numbers are not consumed (LVPREVW.LOG). */
