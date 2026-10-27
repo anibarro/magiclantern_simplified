@@ -1,4 +1,10 @@
-# Full-sensor development
+# Full-sensor development log
+
+This is the chronological lab notebook of the full-resolution work (LCM9
+onwards): every build, what it tested, the camera result and the conclusion
+at that time. Early sections describe plans and hypotheses that later
+sections overturned. For the current design read HOW-IT-WORKS.md; for the
+hardware-merge investigation as a whole read HARDWARE-MERGE.md.
 
 LCM13 is a feasibility gate, **not a full-sensor capture implementation**. The
 working normal-LV composite remains the default. The new Task / Full-res check
@@ -1063,3 +1069,44 @@ Product summary (EOS M 2.0.2):
   strips when a full preview does not fit before the next frame.
 - Missed frames counted (stop only past 2 + limit/4); partial frames merged.
 - PDAF pixel fix, WB neutral from Canon's setting, DNG + LOG + CSV.
+
+## LCM42-LCM52: product (summary)
+
+- LCM42-LCM44: menu reduced to the options that apply (Shutter, Preview only,
+  Frame limit, Status); Olympus-style exposure: shutter from the menu (only
+  values that work), ISO and aperture from the camera's Movie M settings;
+  the Live View-resolution mode removed; battery-low stop and save; short
+  on-screen messages; every SET/Q event consumed while running (Canon left
+  x5 when a SET release leaked); Canon leaving the mode mid-frame is
+  detected and the frame in flight aborted with AbortEDmac.
+- LCM45-LCM47: an in-session exposure preview with live adjustments was
+  tried and rejected (controls locked in the modified x5 mode, confusing).
+- LCM48: "Preview only" instead: one frame with the current settings, shown
+  with the share of clipped highlights, nothing saved. Global Draw may stay
+  on: it is switched off for the session and restored.
+- LCM49-LCM50: fast start. x5 is entered at 3 fps and the chosen shutter is
+  switched in at a vsync; the late-latched short first frame is detected and
+  skipped; on stop the timers return to 3 fps. Camera: first frame after
+  3.9 s at 2.5 s (was ~2 shutters), 11.8 s at 10 s.
+- LCM51: Canon's zoom box hidden (front buffer disabled, messages drawn on
+  the BMP overlay, no NotifyBox during the session); 2 s removed (the merge
+  left the GUI task no time: SET not handled).
+- LCM52: in photo mode the module is inactive and Status says "Needs Movie
+  mode".
+
+## Hardware merge revisited (LCX1-LCX2, branch livecomp-hwx)
+
+- LCX1: with Live View paused the full-sensor readout delivers nothing, even
+  with Live View's resources held, the timing generator, sensor lists and
+  the 189 pipeline registers restored.
+- LCX2: with Live View running the engine runs, but its output is paced by
+  the running sensor pipeline (8 KB burst per vsync + ~3 KB during the
+  readout): ~11 KB per frame. Closed; the product stays on the CPU merge.
+  Details: HARDWARE-MERGE.md.
+
+## LCM53: production options
+
+- Debug (default OFF): OFF writes no LOG/CSV at all (Preview only writes
+  nothing); ON writes them next to the DNG.
+- Output in DCIM/LIVE (DCIM and LIVE created when missing; failure refuses
+  the session before any hook).

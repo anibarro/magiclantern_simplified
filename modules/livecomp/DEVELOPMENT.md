@@ -3,17 +3,19 @@
 ## Scope and module conventions
 
 The module provides an Olympus-style live composite at full sensor resolution
-(5208x3478) on the EOS M 2.0.2: an exposure preview, then gapless frames of the
+(5208x3478) on the EOS M 2.0.2: an optional one-frame preview, then gapless frames of the
 chosen shutter merged into an exact per-pixel RAW maximum, an LCD preview of the
 composite and a RAW DNG. EOS M firmware 2.0.2 is the only supported camera.
 The first versions (LCM1-LCM14) composited Live View resolution frames at 3 fps;
-that mode was removed in LCM43. FULLRES.md is the design log of the full-res work.
+that mode was removed in LCM43. HOW-IT-WORKS.md describes the implementation,
+FULLRES.md is the chronological design log, HARDWARE-MERGE.md the investigation
+of Canon's image engine.
 
 | File | Role |
 | --- | --- |
 | `livecomp.c` | module callbacks, camera guard, EOS M Q/SET adapter |
 | `livecomp-lv.c` | menu, start/stop keys, worker task |
-| `fullres-lv.c` | full-sensor session: hooks, x5 switch, RAW slurp, preview, merge, DNG/LOG/CSV |
+| `fullres-lv.c` | full-sensor session: hooks, x5 switch, RAW slurp, preview, merge, DNG (DCIM/LIVE), LOG/CSV with Debug ON |
 | `fullres-regs.h` | CROP_Full_Res register values, shutter (timer) table, list rewriting |
 | `raw14-max.h` | packed RAW14 select-max merge kernel (+ reference maximum for tests) |
 | `fullres-fix.h` | EOS M focus-pixel fix, DNG white balance from Canon's WB |
@@ -80,10 +82,21 @@ structure layouts. They do not establish hardware behaviour.
 ## Evidence
 
 Live View resolution: LCM8 captured 76/76 frames with LCD updates and a DNG.
-Full resolution: camera sessions LCM23-LCM42 with 2, 2.5 and 4 s frames, exact
-merges, LCD preview, focus-pixel fix and WB (logs in tests/livecomp/). Canon's
-hardware max engine was investigated (LCM9-LCM40) and found unusable while
-Live View runs; see FULLRES.md.
+Full resolution: camera sessions LCM23-LCM52 with 2-5 and 10 s frames, exact
+merges, LCD preview, focus-pixel fix and WB (logs in tests/livecomp/LCMnn-camera).
+Canon's hardware max engine was investigated (LCM9-LCM40, LCX1-LCX2) and cannot
+merge while the sensor runs; see HARDWARE-MERGE.md. The experimental code is
+kept, unbuilt, in research/livecomp-hwx/.
+
+## Core compatibility
+
+The module needs no change to the ML core. It builds against the unmodified
+upstream `magiclantern_simplified` dev branch (verified at 142472e95), and
+`build_tools/build_livecomp.sh` checks that every import exists in an EOSM.202
+core built from that tree and that the shared structure layouts match. The two
+repository changes outside the module only add it to the build lists
+(`modules/Makefile`, `platform/EOSM.202/modules.included`). Camera tests so far
+ran with a locally built EOSM.202 core, not with an official nightly.
 
 ## Provenance and contribution status
 
