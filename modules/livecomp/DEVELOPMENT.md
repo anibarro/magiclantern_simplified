@@ -5,7 +5,9 @@
 The module provides an Olympus-style live composite at full sensor resolution
 (5208x3478) on the EOS M 2.0.2: an optional one-frame preview, then gapless frames of the
 chosen shutter merged into an exact per-pixel RAW maximum (Live Composite) or
-sum (Live Bulb, LCM54), an LCD preview of the result and a RAW DNG. EOS M firmware 2.0.2 is the only supported camera.
+sum (Live Bulb, LCM54), an LCD preview of the result and a RAW DNG, with
+column correction (Live Bulb) and optional dark-frame subtraction (LCM56-LCM61).
+EOS M firmware 2.0.2 is the only supported camera.
 The first versions (LCM1-LCM14) composited Live View resolution frames at 3 fps;
 that mode was removed in LCM43. HOW-IT-WORKS.md describes the implementation,
 FULLRES.md is the chronological design log, HARDWARE-MERGE.md the investigation
@@ -15,11 +17,11 @@ of Canon's image engine.
 | --- | --- |
 | `livecomp.c` | module callbacks, camera guard, EOS M Q/SET adapter |
 | `livecomp-lv.c` | menu, start/stop keys, worker task |
-| `fullres-lv.c` | full-sensor session: hooks, x5 switch, RAW slurp, preview, merge, DNG (DCIM/LIVE), LOG/CSV with Debug ON |
+| `fullres-lv.c` | full-sensor session: hooks, x5 switch, warm-up, RAW slurp, preview, merge, dark frames, DNG (DCIM/LIVE), LOG/CSV with Debug ON |
 | `fullres-regs.h` | CROP_Full_Res register values, shutter (timer) table, list rewriting |
 | `raw14-max.h` | packed RAW14 select-max merge kernel (+ reference maximum for tests) |
-| `raw14-add.h` | packed RAW14 sum kernel for Live Bulb |
-| `fullres-fix.h` | EOS M focus-pixel fix, DNG white balance from Canon's WB |
+| `raw14-add.h` | packed RAW14 sum kernel (Live Bulb) and subtract kernel (dark frames) |
+| `fullres-fix.h` | column correction, EOS M focus-pixel fix, DNG white balance from Canon's WB |
 | `fullres-gamma.h` | preview gamma table |
 | `lv-dng.h` | DNG header writer |
 | `camera-profile.h` | runtime camera selection |
@@ -37,7 +39,8 @@ The implementation follows the module boundaries described in
 4. Core services are runtime-resolved exports; no patched core or dependent
    modules. While a session runs, four fingerprinted sensor-configuration
    functions (CMOS, ADTG, ENGIO lists, EngDrvOut) are hooked; the hooks are
-   inert outside x5 and removed at the end of the session.
+   inert outside x5 and removed at the end of the session. A fifth hook on
+   Canon's AbortEDmac only records calls on the RAW channel (diagnostics).
 5. Shared structure sizes and every accessed member offset are compared between
    the generic module and the EOS M core by the ARM ABI test. Do not enable another
    camera merely by changing the initialization guard.
@@ -46,13 +49,17 @@ The implementation follows the module boundaries described in
 
 The worker checks the camera state and fingerprints, allocates two 32 MB buffers
 (capture with guards, accumulator), installs the hooks and requests x5 zoom;
-Canon then configures the full-sensor readout through the hooks. Our own RAW
-slurp (EDMAC 0x12) is armed from the worker after every frame. Each completed
-frame is checked (DMA idle, end pointer, guards) and then either shown (exposure
-preview) or merged in 8 bands while the next exposure runs. Stop finishes the
-exposure in progress; the session then leaves x5, removes the hooks, frees the
-capture buffer, fixes the focus pixels and writes the DNG. If the RAW DMA does
-not finish, the buffers stay allocated and Status asks for a reboot.
+Canon then configures the full-sensor readout through the hooks. After a
+12-frame warm-up at 3 fps (throwaway captures), our own RAW slurp (EDMAC 0x12)
+is armed from the worker after every frame. Each completed frame is checked
+(DMA idle, end pointer, guards) and then either shown (exposure preview) or
+merged in 8 bands while the next exposure runs. Stop finishes the exposure in
+progress; with Dark frame ON the dark frames follow. The session then waits
+until the sensor runs short frames again, leaves x5, removes the hooks,
+applies the column correction, frees the capture buffer (or uses it to read
+back the unprocessed DNG), fixes the focus pixels and writes the DNG. If the
+RAW DMA does not finish, the buffers stay allocated and Status asks for a
+reboot.
 
 The standard EOS M core consumes idle physical Q/SET down before module dispatch,
 but forwards physical SET up; the raw callback handles that release. A seen press
@@ -74,17 +81,24 @@ The core is for checking only; it is not included in the ZIP. Windows users may
 run `RUN_LIVECOMP_BUILD.cmd` with the toolchain in WSL. Scripts use LF endings.
 
 Checks: register rewriting against the crop_rec reference and the shutter
-table; a simulated camera session (switch, capture, preview, merge, every
-shutter, no limit, partial/late/skipped frames, battery stop, refusals, DMA
-quarantine, Live Bulb sessions); merge and sum kernel exactness; focus-pixel fix and WB mapping; DNG
-header and RAW14 byte order; SET/half-shutter gating; camera rejection and ARM
+table; a simulated camera session (switch, warm-up, capture, preview, merge,
+every shutter, no limit, partial/late/skipped frames, battery stop, refusals,
+DMA quarantine, Live Bulb sessions, dark frames in place / with Save
+unprocessed / skipped, composite dark frame, SET before the first long frame
+with the late timer latch, a simulated Canon abort inside and after the
+warm-up); merge, sum and subtract kernel exactness; column correction
+(synthetic sensor with lanes, noise, gradient, bright line and a dark edge);
+focus-pixel fix and WB mapping; DNG header and RAW14 byte order;
+SET/half-shutter/button-command/touch gating; camera rejection and ARM
 structure layouts. They do not establish hardware behaviour.
 
 ## Evidence
 
 Live View resolution: LCM8 captured 76/76 frames with LCD updates and a DNG.
 Full resolution: camera sessions LCM23-LCM52 with 2-5 and 10 s frames, exact
-merges, LCD preview, focus-pixel fix and WB (logs in tests/livecomp/LCMnn-camera).
+merges, LCD preview, focus-pixel fix and WB; LCM55-LCM61 Live Bulb (3-50 s),
+column correction, dark frames and the composite dark frame (logs in
+tests/livecomp/LCMnn-camera).
 Canon's hardware max engine was investigated (LCM9-LCM40, LCX1-LCX2) and cannot
 merge while the sensor runs; see HARDWARE-MERGE.md. The experimental code is
 kept, unbuilt, in research/livecomp-hwx/.

@@ -16,6 +16,10 @@ Set ISO and aperture on the camera, the shutter in this menu.
 Preview only ON: SET shows one frame with these settings, nothing saved.
 SET starts the composite, SET stops and saves DCIM/LIVE/LVFRnnnn.DNG
 (diagnostic LOG/CSV only with Debug ON).
+Live Bulb removes column stripes automatically. Dark frame ON: cover the
+lens at the end; dark frames (Bulb: as many as light frames, Composite: one)
+are subtracted. Save unprocessed ON: also LVBR/LVCR (no in-camera noise
+reduction) and LVDK/LVCK (dark frames).
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
 Standalone module
@@ -23,7 +27,8 @@ Standalone module
 
 Standard ML RAW, FPS, display and key callbacks are used; no other module or
 modified core is required. Full-res mode temporarily hooks four fingerprinted
-EOS M 2.0.2 sensor-configuration functions while it runs (see FULLRES.md).
+EOS M 2.0.2 sensor-configuration functions while it runs, and Canon's
+AbortEDmac for a diagnostic trace only (see FULLRES.md).
 Camera-specific assumptions are selected at runtime after a model/firmware
 check. No platform headers or camera-specific compiler flags are used.
 See DEVELOPMENT.md for conventions, validation and AI-generation disclosure.
@@ -36,13 +41,16 @@ livecomp.mo. The validation core is never included in the install ZIP.
 Validation
 ----------
 
-Camera-tested on an EOS M 2.0.2: full-res composites with 2.5, 3, 4, 5 and
-10 s shutters (LCM23-LCM52), exact merges, LCD preview, focus-pixel fix,
-white balance and DNG; 6-60 s still need a camera run. Live Bulb: 3 s
-frames (LCM55, 2.3 s per merge, LCD updated every frame); it needs a 3 s or
-longer shutter. Host tests cover the
-register rewriting, a simulated session, the merge kernel, the DNG writer,
-the key gating and the ARM structure layouts.
+Camera-tested on an EOS M 2.0.2: full-res composites with 2.5, 3, 4, 5, 6
+and 10 s shutters (LCM23-LCM61), exact merges, LCD preview, focus-pixel fix,
+white balance and DNG. Live Bulb: 3, 4, 6, 15 and 50 s frames (LCM55-LCM61,
+2.3 s per added frame), column correction, dark-frame subtraction (in place
+and with Save unprocessed) and single-frame bulbs; composite dark frame
+(LCM61, 6 s). Not yet confirmed on the camera: the LCM62/63 start-up delay
+against the recurring partial frame. Host tests cover the register rewriting, a
+simulated session (incl. dark frames, the late timer latch, a simulated
+Canon abort), the merge/sum/subtract kernels, the column correction, the
+DNG writer, the key gating and the ARM structure layouts.
 
 Documentation
 -------------

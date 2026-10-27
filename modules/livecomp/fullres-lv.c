@@ -85,6 +85,17 @@ static void frlv_slurp(void *dst,int pitch,int height)
 #define FRLV_ENGIO_WRITE 0xFF2C19ACu
 #define FRLV_ENGIO_INSTR 0xE51FC15Cu
 #define FRLV_ENGDRVOUT 0xFF2C1694u
+/* LCM62: AbortEDmac (stubs.S), hooked for a trace only (who aborts our RAW
+ * channel 0x12 at the start of the 5th frame's readout, every session since
+ * LCM18). Installed only if it starts like a normal function (STMFD). */
+#define FRLV_ABORT_FN 0x1CA60u
+/* LCM62: frames (vsyncs) kept at the 3 fps entry timing after x5, each with
+ * a throwaway RAW slurp, before the chosen shutter starts. The recurring
+ * abort (frame 5 counted by our slurps before LCM48 and after it, with a
+ * different number of 3 fps frames; LCM21: Canon's Evf VD handler runs a
+ * "LastRamClear" around frame 4) then falls on a throwaway frame, whether
+ * Canon counts VDs after x5 or slurps on channel 0x12. ~4 s more startup. */
+#define FRLV_WARMUP_VDS 12u
 #define FRLV_PATHDRIVE 0x892E8u          /* struct PathDriveMode; zoom at +0x12 */
 #define FRLV_RAW_TYPE_REG 0xC0F37014u
 #define FRLV_RAW_TYPE 0x10u              /* src/raw.c PREFERRED_RAW_TYPE, DIGIC V */
@@ -189,6 +200,21 @@ void livecomp_frlv_vsync(void)
     }
 }
 
+/* LCM62: AbortEDmac calls on our RAW channel (LOG): vsyncs since x5, caller
+ * (LR), ms, our own abort, slurp in flight. */
+#define FRLV_ABORTS 8u
+static struct { uint32_t vd,lr,ms;uint8_t own,flight; } abort_log[FRLV_ABORTS];
+static volatile unsigned abort_n,own_abort,vd_zoom;
+static void FAST abort_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
+{
+    (void)stack;(void)pc;
+    if (!observing || regs[0]!=raw_write_chan) return;
+    const unsigned i=abort_n++;
+    if (i<FRLV_ABORTS) {
+        abort_log[i].vd=vsyncs-vd_zoom;abort_log[i].lr=regs[13];abort_log[i].ms=get_ms_clock();
+        abort_log[i].own=(uint8_t)own_abort;abort_log[i].flight=(uint8_t)in_flight;
+    }
+}
 /* Keys seen while a session runs (diagnostics, LOG): ms, code, phase, result. */
 #define FRLV_KEYS 64u
 static struct { uint32_t ms;uint16_t code;uint8_t phase,result; } key_log[FRLV_KEYS];
@@ -201,7 +227,8 @@ void livecomp_frlv_key_log(unsigned code,unsigned phase,unsigned result)
 }
 
 struct frlv_result {
-    unsigned error,stage,unsafe,rom_engdrvout,hooks;
+    unsigned error,stage,unsafe,rom_engdrvout,hooks,rom_abort,abort_hooked;
+    unsigned warmup_slurps,warmup_done,warmup_ms,warmup_aborts;
     unsigned top_left,bottom_right,width,height,pitch,bytes;
     unsigned reg_6804,reg_6008,reg_6010,reg_6014,reg_38024,reg_6804_after;
     unsigned zoom_ms,merged;
@@ -217,6 +244,14 @@ struct frlv_result {
     unsigned mode;        /* LC_MODE_COMPOSITE / LC_MODE_BULB */
     unsigned acc_black;   /* Live Bulb: black level measured on the accumulator */
     unsigned too_slow;    /* Live Bulb stopped: merge overtaken by the next readout */
+    unsigned colfix_rms_x10,colfix_us;   /* Live Bulb column correction (LCM56) */
+    unsigned colfix_img,colfix_dark,colfix_vob,colfix_vpix,colfix_scan_us;   /* LCM57 image refinement */
+    int32_t colfix_lane_x10[8];
+    /* LCM59 dark frames (menu option): as many as light frames, same shutter */
+    unsigned dark_want,save_orig,dark_state,dark_frames,dark_partials,dark_lost,dark_wait_ms,dark_sep;
+    unsigned orig_saved,dark_saved,orig_read,dark_black,dark_merge_us;
+    unsigned end_wait_ms;
+    unsigned bulb_partials;               /* Live Bulb: partial frames not added (LCM56) */
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
 };
 
@@ -315,6 +350,23 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->zoom_done_ms,r->late_frames,is_bulb(r) ? "add":"select",FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips,
         is_bulb(r) ? "bulb":"composite",total_exposure_ms(r),r->acc_black,r->too_slow);
     ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Column_fix_rms_x10_us_bulb_partials_skipped: %d,%d,%d\n",r->colfix_rms_x10,r->colfix_us,r->bulb_partials);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Column_fix_img_dark_vob_vpix_scan_us_lanes_x10: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+        r->colfix_img,r->colfix_dark,r->colfix_vob,r->colfix_vpix,r->colfix_scan_us,
+        r->colfix_lane_x10[0],r->colfix_lane_x10[1],r->colfix_lane_x10[2],r->colfix_lane_x10[3],
+        r->colfix_lane_x10[4],r->colfix_lane_x10[5],r->colfix_lane_x10[6],r->colfix_lane_x10[7]);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Dark_want_orig_state_frames_partials_lost_wait_ms_sep_origsaved_darksaved_origread_black_merge_us_end_wait_ms: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+        r->dark_want,r->save_orig,r->dark_state,r->dark_frames,r->dark_partials,r->dark_lost,r->dark_wait_ms,r->dark_sep,
+        r->orig_saved,r->dark_saved,r->orig_read,r->dark_black,r->dark_merge_us,r->end_wait_ms);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Warmup_vds_slurps_done_ms_aborts: %d,%d,%d,%d,%d\n",FRLV_WARMUP_VDS,r->warmup_slurps,r->warmup_done,r->warmup_ms,r->warmup_aborts);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Abort_hook_instr_hooked_calls (vd:lr:ms:own:inflight): %x,%d,%d",r->rom_abort,r->abort_hooked,abort_n);
+    for (unsigned k=0;k<abort_n && k<FRLV_ABORTS;k++)
+        n+=snprintf(t+n,sizeof(t)-n," %d:%x:%d:%d:%d",abort_log[k].vd,abort_log[k].lr,abort_log[k].ms,abort_log[k].own,abort_log[k].flight);
+    t[n++]='\n';ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Keys (%d; ms:code:phase:passed, raw events 0x1000+param):",key_n);
     for (unsigned k=0;k<key_n && k<FRLV_KEYS;k++)
         n+=snprintf(t+n,sizeof(t)-n," %d:%x:%d:%d",key_log[k].ms,key_log[k].code,key_log[k].phase,key_log[k].result);
@@ -434,6 +486,29 @@ static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
     if (FIO_GetFileSize(r->dng,&size) || size!=header+r->bytes) return 0;
     r->save_size=size;r->save_stage=6;return 1;
 }
+/* LCM59: read a DNG written by frlv_save_dng back into a raster (Canon
+ * byte order). 1 = all r->bytes read. */
+static int frlv_load_dng(const struct frlv_result *r,const char *path,uint8_t *dst)
+{
+    if (r->width%8) return 0;
+    uint8_t *scratch=fio_malloc(16384);
+    if (!scratch) return 0;
+    FILE *f=FIO_OpenFile(path,O_RDONLY);
+    if (!f || f==(void *)-1) { fio_free(scratch);return 0; }
+    int ok=1;
+    for (unsigned h=0;ok && h<LC_DNG_HEADER_BYTES;) {           /* skip the header */
+        const unsigned n=MIN(16384u,LC_DNG_HEADER_BYTES-h);
+        ok=FIO_ReadFile(f,scratch,n)==(int)n;h+=n;
+    }
+    for (unsigned off=0;ok && off<r->bytes;off+=16384) {
+        const unsigned n=MIN(16384u,r->bytes-off);
+        ok=FIO_ReadFile(f,scratch,n)==(int)n;
+        if (ok) lc_dng_swap_copy(dst+off,scratch,n);           /* the swap is its own inverse */
+        if (ml_shutdown_requested) ok=0;
+    }
+    FIO_CloseFile(f);fio_free(scratch);
+    return ok;
+}
 static int guards_ok(const uint8_t *p,unsigned bytes)
 {
     for (unsigned i=0;i<FRLV_GUARD;i++) if (p[(int)i-(int)FRLV_GUARD]!=0x5a || p[bytes+i]!=0x5a) return 0;
@@ -451,7 +526,7 @@ static int guards_ok(const uint8_t *p,unsigned bytes)
 static unsigned raw_dma_abort(void)
 {
     if (!edmac_get_state(raw_write_chan)) { in_flight=0;return 1; }
-    AbortEDmac(raw_write_chan);
+    own_abort=1;AbortEDmac(raw_write_chan);own_abort=0;
     for (unsigned i=0;i<30 && edmac_get_state(raw_write_chan);i++) msleep(10);
     if (edmac_get_state(raw_write_chan)) return 0;
     in_flight=0;return 1;
@@ -631,6 +706,154 @@ static void preview_hold(struct frlv_result *r,const uint8_t *acc,const volatile
     }
     clrscr();
 }
+/* LCM59: dark frames after the last light frame (Live Bulb, menu option),
+ * like Canon's long exposure noise reduction: as many frames as the bulb
+ * has, with the same shutter, so the dark lasts as long as the exposure.
+ * (LCM58 used one dark frame: LVBL0017/19 showed that the column pattern
+ * changes from frame to frame - one dark frame x N added ~13 DN of bars -
+ * and warm pixels too weak to see in one frame add up over N.)
+ * The sensor keeps running at the session shutter (no exit switch). A 10 s
+ * countdown asks to cover the lens (SET skips); the first dark frame is one
+ * whose every row started after the countdown (rolling shutter: the first
+ * rows of the frame ending at vsync V+1 started up to one readout before V).
+ * Only two 32 MB buffers exist (LCM9-13), so:
+ *  - Save unprocessed OFF: each dark frame is subtracted from the sum as it
+ *    arrives (lc_raw14_sub_sel, like the add, during the next exposure).
+ *  - Save unprocessed ON: the light sum is first saved (LVBRnnnn.DNG), the
+ *    dark frames are summed in the same buffer (saved as LVDKnnnn.DNG at
+ *    the end) and the light sum is read back from the card to subtract.
+ * SET during the dark frames stops after the current one (fewer darks). */
+/* LCM61, Live Composite: ONE dark frame at the session shutter. A maximum
+ * keeps each pixel from one frame, so hot pixels and dark current are in it
+ * once, not N times; max(L_k - D) = max(L_k) - D, so subtracting it at the
+ * end equals cleaning every frame. The column correction then removes the
+ * column pattern the dark frame may carry and the composite not (it
+ * switches from frame to frame). Unprocessed: LVCR, dark: LVCK. */
+enum { DK_OFF=0,DK_SKIPPED=1,DK_FAILED=2,DK_DONE=3,DK_PARTIAL=4 };
+static const char *orig_prefix(const struct frlv_result *r) { return r->mode==LC_MODE_BULB ? "LVBR":"LVCR"; }
+static const char *dark_prefix(const struct frlv_result *r) { return r->mode==LC_MODE_BULB ? "LVDK":"LVCK"; }
+#define FRLV_DARK_COUNTDOWN_MS 10000u
+static void path_prefix(char *dst,unsigned size,const char *src,const char *prefix)
+{
+    snprintf(dst,size,"%s",src);
+    const unsigned L=strlen(dst);
+    if (L>=12) memcpy(dst+L-12,prefix,4);
+}
+/* One frame into dst in FRLV_BANDS bands: kind 0 copy, 1 add, 2 subtract.
+ * Returns the bands lost to the next readout (only when it is armed). */
+static unsigned merge_frame(const struct frlv_result *r,uint8_t *dst,const uint8_t *src,const uint8_t *cap,unsigned kind,unsigned black)
+{
+    const unsigned pairs=r->bytes/28,white=frlv_white(black);
+    for (unsigned b=0;b<FRLV_BANDS;b++) {
+        const unsigned b0=pairs*b/FRLV_BANDS,b1=pairs*(b+1)/FRLV_BANDS;
+        unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
+        if (off && off<=r->bytes && off>b0*28) return FRLV_BANDS-b;
+        if (kind==0) memcpy(dst+b0*28,src+b0*28,(b1-b0)*28);
+        else if (kind==1) lc_raw14_add_sel((uint32_t *)(void *)(dst+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0,black,white);
+        else lc_raw14_sub_sel((uint32_t *)(void *)(dst+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0,black,white);
+        msleep(10);
+    }
+    return 0;
+}
+static void dark_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,const volatile unsigned *cancel,unsigned period_ms,
+    unsigned *dma_uncertain)
+{
+    static char line[64];
+    const unsigned N=r->mode==LC_MODE_BULB ? r->merged:1u,t0=get_ms_clock();
+    unsigned v=vsyncs,shown=~0u;
+    r->dark_state=DK_SKIPPED;
+    /* Save unprocessed: the light sum first (the buffer is reused). */
+    if (r->save_orig) {
+        static struct frlv_result orig;
+        show_text("Saving the unprocessed DNG...");
+        orig=*r;path_prefix(orig.dng,sizeof(orig.dng),r->dng,orig_prefix(r));
+        r->orig_saved=frlv_save_dng(&orig,acc);
+        r->dark_sep=r->orig_saved;          /* else: subtract in place */
+    }
+    const unsigned c0=*cancel,tc=get_ms_clock();
+    for (;;) {
+        const unsigned el=get_ms_clock()-tc;
+        if (el>=FRLV_DARK_COUNTDOWN_MS) break;
+        if (*cancel!=c0 || ml_shutdown_requested || !zoom5() || window_lost()) { r->dark_sep=0;show_text("Dark frames skipped");return; }
+        if (vsyncs!=v) { v=vsyncs;preview_show(); }
+        const unsigned left=(FRLV_DARK_COUNTDOWN_MS-el+999u)/1000u;
+        if (left!=shown) { shown=left;snprintf(line,sizeof(line),"COVER THE LENS: dark frames in %d s  SET=skip",left);show_text(line); }
+        msleep(50);
+    }
+    const unsigned covered=get_ms_clock(),readout_ms=150u*((cfg.timer_a+1u)/1388u)+300u;
+    r->dark_state=DK_FAILED;
+    snprintf(line,sizeof(line),"Dark: keep the lens covered (%dm%02ds)",(N+1)*period_ms/60000u,(N+1)*period_ms/1000u%60u);show_text(line);
+    for (;;) {                                       /* the frame boundary to start at */
+        v=vsyncs;
+        while (vsyncs==v && get_ms_clock()-covered<2*period_ms+3000u) {
+            if (ml_shutdown_requested || !zoom5() || window_lost()) return;
+            msleep(10);
+        }
+        if (vsyncs==v) return;
+        preview_show();
+        if (last_vsync_ms-covered>=readout_ms) break;
+    }
+    /* Arm the next dark frame before adding this one only if the add ends
+     * before the next readout starts writing (else every other frame). */
+    const unsigned merge_ms=r->merge_max_us/1000u+300u;
+    const unsigned overlap=merge_ms+readout_ms+300u<period_ms;
+    const unsigned kind_first=r->dark_sep ? 0u:2u,kind_next=r->dark_sep ? 1u:2u;
+    const unsigned black=r->black ? r->black:2048;
+    unsigned stop=0,last_switch=0;
+    msleep(40);
+    unsigned seen=frames_done,a0=get_ms_clock();
+    arm_from_task();
+    shown=~0u;
+    while (r->dark_frames<N) {
+        while (frames_done==seen && in_flight && get_ms_clock()-a0<period_ms+3000u) {
+            if (vsyncs!=v) { v=vsyncs;preview_show(); }
+            if (*cancel!=c0 && !stop) stop=1;
+            const unsigned left=(N-r->dark_frames)*period_ms/1000u-MIN((get_ms_clock()-a0)/1000u,period_ms/1000u);
+            if (left!=shown) {
+                shown=left;
+                snprintf(line,sizeof(line),stop ? "DARK %d/%d  last one  (lens covered)":"DARK %d/%d  %ds  SET=stop",r->dark_frames+1,N,left);
+                show_text(line);
+            }
+            /* Back to 3 fps at the vsync that ends the last dark frame. */
+            if ((r->dark_frames+1>=N || stop) && !r->exit_switched && get_ms_clock()-a0>2*LC_FRR_ENTRY_MS+100) {
+                const uint32_t irq=cli();pend_a=LC_FRR_ENTRY_A;pend_b=LC_FRR_ENTRY_B;pending_timers=1;sei(irq);
+                r->exit_switched=1;last_switch=1;
+            }
+            if (!zoom5() || window_lost()) break;
+            msleep(20);
+        }
+        if (frames_done==seen || in_flight) {        /* not completed: stop our DMA */
+            if (!raw_dma_abort()) *dma_uncertain=1;
+            break;
+        }
+        seen=frames_done;
+        const unsigned complete=!done_state && done_pointer==physical(cap)+r->bytes && guards_ok(cap,r->bytes);
+        const unsigned last=r->dark_frames+1>=N || stop;
+        if (!complete) {
+            r->dark_partials++;
+            if (r->dark_partials>2+N/4 || last_switch) break;
+            msleep(40);a0=get_ms_clock();arm_from_task();
+            continue;
+        }
+        if (!last && overlap) { msleep(40);a0=get_ms_clock();arm_from_task(); }
+        sync_caches();
+        const unsigned m0=(unsigned)get_us_clock();
+        const unsigned lost=merge_frame(r,acc,(const uint8_t *)physical(cap),cap,r->dark_frames ? kind_next:kind_first,black);
+        r->dark_merge_us=MAX(r->dark_merge_us,(unsigned)get_us_clock()-m0);
+        if (lost) { r->dark_lost++;break; }          /* rows already mixed: stop here */
+        r->dark_frames++;
+        if (last) break;
+        if (!overlap) {                              /* next frame boundary, then arm */
+            v=vsyncs;
+            while (vsyncs==v && get_ms_clock()-a0<2*period_ms+3000u) msleep(10);
+            msleep(40);a0=get_ms_clock();arm_from_task();
+        }
+    }
+    if (in_flight && !raw_dma_abort()) *dma_uncertain=1;
+    r->dark_wait_ms=get_ms_clock()-t0;
+    r->dark_state=r->dark_frames>=N ? DK_DONE:r->dark_frames ? DK_PARTIAL:DK_FAILED;
+    show_text(r->dark_frames ? "Dark frames done: lens can be uncovered":"Dark frames failed");
+}
 static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms,
     unsigned preview_only)
@@ -679,8 +902,12 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             /* Only once the frame in flight has clearly outlasted a 3 fps frame
              * (so it is a full-shutter frame whose end is the right moment;
              * a late-latched short frame is never followed by the switch). */
-            if ((!cont_arm || r->merged+1>=r->limit) && !r->exit_switched &&
-                get_ms_clock()-last_vsync_ms>2*LC_FRR_ENTRY_MS+100) {
+            /* LCM59: before the first full frame only within a real long
+             * frame (not the short transitional one: SET during it now
+             * still captures the first full frame). */
+            if ((!cont_arm || r->merged+1>=r->limit) && !r->exit_switched && !r->dark_want &&
+                get_ms_clock()-last_vsync_ms>2*LC_FRR_ENTRY_MS+100 &&
+                (r->merged || get_ms_clock()-last_vsync_ms>period_ms*9u/10u)) {
                 const uint32_t irq=cli();pend_a=LC_FRR_ENTRY_A;pend_b=LC_FRR_ENTRY_B;pending_timers=1;sei(irq);
                 r->exit_switched=1;
             }
@@ -726,7 +953,10 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (!r->merged && frame_interval_ms(done_vsync)*10u<period_ms*9u) {
             r->short_skipped++;
             if (r->short_skipped>3) { cont_arm=0;r->error|=FE_STALL;*msg="Shutter not applied";break; }
-            if (cont_arm && !in_flight) arm_from_task();
+            /* LCM59: SET during the first frame means "stop after it" (a
+             * single-frame bulb, LVBL0014), not "no frame": still capture
+             * the first full one. */
+            if ((cont_arm || (!r->merged && !ml_shutdown_requested && !battery_low(r))) && !in_flight) arm_from_task();
             continue;
         }
         /* Next frame: arm now (its readout starts ~period-readout later),
@@ -744,6 +974,16 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
              * is the previous (already merged) frame. Merge it and log it. */
             r->partials++;
             if (r->partials>2+r->merged/4) { cont_arm=0;r->error|=FE_DMA;*msg="Too many partial frames";break; }
+            /* LCM56: Live Bulb does not add a partial frame at all (LCM55:
+             * the 4th frame of every session delivered 6 rows and was
+             * counted as a full sub-exposure: the DNG had N-1 frames of
+             * light but claimed N). It is a gap of one sub-exposure, the
+             * same for every row; the frame count stays exact. */
+            if (is_bulb(r)) {
+                r->bulb_partials++;
+                if (cont_arm && !in_flight && r->merged<r->limit) arm_from_task();
+                continue;
+            }
         }
         sync_caches();
         const uint8_t *src=(const uint8_t *)physical(cap);
@@ -841,6 +1081,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         if (r->merged%10==1) write_log(r,"composing");
     }
     cont_arm=0;
+    if (r->dark_want && r->merged && !r->error && !r->mode_lost && !r->battery_stop && !*dma_uncertain &&
+        !ml_shutdown_requested && zoom5() && !window_lost())
+        dark_capture(r,cap,acc,cancel,period_ms,dma_uncertain);
     if (preview_only && r->merged && !r->error && !*dma_uncertain) preview_hold(r,acc,cancel);
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
 }
@@ -873,6 +1116,12 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     const volatile unsigned *cancel,const char **status)
 {
     static struct frlv_result r;
+    /* LCM56: never two sessions at once. LCM55 LVBL0010/11: a second start
+     * while a session was still running cleared this shared state and lost
+     * the first session's DNG. */
+    static volatile unsigned busy;
+    if (busy) { *status="Session already running";return 0; }
+    busy=1;
     memset(&r,0,sizeof(r));memset(&stats,0,sizeof(stats));
     lc_frr_configure(&cfg,o->fps_index);
     /* Enter at 3 fps; the chosen shutter is switched in at a vsync once the
@@ -886,10 +1135,12 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.limit=o->preview_only ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */
     r.preview_only=o->preview_only;
     r.mode=o->mode==LC_MODE_BULB ? LC_MODE_BULB:LC_MODE_COMPOSITE;
+    r.dark_want=o->dark_frame && !o->preview_only;      /* LCM61: composite too */
+    r.save_orig=o->save_orig && !o->preview_only;
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
-    unsigned hooked[4]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0,gui_hidden=0;
+    unsigned hooked[5]={0},power=0,locked=0,old_lock=0,zoomed=0,dma_uncertain=0,gui_hidden=0;
     const char *msg="Checking the camera";
     *status=msg;
     in_flight=0;timer_fixes=0;
@@ -961,7 +1212,12 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     if (((r.rom_engdrvout&0xFFFF0000u)==0xE92D0000u || (r.rom_engdrvout&0xFFFFF000u)==0xE51FC000u) &&
         !patch_hook_function(FRLV_ENGDRVOUT,r.rom_engdrvout,drv_hook,"livecomp: full-res preview"))
         hooked[3]=1;
-    r.hooks=3+hooked[3];r.stage=3;
+    abort_n=0;own_abort=0;vd_zoom=0;
+    r.rom_abort=MEM(FRLV_ABORT_FN);
+    if ((r.rom_abort&0xFFFF0000u)==0xE92D0000u &&
+        !patch_hook_function(FRLV_ABORT_FN,r.rom_abort,abort_hook,"livecomp: abort trace"))
+        hooked[4]=r.abort_hooked=1;
+    r.hooks=3+hooked[3]+hooked[4];r.stage=3;
     vsyncs=0;max_gap_ms=0;key_n=0;observing=1;active=1;
     write_log(&r,"hooked; entering x5");
 
@@ -970,7 +1226,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
      * first frame at the chosen shutter. */
     {
         static char start[40];
-        snprintf(start,sizeof(start),"First frame in about %d s",(period_ms+1999)/1000);
+        snprintf(start,sizeof(start),"First frame in about %d s",(period_ms+1999+(o->preview_only ? 0u:FRLV_WARMUP_VDS*LC_FRR_ENTRY_MS))/1000);
         msg=start;*status=msg;
     }
     unsigned t0=get_ms_clock();
@@ -979,7 +1235,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
         if (*cancel || ml_shutdown_requested || get_ms_clock()-t0>6000) { r.error|=FE_ZOOM;break; }
         msleep(50);
     }
-    r.zoom_ms=get_ms_clock()-t0;r.zoom_done_ms=get_ms_clock();
+    r.zoom_ms=get_ms_clock()-t0;r.zoom_done_ms=get_ms_clock();vd_zoom=vsyncs;
     if (r.error) { msg="x5 zoom did not engage";goto restore; }
     if (!wait_vsyncs(2,3*LC_FRR_ENTRY_MS+4000,cancel)) { r.error|=*cancel ? FE_CANCEL:FE_STALL;msg="No LV frames after switch";goto restore; }
     r.top_left=shamem_read(0xC0F06800);r.bottom_right=shamem_read(0xC0F06804);
@@ -998,6 +1254,31 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     /* Hide Canon's zoom overlay (box and arrows): Canon stops drawing to the
      * visible BMP buffer; ML's own text still shows. Restored at the end. */
     canon_gui_disable_front_buffer();gui_hidden=1;clrscr();
+    /* LCM62 warm-up (FRLV_WARMUP_VDS): 3 fps frames with throwaway slurps.
+     * Not for Preview: its single frame ends before the aborted one. */
+    if (!o->preview_only) {
+        const unsigned w0=get_ms_clock(),limit=FRLV_WARMUP_VDS*LC_FRR_ENTRY_MS+3000u;
+        unsigned v=vsyncs,shown=~0u;
+        static char tl[48];
+        while (vsyncs-vd_zoom<FRLV_WARMUP_VDS && get_ms_clock()-w0<limit) {
+            if (*cancel || ml_shutdown_requested || !zoom5() || window_lost()) break;
+            /* LCM63: say why nothing happens yet (first frame = rest + shutter) */
+            const unsigned done_vd=vsyncs-vd_zoom,left_vd=done_vd<FRLV_WARMUP_VDS ? FRLV_WARMUP_VDS-done_vd:0u;
+            const unsigned left=(left_vd*LC_FRR_ENTRY_MS+period_ms+999u)/1000u;
+            if (left!=shown) { shown=left;snprintf(tl,sizeof(tl),"Tactical delay... first frame in %d s",left);show_text(tl); }
+            if (vsyncs!=v) {
+                v=vsyncs;
+                if (!in_flight) { msleep(40);arm_from_task();r.warmup_slurps++; }
+            }
+            msleep(5);
+        }
+        if (in_flight) {                             /* the last one ends at its vsync */
+            const unsigned v1=vsyncs;
+            while (vsyncs==v1 && get_ms_clock()-w0<limit+1000u) msleep(5);
+        }
+        if (in_flight && !raw_dma_abort()) { dma_uncertain=1;r.error|=FE_DMA;msg="RAW DMA did not stop";goto restore; }
+        r.warmup_done=frames_done;r.warmup_ms=get_ms_clock()-w0;r.warmup_aborts=abort_n;
+    }
     /* Switch to the chosen shutter at the next vsync. */
     {
         unsigned w0=get_ms_clock();
@@ -1014,6 +1295,29 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     *status=msg;
 
 restore:
+    /* LCM58/59: a long frame may still be exposing (LVBL0014: SET 3 s into
+     * the first 50 s frame; a skipped dark frame). Canon cannot leave x5
+     * before it ends (LCM57 gave up after 18 s: FE_RESTORE). And the timers
+     * latch one frame late on the camera (short_skipped=1): after the switch
+     * back to 3 fps one more long frame may run (LCM58 LVBL0018: FE_RESTORE
+     * after a 50 s dark frame). So: switch back to 3 fps if not yet done and
+     * wait until a frame is actually short again. */
+    if (zoomed && r.stage>=5 && zoom5() && !r.mode_lost && !ml_shutdown_requested) {
+        static char wl[48];
+        if (cfg.timer_a!=LC_FRR_ENTRY_A || cfg.timer_b!=LC_FRR_ENTRY_B || pending_timers) {
+            const uint32_t irq=cli();pend_a=LC_FRR_ENTRY_A;pend_b=LC_FRR_ENTRY_B;pending_timers=1;sei(irq);
+        }
+        const unsigned w0=get_ms_clock(),limit=2*period_ms+3000u;
+        unsigned shown=~0u,v0=vsyncs;
+        while (zoom5() && get_ms_clock()-w0<limit) {
+            if (!pending_timers && vsyncs!=v0 && frame_interval_ms(vsyncs)<2*LC_FRR_ENTRY_MS) break;
+            const unsigned el=get_ms_clock()-w0,since=get_ms_clock()-last_vsync_ms;
+            const unsigned left=since<period_ms ? (period_ms-since+999u)/1000u:1u;
+            if (el>1500 && left!=shown) { shown=left;snprintf(wl,sizeof(wl),"Ending the current frame: up to %d s",left);show_text(wl); }
+            msleep(20);
+        }
+        r.end_wait_ms=get_ms_clock()-w0;
+    }
     {
         unsigned c=vsyncs;r.vsync_count=MIN(c,FRLV_VSYNC_RING);
         r.vsync_first=c>FRLV_VSYNC_RING ? c%FRLV_VSYNC_RING:0;
@@ -1022,17 +1326,20 @@ restore:
     active=0;
     msg=r.error ? msg:is_bulb(&r) ? "Live Bulb: restoring":"Full-res composite: restoring";*status=msg;
     if (finish_dma(&r,period_ms)) dma_uncertain=1;
-    if (gui_hidden) { canon_gui_enable_front_buffer(0);gui_hidden=0; }
+    /* LCM60: Canon's drawing back only once at x1. Before, it came back
+     * while still in x5 and Canon could draw its zoom/focus box for the
+     * (up to one long frame) it took to leave x5. */
     if (zoomed) leave_x5(&r,cancel);
-    if (zoomed) redraw();
+    if (gui_hidden) { canon_gui_enable_front_buffer(0);gui_hidden=0; }
+    if (zoomed) { clrscr();redraw(); }
     if (zoomed && !(r.error&FE_RESTORE)) r.stage=MAX(r.stage,7u);
     goto unhook;
 hook_fail:
     r.error|=FE_HOOK;msg="Hook failed; nothing changed";
 unhook:
     active=0;
-    for (int i=3;i>=0;i--) if (hooked[i]) {
-        static const uint32_t sites[4]={FRLV_CMOS_WRITE,FRLV_ADTG_WRITE,FRLV_ENGIO_WRITE,FRLV_ENGDRVOUT};
+    for (int i=4;i>=0;i--) if (hooked[i]) {
+        static const uint32_t sites[5]={FRLV_CMOS_WRITE,FRLV_ADTG_WRITE,FRLV_ENGIO_WRITE,FRLV_ENGDRVOUT,FRLV_ABORT_FN};
         if (unpatch_memory(sites[i])) r.unsafe=1;
     }
     observing=0;
@@ -1041,16 +1348,94 @@ out:
     if (dma_uncertain) r.unsafe=1;
     /* The capture buffer is free once no DMA can target it: release it
      * before the (slow) DNG write. A partial composite is still saved. */
-    if (!r.unsafe && alloc[0]) { fio_free(alloc[0]);alloc[0]=NULL;cap=NULL; }
+    /* LCM59: with separate dark frames (Save unprocessed) the accumulator
+     * holds the dark sum; the light sum is read back into the capture
+     * buffer, so that one stays allocated until then. */
+    const unsigned dark_sep=r.dark_sep && r.dark_frames && !r.unsafe && cap;
+    if (!r.unsafe && alloc[0] && !dark_sep) { fio_free(alloc[0]);alloc[0]=NULL;cap=NULL; }
+    if (dark_sep && acc && !ml_shutdown_requested && get_ml_card()==card) {
+        static struct frlv_result dr;
+        dr=r;dr.merged=r.dark_frames;dr.acc_black=ob_mean(&r,acc);r.dark_black=dr.acc_black;
+        path_prefix(dr.dng,sizeof(dr.dng),r.dng,dark_prefix(&r));
+        *status="Saving the dark frames";NotifyBox(60000,"Saving the dark frames...");
+        r.dark_saved=frlv_save_dng(&dr,acc);
+        static char lpath[FIO_MAX_PATH_LENGTH];
+        path_prefix(lpath,sizeof(lpath),r.dng,orig_prefix(&r));
+        *status="Reading the unprocessed DNG";NotifyBox(60000,"Subtracting the dark frames...");
+        uint8_t *light=(uint8_t *)physical(cap);
+        r.orig_read=frlv_load_dng(&r,lpath,light);
+        if (r.orig_read) {
+            /* light - (dark sum - its black): the light black level stays */
+            const unsigned lb=is_bulb(&r) ? r.acc_black:r.black,pairs=r.bytes/28,white=frlv_white(lb ? lb:2048);
+            for (unsigned b=0;b<FRLV_BANDS;b++) {
+                const unsigned b0=pairs*b/FRLV_BANDS,b1=pairs*(b+1)/FRLV_BANDS;
+                lc_raw14_sub_sel((uint32_t *)(void *)(light+b0*28),(const uint32_t *)(const void *)(acc+b0*28),b1-b0,r.dark_black,white);
+                msleep(10);
+            }
+            acc=light;                                   /* the result; both buffers freed below */
+        } else {
+            r.error|=FE_IO;r.dark_state=DK_FAILED;acc=NULL; /* no light sum in memory: LVBR is the result */
+            msg=is_bulb(&r) ? "Dark subtraction failed: see LVBR":"Dark subtraction failed: see LVCR";
+        }
+    }
+    /* Save unprocessed without dark frames: the sum before any correction. */
+    if (r.save_orig && !r.orig_saved && acc && r.merged && is_bulb(&r) && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&   /* composite: no processing without dark */
+        !(r.error&(FE_GUARD|FE_SIZE|FE_REGS)) && !(r.dark_frames && !r.dark_sep)) {
+        static struct frlv_result orig;
+        orig=r;path_prefix(orig.dng,sizeof(orig.dng),r.dng,orig_prefix(&r));
+        *status="Saving the unprocessed DNG";NotifyBox(60000,"Saving the unprocessed DNG...");
+        r.orig_saved=frlv_save_dng(&orig,acc);
+    }
     if (acc && r.merged && !r.preview_only && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
         !(r.error&(FE_GUARD|FE_SIZE|FE_REGS))) {
+        if (r.width==5280 && r.height>LC_CF_Y1+8 &&
+            (is_bulb(&r) ? r.merged>1:r.dark_state==DK_DONE)) {   /* LCM61: composite after its dark frame */
+            /* LCM56: remove the column pattern the sum built up (fullres-fix.h).
+             * LCM57: OB rows give the non-periodic part only; the 8-column
+             * lanes and a per-column refinement come from flat dark image
+             * areas (rows y%8<2), weighted against the OB estimate.
+             * LCM59: after dark frames too: the column pattern changes from
+             * frame to frame, so light and dark sums do not cancel it fully. */
+            static int32_t col_off[5280],cf_s8[5280],cf_lane_ob[8];
+            static uint16_t cf_n[5280];
+            static int16_t cf_row[5280];
+            *status="Column correction";
+            unsigned c0=(unsigned)get_us_clock();
+            /* LCM57: tell the user once the correction has taken more than 1 s
+             * (LCM59: 60 s box; LCM58's 15 s one expired: black screen). */
+            unsigned cf_told=0;
+            #define CF_TELL() do { if (!cf_told && (unsigned)get_us_clock()-c0>1000000u) { \
+                cf_told=1;*status="Applying denoise";NotifyBox(60000,"Applying denoise..."); } } while (0)
+            const unsigned cf_lb=is_bulb(&r) ? r.acc_black:r.black,cf_black=cf_lb ? cf_lb:2048;
+            r.colfix_rms_x10=lc_colfix_measure(acc,r.pitch,r.width,LC_CF_Y0,LC_CF_Y1,col_off);
+            lc_colfix_split_lanes(col_off,r.width,cf_lane_ob);
+            r.colfix_vob=lc_colfix_ob_var(acc,r.pitch,r.width,LC_CF_Y0,LC_CF_Y1);
+            for (unsigned x=0;x<5280;x++) { cf_s8[x]=0;cf_n[x]=0; }
+            struct lc_colfix_scan sc={cf_s8,cf_n,cf_row,0,0,lc_colfix_lr_max(r.colfix_vob)};
+            for (unsigned y=28u;y<r.height;y++) {           /* active rows */
+                if ((y&7)>=2) continue;
+                lc_colfix_scan_row(&sc,acc,r.pitch,r.width,y,col_off,cf_black);
+                if ((y&127)==1) { CF_TELL();msleep(1); }   /* keep the camera UI alive */
+            }
+            r.colfix_dark=sc.cnt;
+            r.colfix_img=lc_colfix_combine(col_off,r.width,&sc,cf_lane_ob,r.colfix_vob,r.colfix_lane_x10,&r.colfix_vpix);
+            r.colfix_scan_us=(unsigned)get_us_clock()-c0;
+            const unsigned white=frlv_white(cf_black);
+            for (unsigned y=0;y<r.height;y+=128) {
+                lc_colfix_apply(acc,r.pitch,r.width,y,MIN(r.height,y+128),col_off,white);
+                CF_TELL();msleep(1);                /* keep the camera UI alive */
+            }
+            #undef CF_TELL
+            r.colfix_us=(unsigned)get_us_clock()-c0;
+        }
         if (r.width==5280) {
+            *status="Fixing focus pixels";
             unsigned f0=(unsigned)get_us_clock();
             r.fp_fixed=lc_fix_focus_pixels(acc,r.width,r.height,r.pitch);
             r.fp_us=(unsigned)get_us_clock()-f0;
         }
         *status="Saving the DNG";
-        NotifyBox(15000,"Saving the DNG...");
+        NotifyBox(60000,"Saving the DNG...");
         r.saved=frlv_save_dng(&r,acc);
         if (!r.saved) r.error|=FE_IO;
         else r.stage=8;
@@ -1072,12 +1457,16 @@ out:
         if (r.too_slow) snprintf(done,sizeof(done),"Bulb saved: %d frames; use longer frames",r.merged);
         else if (r.late_frames || r.missed) snprintf(done,sizeof(done),"%s saved: %d (%d late)",mode_word(&r),r.merged,r.late_frames+r.missed);
         else if (r.battery_stop) snprintf(done,sizeof(done),"Battery low: saved %d frames",r.merged);
-        else if (is_bulb(&r)) snprintf(done,sizeof(done),"Bulb saved: %d frames, %d s",r.merged,s);
-        else snprintf(done,sizeof(done),"Composite saved: %d frames",r.merged);
+        else if (is_bulb(&r)) snprintf(done,sizeof(done),"Bulb saved: %d frames, %d s%s",r.merged,s,
+            r.dark_state==DK_DONE ? ", dark subtracted":r.dark_state==DK_PARTIAL ? ", dark partial":
+            r.dark_state==DK_FAILED ? ", dark failed":"");
+        else snprintf(done,sizeof(done),"Composite saved: %d frames%s",r.merged,
+            r.dark_state==DK_DONE ? ", dark subtracted":r.dark_state==DK_FAILED ? ", dark failed":"");
         msg=done;
     }
     *status=msg;
     if (r.log[0]) write_log(&r,msg);
     if (r.log[0] && !r.preview_only) write_csv(&r);
+    busy=0;
     return r.unsafe;
 }

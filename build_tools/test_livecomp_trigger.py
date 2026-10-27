@@ -109,8 +109,15 @@ int main(void) {
     now=21000;{ struct event e={0,5,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==2); } /* release only */
     now=22000;{ struct event e={0,0x1d,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==3); }
     { struct event e={0,0x50,0,0};assert(livecomp_raw_key((uintptr_t)&e)==1); }   /* other keys: portable path */
+    /* LCM56: Canon's button command and touches never reach Canon while running. */
+    { struct event e={0,0x54,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0 && stops==3); }
+    { struct event e={0,0x6f,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0); }
+    { struct event e={0,0x79,0,0};assert(livecomp_raw_key((uintptr_t)&e)==0); }
+    { struct event e={0,0x7a,0,0};assert(livecomp_raw_key((uintptr_t)&e)==1); }
     assert(keylog_n>=6);
     attempted=running=0;set_release_blocked=0;
+    { struct event e={0,0x54,0,0};assert(livecomp_raw_key((uintptr_t)&e)==1); }   /* idle: Canon's */
+    { struct event e={0,0x6f,0,0};assert(livecomp_raw_key((uintptr_t)&e)==1); }
     struct event internal={2,5,0,0};
     assert(livecomp_raw_key((uintptr_t)&internal)==1 && !requested);
     return 0;

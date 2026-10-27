@@ -32,6 +32,12 @@
 #include "fullres-regs.h"
 
 static volatile unsigned requested,attempted,running,stop_requested;
+/* LCM56: set by the worker itself. task_create() returns ((x<<16)|id)<<1,
+ * which can be negative as an int: LCM55 then reported "Worker failed"
+ * and cleared running while the session ran, so SET went to Canon (zoom
+ * box) and a second SET started a second session. */
+static volatile unsigned worker_alive;
+static unsigned create_ms;
 static unsigned menu_added;
 static CONFIG_INT("livecomp.enabled",enabled,0);
 /* Mode: LC_MODE_COMPOSITE (0, maximum) or LC_MODE_BULB (1, sum). */
@@ -44,6 +50,10 @@ static CONFIG_INT("livecomp.frames",frame_limit,0);
 static CONFIG_INT("livecomp.preview",preview_only,0);
 /* Debug: LOG/CSV diagnostics next to the DNG. OFF: no log files at all. */
 static CONFIG_INT("livecomp.debug",debug,0);
+/* Dark frame (LCM58): Live Bulb ends with one frame with the lens covered. */
+static CONFIG_INT("livecomp.dark",dark_frame,0);
+/* Save unprocessed (LCM59): also the DNG before in-camera noise reduction. */
+static CONFIG_INT("livecomp.orig",save_orig,0);
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
 static const char *status;   /* last result; NULL = show the setup hint */
@@ -52,7 +62,8 @@ static const char *mode_name(void) { return bulb() ? "Live Bulb":"Live Composite
 
 int livecomp_lv_busy(void) { return requested || attempted; }
 int livecomp_lv_running(void) { return running; }
-static void stop(unsigned kind) { (void)kind;stop_requested=1; }
+/* A counter (LCM58): the dark-frame countdown skips on a further press. */
+static void stop(unsigned kind) { (void)kind;if (stop_requested<1000u) stop_requested++; }
 void livecomp_lv_shutdown(void) { stop(3); }
 /* Only an intentional Q/SET in idle Movie Live View starts a session. Menu,
  * playback, recording and normal shutter operation are never start triggers. */
@@ -101,9 +112,10 @@ unsigned livecomp_lv_vsync(unsigned context)
 static void run(void *unused)
 {
     (void)unused;
+    worker_alive=1;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
     struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug,
-        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE};
+        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
     /* A message still on screen would call redraw() when it expires and
@@ -174,6 +186,16 @@ static MENU_UPDATE_FUNC(update_preview)
 {
     if (preview_only) MENU_SET_WARNING(MENU_WARN_ADVICE,"Preview only: SET shows one frame, no composite is recorded.");
 }
+static MENU_UPDATE_FUNC(update_dark)
+{
+    if (dark_frame) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",bulb() ? "At the end: cover the lens when asked; dark frames take as long as the bulb.":
+        "At the end: cover the lens when asked; one dark frame (one shutter).");
+}
+static MENU_UPDATE_FUNC(update_orig)
+{
+    if (save_orig) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",bulb() ? "LVBRnnnn.DNG: no in-camera correction; LVDKnnnn.DNG: dark frames (sum).":
+        "With Dark frame: LVCRnnnn.DNG unprocessed, LVCKnnnn.DNG the dark frame.");
+}
 static MENU_UPDATE_FUNC(update_status)
 {
     if (!running && !attempted && !is_movie_mode()) {
@@ -199,7 +221,14 @@ static struct menu_entry lv_children[]={
      .help2="Nothing is saved. Adjust, then turn it OFF for the composite."},
     {.name="Frame limit",.priv=&frame_limit,.max=COUNT(frame_limits)-1,.update=update_frames,
      .choices=CHOICES("No limit","30 frames","60 frames","120 frames","240 frames"),
-     .help="Stop and save automatically after this many frames. SET stops earlier."},
+     .help="Stop and save automatically after this many frames. SET stops earlier.",
+     .help2="SET during the first frame: a single-frame bulb (SET stops after it)."},
+    {.name="Dark frame",.priv=&dark_frame,.max=1,.update=update_dark,
+     .help="After the last frame, cover the lens. Bulb: as many dark frames;",
+     .help2="Composite: one. Subtracted like long exposure NR. SET skips/stops."},
+    {.name="Save unprocessed",.priv=&save_orig,.max=1,.update=update_orig,
+     .help="Also save the DNG without in-camera noise reduction (LVBR/LVCR)",
+     .help2="and the dark frames (LVDK/LVCK, Dark frame ON). Slower: extra card writes."},
     {.name="Debug",.priv=&debug,.max=1,
      .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
      .help2="OFF: no log files; only the composite DNG is saved."},
@@ -219,10 +248,11 @@ void livecomp_lv_poll(struct card_info *card)
     if (!enabled || ml_shutdown_requested) { requested=0;return; }
     if (requested && !attempted && card && !gui_menu_shown() &&
         gui_state==livecomp_camera.gui_idle && lv && !LV_PAUSED && !lens_info.job_state) {
-        attempted=running=1;requested=0;
-        if ((int)task_create("lvcomposite",0x1e,0x4000,run,0)<=0) {
-            status="Worker failed; retry";attempted=running=0;
-        }
+        attempted=running=1;requested=0;worker_alive=0;create_ms=get_ms_clock();
+        task_create("lvcomposite",0x1e,0x4000,run,0);
+    }
+    else if (running && !worker_alive && get_ms_clock()-create_ms>3000) {
+        status="Worker failed; retry";attempted=running=0;
     }
 }
 MODULE_CONFIGS_START()
@@ -232,4 +262,6 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(frame_limit)
     MODULE_CONFIG(preview_only)
     MODULE_CONFIG(debug)
+    MODULE_CONFIG(dark_frame)
+    MODULE_CONFIG(save_orig)
 MODULE_CONFIGS_END()

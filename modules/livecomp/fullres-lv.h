@@ -11,6 +11,8 @@ struct lc_frlv_options {
     unsigned preview_only; /* 1: one frame shown on the LCD until SET, nothing saved */
     unsigned debug;        /* 1: LOG/CSV next to the DNG; 0: no log files at all */
     unsigned mode;         /* LC_MODE_COMPOSITE or LC_MODE_BULB */
+    unsigned dark_frame;   /* 1: dark frames at the end (lens covered): Bulb N, Composite 1 */
+    unsigned save_orig;    /* 1: also save LVBR/LVCR (unprocessed) and LVDK/LVCK (dark) */
 };
 /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,

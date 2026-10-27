@@ -1155,3 +1155,120 @@ Product summary (EOS M 2.0.2):
 - To measure on the camera: merge_us per frame at 3 s and 4 s. Expect 3 s
   to be marginal with the preview (~2.45 s merge + ~0.24 s preview + band
   ticks), 4 s comfortable.
+
+## LCM55 camera result (LVBL0003-LVBL0011)
+
+- Live Bulb works at 3-6 s: 2.3 s per added frame, LCD updated every frame.
+- **Vertical bars in the shadows.** Every column carries a small offset in
+  every frame; the sum multiplies it by N (LVBL0009: ~23 DN at 12 frames),
+  random noise only by sqrt(N). Part of it repeats every 8 columns. A maximum
+  keeps it at one frame's size (LVFR0002: ~2.5 DN).
+- **SET ignored, Canon's zoom box, a lost session.** `task_create()` returns
+  `((x<<16)|id)<<1`, negative as an int at times: LCM55 then reported
+  "Worker failed" and cleared `running` while the worker ran. SET went to
+  Canon (zoom box), and a second SET started a second session; LVBL0010's
+  DNG was lost and its log ended up in LVBL0011.
+- The 4th frame of every session arrived with 6 rows and was counted.
+
+## LCM56
+
+- Column correction for Live Bulb at save time: per-column offsets from the
+  covered rows 16..26 (trimmed mean, minus the CFA-parity mean), subtracted
+  from every row; saturated samples kept. LOG
+  `Column_fix_rms_x10_us_bulb_partials_skipped`.
+- The worker reports itself (`worker_alive`); failure only after 3 s
+  without it. `livecomp_frlv_run` has a re-entry guard. While running,
+  Canon's 0x54 "button pressed" command and touch events 0x6F-0x79 are
+  swallowed.
+- Live Bulb leaves partial frames out entirely (not added, not counted).
+
+## LCM56 camera result (LVBL0012) and LCM57
+
+- The fix ran (rms 31.7 DN, 5.4 s) but the dark column error only went from
+  ~20 to 12 DN. Offline analysis of LVBL0005/0009/0012: the 8-column
+  ("lane") part differs between the covered rows and the image (image
+  +5 -6 -10 +13 +3 +5 +3 -11 DN per 12 frames, covered rows +6 -4 -7 +3 +6 +1
+  -7 -2), and 9 covered samples per column leave ~9 DN of estimation noise
+  that becomes new full-height bars.
+- LCM57: the covered rows give only the non-periodic part; lanes and a
+  per-column refinement come from flat dark image areas (rows y%8<2,
+  d = v - mean of the same-colour neighbours x+-2..8), weighted against the
+  covered-row estimate (`lc_colfix_split_lanes`, `lc_colfix_ob_var`,
+  `lc_colfix_scan_row`, `lc_colfix_combine` with one Jacobi step). Offline
+  cross-validation: 9-11 DN -> 4.3-7.6 DN. "Applying denoise..." once the
+  correction takes more than 1 s.
+
+## LCM57 camera result (LVBL0013-LVBL0016) and LCM58
+
+- LVBL0013 (13 x 4 s): column std 4.8 DN, lanes flat; correction ~9 s.
+- LVBL0014 (50 s shutter): SET 3 s after the start, during the short
+  transitional frame: clean stop with 0 frames, then leaving x5 failed
+  during the running 50 s frame (FE_RESTORE after 18 s); LVBL0015 refused
+  with "Turn ML FPS override OFF" because the camera was half-restored.
+- LCM58: dark frame option (one frame, lens covered); stop waits for the
+  frame in progress at 3 fps before leaving x5.
+
+## LCM58 camera result (LVBL0017-LVBL0019) and LCM59
+
+- One dark frame x N was wrong: the dark frames carry a strong static
+  column pattern P (12.7 DN per frame, corr 0.99-1.00 between sessions), but
+  light sums contain it 0-10 times out of 10-12 (it switches from frame to
+  frame; the covered rows do not track how much the image rows got).
+  Subtracting N x P added ~13 DN bars. LVBL0018 (1 x 50 s + 1 dark) was
+  clean. Processing took 54 s; the 15 s message box expired (black screen).
+- LVBL0018 also ended FE_RESTORE: with the late timer latch one more 50 s
+  frame followed the dark frame.
+- LCM59: Live Bulb dark = as many frames as light frames, subtracted in
+  place as they arrive (`lc_raw14_sub_sel`), or with Save unprocessed: LVBR
+  saved, darks summed apart (LVDK), LVBR read back and the sum subtracted.
+  The column correction still runs afterwards. Leaving x5 waits until a
+  frame is actually short again. SET during the first (transitional) frame
+  means "stop after the first full frame". All save steps show a 60 s
+  NotifyBox.
+
+## LCM59 camera result (LVBL0020-LVBL0022) and LCM60
+
+- LVBL0022 (2 x 50 s + 2 darks): clean, restore 45 s after the last dark
+  (the late-latched frame), no error.
+- LVBL0021 (2 x 6 s, Save unprocessed): the dark subtraction removed hot
+  pixels and P exactly (column std 1.5 DN), but the column refinement put
+  -31/+32 DN bands along a vertical edge in the shadows: d is biased along a
+  scene edge in every row, and with 2 frames the covered-row estimate is
+  weak (w ~0.9). LVBL0020 (11 x 6 s, in place) showed the same kind of
+  bands.
+- LCM60: samples whose left and right neighbour sums differ by 2 sigma or
+  more are skipped (`lr_max`, from the covered-row noise). Offline on
+  LVBR0021-LVDK0021: -31/+32 -> -6/+8 DN; LVBL0005/0009 cross-validation
+  slightly better. Columns right next to a strong edge can keep ~10-20 DN.
+- Focus box at the end of some 6 s sessions: Canon's drawing was turned
+  back on before leaving x5; now only once at x1.
+
+## LCM61: composite dark frame
+
+- Dark frame and Save unprocessed in Live Composite: one dark frame of one
+  shutter (a maximum holds each pixel's offsets once; max(L - D) =
+  max(L) - D), subtracted at the end, then the column correction (the dark
+  frame may carry P, the composite not). Files LVCR / LVCK. Camera:
+  LVFR0006 (6 x 6 s, Save unprocessed) saved and subtracted.
+
+## LCM62: the recurring partial frame
+
+- LVCR0007 shows the cut in a light trail. Every LCM55-LCM61 session lost
+  the 5th captured frame: 55,440 bytes (6 rows), EDMAC abort callback at the
+  start of its readout (3.43 s after arming at 4 s, vs 3.88 s for complete
+  frames), same frame count at any shutter. Known since LCM18 (LCM21: Canon's
+  Evf VD handler runs "LastRamClear" around frame 4).
+- Warm-up: 12 vsyncs at 3 fps after x5 with a throwaway capture on each, so
+  the abort falls on a throwaway frame whether Canon counts vsyncs since x5
+  or captures on channel 0x12 (~4 s more start-up; not for Preview only).
+- Trace-only hook on AbortEDmac (0x1CA60, if it starts with STMFD): vsyncs
+  since x5, caller LR, time, own/foreign, in flight. LOG `Abort_hook...`,
+  `Warmup_vds_slurps_done_ms_aborts`. If a real frame is still hit, the
+  caller is known for the next step (e.g. testing another write channel).
+
+## LCM63
+
+- The warm-up says what it is doing: "Tactical delay... first frame in n s"
+  (remaining warm-up + one shutter), on the BMP overlay.
+- To confirm on the camera: Warmup aborts = 1, bulb partials skipped = 0, no
+  gap in a light trail.

@@ -52,6 +52,12 @@ static unsigned livecomp_raw_key(unsigned context)
         if (set_release_blocked) { set_release_blocked=0;return 0; }
         livecomp_lv_key(MODULE_KEY_Q);return 0;
     }
+    /* LCM56: while a session runs Canon also never sees its own "button
+     * pressed" command or touches: in the full-res x5 mode they open the
+     * zoom box or move it, and Canon then leaves the mode. */
+    if (livecomp_lv_running() && (event->param==livecomp_camera.button_cmd_event ||
+        (event->param>=livecomp_camera.touch_first && event->param<=livecomp_camera.touch_last)))
+        return 0;
     if (event->param==livecomp_camera.q_set_event ||
         event->param==livecomp_camera.set_press_event) {
         set_release_blocked=1;

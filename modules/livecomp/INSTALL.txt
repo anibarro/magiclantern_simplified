@@ -1,4 +1,4 @@
-Live Composite / Live Bulb LCM55 - Canon EOS M firmware 2.0.2
+Live Composite / Live Bulb LCM63 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite and Live Bulb for the EOS M at full sensor
 resolution (5208x3478): the camera keeps exposing frames of the chosen
@@ -32,8 +32,9 @@ MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
                     frame; frames follow each other with no gap. The right
                     side shows the camera's ISO and aperture.
                     The LCD shows the whole composite after every frame.
-                    2.5-5 s and 10 s are camera-tested; the others are
-                    marked "not yet tested". Shorter shutters are not
+                    2.5-6 s, 10, 15 and 50 s have run on the camera; the
+                    menu still marks the others (except 10 s) "not yet
+                    tested". Shorter shutters are not
                     offered: merging a frame takes ~1.5-1.9 s, so at 2 s the
                     camera had no time left for its buttons and display.
    Preview only     OFF (default) / ON. ON: SET takes ONE frame with the
@@ -43,7 +44,17 @@ MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
                     set Preview only OFF for the real composite.
    Frame limit      No limit (default) / 30 / 60 / 120 / 240 frames.
                     In Live Bulb the right side shows the total exposure
-                    (frames x shutter), e.g. "= 1m15s bulb".
+                    (frames x shutter), e.g. "= 1m15s bulb". SET during the
+                    first frame gives a one-frame picture (e.g. one 50 s
+                    bulb).
+   Dark frame       OFF (default) / ON. After the last frame: cover the lens
+                    when asked; dark frames with the same shutter are
+                    subtracted (long exposure noise reduction). Live Bulb:
+                    as many as the picture has (as long as the exposure);
+                    Live Composite: one. SET skips (countdown) or stops them.
+   Save unprocessed OFF (default) / ON. Also save the picture without
+                    in-camera noise reduction (LVBRnnnn / LVCRnnnn.DNG) and
+                    the dark frames (LVDKnnnn / LVCKnnnn.DNG). Slower.
    Debug            OFF (default): only the DNG is written, no log files.
                     ON: diagnostic LVFRnnnn.LOG and .CSV next to each DNG
                     (and DCIM/LIVE/LVPREVW.LOG for Preview only). Turn it on
@@ -60,15 +71,23 @@ RUN
     Press SET to return. Change ISO/aperture (camera) or shutter (menu) and
     repeat until the exposure is right. Then Preview only OFF.
  2. Close the menu and press/release SET. The camera switches to the
-    full-sensor mode at 3 fps (about 1 s), then the first frame at your
-    shutter starts: it is ready after one shutter time ("First frame in
-    about n s") and is the base of the composite. Canon's zoom box and
+    full-sensor mode at 3 fps (about 1 s) and stays there about 4 s
+    ("Tactical delay... first frame in n s": Canon aborts one RAW transfer
+    a few frames after the switch, and this lets it hit throwaway frames).
+    Then the first frame at your shutter starts: it is ready after one
+    shutter time and is the base of the composite. Canon's zoom box and
     arrows are hidden while the session runs.
  3. "COMPOSITE n  SET=stop" (Live Bulb: "BULB n  45s  SET=stop", with the
     exposure so far): the LCD shows the growing result. Press SET to stop:
     the exposure in progress is completed and merged. Or wait for the frame
     limit.
- 4. The camera returns to normal view and saves DCIM/LIVE/LVFRnnnn.DNG
+ 4. Dark frame ON: "COVER THE LENS: dark frames in 10 s  SET=skip". Cover
+    the lens until "Dark frames done: lens can be uncovered" ("DARK k/n
+    ...s  SET=stop" while they run).
+    The camera may finish one more frame at your shutter before it can
+    leave the full-sensor mode ("Ending the current frame: up to n s").
+ 5. The camera returns to normal view, applies the noise reduction
+    ("Applying denoise...") and saves DCIM/LIVE/LVFRnnnn.DNG
     (Live Bulb: LVBLnnnn.DNG, with ExposureTime = frames x shutter)
     (camera WB as DNG white balance, EOS M focus pixels removed;
     the folder is created if needed; Canon's playback does not show it).
@@ -76,6 +95,23 @@ RUN
     no reboot needed.
  While a session runs only SET acts; the other buttons are held so the
  camera does not react to them in the full-sensor mode.
+
+NOISE REDUCTION
+ - Live Bulb always removes the column stripes that adding frames builds
+   up: per-column offsets measured from the covered top rows and from flat
+   dark areas of the picture (columns next to strong vertical edges are not
+   used for the measurement). Live Composite gets the same correction after
+   its dark frame.
+ - Dark frame ON subtracts dark frames (lens covered, same shutter): hot and
+   warm pixels, dark current and amp glow go away; shadow noise grows about
+   1.4 x, as with Canon's long exposure noise reduction. Live Bulb takes as
+   many dark frames as light frames, Live Composite one (a maximum holds
+   each pixel's offsets only once).
+ - Only two full-size images fit in memory: with Save unprocessed ON the
+   unprocessed picture is written first, the dark frames are summed in its
+   place and saved, then the unprocessed picture is read back from the card
+   and the dark sum subtracted. Without it, each dark frame is subtracted as
+   it arrives.
 
 BATTERY
 When the battery indicator drops to its last (red) level during a session,
@@ -104,9 +140,13 @@ GOOD TO KNOW
  - A frame that arrives while the previous merge is still running is skipped
    (a short gap) and counted; if that keeps happening the session stops and
    saves ("Merge too slow"): use a longer shutter.
- - Around the 5th frame Canon cuts one readout short. That frame is still
-   merged (the missing rows hold the previous frame) and logged. In Live
-   Bulb only the rows that arrived are added, so those rows miss one frame.
+ - A few frames after the switch to the full-sensor mode Canon's Live View
+   aborts one RAW transfer (6 rows arrive). Up to LCM61 that cost one real
+   frame (a gap in light trails; Live Bulb skipped it). Since LCM62 the
+   start-up delay lets it fall on throwaway frames; with Debug ON the LOG
+   line Abort_hook lists every abort of the RAW channel. If a partial frame
+   still happens, Live Composite merges it and Live Bulb leaves it out (the
+   frame count and ExposureTime stay exact).
  - The DNG holds the whole 5280-pixel-wide raster with the active area
    marked for the raw converter.
 

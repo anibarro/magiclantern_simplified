@@ -60,7 +60,25 @@ int main(void) {
             lc_raw14_add((uint16_t *)c,(const uint16_t *)b,2*P,bl[round&3],wh[(round>>2)&3]);
             lc_raw14_add_sel(a,b,P,bl[round&3],wh[(round>>2)&3]);
             assert(!memcmp(a,c,sizeof(a)));
+            /* LCM59 dark subtraction: word kernel == reference, same edges */
+            lc_raw14_sub((uint16_t *)c,(const uint16_t *)b,2*P,bl[round&3],wh[(round>>2)&3]);
+            lc_raw14_sub_sel(a,b,P,bl[round&3],wh[(round>>2)&3]);
+            assert(!memcmp(a,c,sizeof(a)));
         }
+    }
+    { /* Dark subtraction physics: 10 light frames of black+100+20 (20 = dark
+       * signal) minus 10 dark frames of black+20 leave black+1000; a
+       * saturated sample stays saturated. */
+        enum { B=64 }; static uint16_t acc[7*B],f[7*B],d[7*B];uint16_t s[8];
+        for (unsigned n=0;n<B;n++) { for (int p=0;p<8;p++) s[p]=2048+120;lc_raw14_pack(f+7*n,s);
+                                     for (int p=0;p<8;p++) s[p]=2048+20;lc_raw14_pack(d+7*n,s); }
+        memcpy(acc,f,sizeof(f));
+        for (int k=1;k<10;k++) lc_raw14_add(acc,f,B,2048,15000);
+        for (int k=0;k<10;k++) lc_raw14_sub_sel((uint32_t *)(void *)acc,(const uint32_t *)(const void *)d,B/2,2048,15000);
+        for (unsigned n=0;n<B;n++) { lc_raw14_unpack(acc+7*n,s);for (int p=0;p<8;p++) assert(s[p]==2048+1000); }
+        lc_raw14_unpack(acc,s);s[3]=15000;lc_raw14_pack(acc,s);
+        lc_raw14_sub_sel((uint32_t *)(void *)acc,(const uint32_t *)(const void *)d,B/2,2048,15000);
+        lc_raw14_unpack(acc,s);assert(s[3]==15000 && s[2]==2048+980);
     }
     { /* Bulb physics: 10 frames of black+100 sum to black+1000; noise around
        * black does not drift the sum; bright light clips at white. */
@@ -199,6 +217,8 @@ void canon_gui_disable_front_buffer(void); void canon_gui_enable_front_buffer(in
 int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap); void NotifyBoxHide(void);
 static inline uint32_t cli(void){ return 0; } static inline void sei(uint32_t x){ (void)x; }
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
+#define O_RDONLY 0
+FILE *FIO_OpenFile(const char *p,unsigned mode); int FIO_ReadFile(FILE *f,void *b,int n);
 void FIO_CloseFile(FILE *f); int FIO_GetFileSize(const char *p,uint32_t *s);
 int FIO_CreateDirectory(const char *p); int is_dir(const char *p);
 '''
@@ -210,7 +230,7 @@ SIM = r'''
 #include "camera-profile.h"
 #include "fullres-lv.h"
 #include "fullres-regs.h"
-struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0}}; /* host: no alias bit, no LCD */
+struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0},0x54,0x6f,0x79}; /* host: no alias bit, no LCD */
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
 struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024,40,27,80};
 int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock,battery_level_bars=3;
@@ -219,16 +239,18 @@ static struct card_info card={"B"};
 /* Simulated camera state */
 static unsigned now_us,zoom=1,pdm_zoom=1,raw_user,fps_now=29970,next_vsync_us;
 static uint32_t reg6800=0x10012,reg6804=0x4540298,reg6014=0x5DC;
-static patch_hook_function_cbr hooks[4];static uint32_t sites[4];static int nhooks,patch_fail_at=-1;
+static patch_hook_function_cbr hooks[8];static uint32_t sites[8];static int nhooks,patch_fail_at=-1;
 static int unpatched,stall_after_zoom,no_window,dma_stuck,single_alloc,locked,partial_frames;
 static int csv_written;
 static unsigned sim_period_us=333333;
+static unsigned vd_since_zoom,canon_abort_vd,canon_aborts,warm_slurps;static int slurp_warm;   /* LCM62 */
 static uint8_t *slurp_dst;static int slurp_w,slurp_h,slurp_armed,slurp_frames;
 static unsigned allocs,frees,dma_state;
 uint32_t sim_mem(uint32_t a)
 {
     if (a==0x2998C) return 0xE92D41F0; if (a==0x2986C) return 0xE92D43F8;
     if (a==0xFF2C19AC) return 0xE51FC15C; if (a==0xFF2C1694) return 0xE92D4010;
+    if (a==0x1CA60) return 0xE92D4070;                  /* AbortEDmac: STMFD */
     if (a==0x892E8+0x10) return pdm_zoom<<16;
     return 0;
 }
@@ -237,7 +259,7 @@ void sync_caches(void){}
 void *fio_malloc(size_t n){ if (n>1000000 && single_alloc && allocs>=1) return NULL; allocs++; return calloc(1,n); }
 void fio_free(void *p){ frees++; free(p); }
 int patch_hook_function(uintptr_t addr,uint32_t orig,patch_hook_function_cbr cb,const char *d)
-{ (void)d; if (nhooks==patch_fail_at) return 1; assert(sim_mem(addr)==orig); sites[nhooks]=addr; hooks[nhooks++]=cb; return 0; }
+{ (void)d; if (nhooks==patch_fail_at) return 1; assert(sim_mem(addr)==orig && nhooks<8); sites[nhooks]=addr; hooks[nhooks++]=cb; return 0; }
 int unpatch_memory(uintptr_t addr){ for (int i=0;i<nhooks;i++) if (sites[i]==addr) { unpatched++; return 0; } return 1; }
 static patch_hook_function_cbr hook_at(uint32_t a){ for (int i=0;i<nhooks;i++) if (sites[i]==a) return hooks[i]; return 0; }
 static uint32_t *pdm_word(void){ static uint32_t w; return &w; }
@@ -262,13 +284,19 @@ void RegisterEDmacPopCBR(int ch,void (*cbr)(void*),void *ctx){ (void)ch;(void)cb
 void ConnectWriteEDmac(unsigned ch,unsigned where){ (void)ch;(void)where; }
 static uint8_t *pending_dst;static int pending_w,pending_h;
 void SetEDmac(unsigned ch,void *addr,struct edmac_info *info,int flags){ (void)ch;(void)flags; pending_dst=addr; pending_w=info->xb; pending_h=info->yb+1; }
-void StartEDmac(unsigned ch,int flags){ (void)ch;(void)flags; slurp_dst=pending_dst; slurp_w=pending_w; slurp_h=pending_h; slurp_armed=1; }
+void StartEDmac(unsigned ch,int flags){ (void)ch;(void)flags; slurp_warm=zoom==5 && reg6014==0x1E03; slurp_dst=pending_dst; slurp_w=pending_w; slurp_h=pending_h; slurp_armed=1; }
 int raw_lv_is_enabled(void){ return raw_user; } int fps_get_current_x1000(void){ return fps_now; }
 struct card_info *get_ml_card(void){ return &card; }
 void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(int l){ locked=l; }
 int raw2iso(int r){ return r; }
 static int hud_draws,hud_clears;static char hud_text[128];
-void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x; if (y<20) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
+static int cover_seen,ending_seen,skip_dark_press,tactical_seen;static volatile unsigned *press_ptr;
+void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x;
+  { static char t[128];va_list ap;va_start(ap,fmt);vsnprintf(t,sizeof(t),fmt,ap);va_end(ap);   /* session line (y=20) */
+    if (strstr(t,"COVER THE LENS")) { cover_seen++; if (skip_dark_press && press_ptr && cover_seen==3) (*press_ptr)++; }
+    if (strstr(t,"Ending the current frame")) ending_seen++;
+    if (strstr(t,"Tactical delay... first frame in")) tactical_seen++; }
+  if (y<20) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
 void clrscr(void){ hud_clears++; }
 static unsigned gui_offs;
 void canon_gui_disable_front_buffer(void){ gui_off=1;gui_offs++; } void canon_gui_enable_front_buffer(int r){ (void)r; gui_off=0; } void redraw(void){}
@@ -277,12 +305,16 @@ int lens_set_rawaperture(int ap){ lens_info.raw_aperture=ap; lens_info.aperture=
 static int aborts,gd_setting,abort_fails;
 void AbortEDmac(unsigned ch){ (void)ch; aborts++; if (abort_fails) return; dma_state=0; slurp_armed=0; }
 int get_global_draw_setting(void){ return gd_setting; }
-static int file_token; static unsigned dng_bytes,log_files;
+static int file_token; static unsigned dng_bytes,log_files,dng_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
 static int dng_created,cur_dng,cur_log;static char last_log[8192],last_log_path[64];static unsigned last_log_n;
 static int dirs_created,dir_fail,dng_in_live,log_in_live;static char last_dir[64];
-FILE *FIO_CreateFile(const char *p){ if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) dng_created=1; return (FILE *)&file_token; }
-int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) dng_bytes+=n;
+static uint8_t *lvbr_data;static unsigned lvbr_n,lvbr_pos,lvbr_files,lvdk_files;static int cur_lvbr,lvbr_reads;
+#define LVBR_MAX 40000000u
+FILE *FIO_OpenFile(const char *p,unsigned mode){ (void)mode; if (!(strstr(p,"LVBR") || strstr(p,"LVCR")) || !lvbr_n) return 0; lvbr_pos=0;lvbr_reads++; return (FILE *)&file_token; }
+int FIO_ReadFile(FILE *f,void *b,int n){ (void)f; unsigned k=lvbr_n-lvbr_pos<(unsigned)n ? lvbr_n-lvbr_pos:(unsigned)n; memcpy(b,lvbr_data+lvbr_pos,k);lvbr_pos+=k;return (int)k; }
+FILE *FIO_CreateFile(const char *p){ cur_lvbr=strstr(p,"LVBR") || strstr(p,"LVCR"); if (cur_lvbr) { lvbr_n=0;lvbr_files++; if (!lvbr_data) lvbr_data=malloc(LVBR_MAX); } if (strstr(p,"LVDK") || strstr(p,"LVCK")) lvdk_files++; if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) { dng_created=1;dng_files++; } return (FILE *)&file_token; }
+int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) dng_bytes+=n; if (cur_lvbr && lvbr_n+n<=LVBR_MAX) { memcpy(lvbr_data+lvbr_n,b,n);lvbr_n+=n; }
   if (cur_log && last_log_n+n<sizeof(last_log)) { memcpy(last_log+last_log_n,b,n);last_log_n+=n;last_log[last_log_n]=0; } return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
 static unsigned dng_size_ok;
@@ -306,12 +338,14 @@ static void canon_reconfigure(unsigned z)
     reg6800=engio[1]; reg6804=no_window ? 0x4540298u:engio[3]; reg6014=engio[5];
 }
 static unsigned zoom5_us,first_frame_us;
-void set_lv_zoom(int z){ zoom=z; lv_dispsize=z; canon_reconfigure(z); if (z==5) { zoom5_us=now_us;first_frame_us=0; } }
+static uint32_t exit_timer_b;static unsigned cancel_at_us;
+void set_lv_zoom(int z){ if (z==5) vd_since_zoom=0; if (z==1) exit_timer_b=reg6014; zoom=z; lv_dispsize=z; canon_reconfigure(z); if (z==5) { zoom5_us=now_us;first_frame_us=0; } }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
 static unsigned cancel_at,battery_at,lose_mode_at,hold_cancel_vsyncs,hold_vsyncs;static volatile unsigned *cancel_ptr;
 static void frame(void)
 {
     if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
+    if (cancel_at_us && cancel_ptr && now_us>=cancel_at_us && !*cancel_ptr) *cancel_ptr=1;
     /* Preview only: SET some vsyncs after the frame was captured. */
     if (hold_cancel_vsyncs && slurp_frames>=1 && !slurp_armed && zoom==5 && ++hold_vsyncs>=hold_cancel_vsyncs && cancel_ptr) *cancel_ptr=1;
     if (battery_at && slurp_frames>=(int)battery_at) battery_level_bars=0;
@@ -319,13 +353,24 @@ static void frame(void)
      * armed 32 MB slurp never completes (until aborted). */
     if (lose_mode_at && slurp_frames>=(int)lose_mode_at) { reg6804=0x2D80298;dma_stuck=1; }
     if (stall_after_zoom && zoom==5) return;
-    if (slurp_armed && partial_frames) { partial_frames--; memset(slurp_dst,0x22,1000); last_written=1000; }
+    /* LCM62: Canon aborts channel 0x12 at the start of the readout of the
+     * frame ending at VD canon_abort_vd after x5 (6 rows written). */
+    if (zoom==5) vd_since_zoom++;
+    if (canon_abort_vd && vd_since_zoom==canon_abort_vd && slurp_armed) {
+        patch_hook_function_cbr h=hook_at(0x1CA60);
+        uint32_t regs[14]={0};regs[0]=0x12;regs[13]=0xFF0ABCDE;
+        if (h) h(regs,0,0);
+        memset(slurp_dst,0x22,1000);last_written=55440;canon_aborts++;
+        slurp_armed=0;dma_state=0;livecomp_frlv_vsync();return;
+    }
+    if (slurp_armed && partial_frames && !slurp_warm) { partial_frames--; memset(slurp_dst,0x22,1000); last_written=1000; }
     else if (slurp_armed && !dma_stuck) {
         last_written=slurp_w*slurp_h;
         for (int i=0;i<slurp_w*slurp_h;i+=4096) slurp_dst[i]=(uint8_t)(slurp_frames*7+i);
         memset(slurp_dst+slurp_w*slurp_h-8,0x11,8);
-        slurp_frames++;
-        if (slurp_frames==1) first_frame_us=now_us;
+        /* LCM62: warm-up slurps (armed at the 3 fps entry timing) counted apart */
+        if (slurp_warm) warm_slurps++;
+        else { slurp_frames++; if (slurp_frames==1) first_frame_us=now_us; }
         if (sim_cb) sim_cb(sim_cb_ctx);
     }
     dma_state=dma_stuck && (slurp_armed || dma_state);
@@ -355,12 +400,14 @@ static void reset(void)
     no_window=0;dma_stuck=0;partial_frames=0;overrun_sim=0;csv_written=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
     dng_bytes=0;dng_size_ok=0;locked=0;dng_created=0;
     dirs_created=dir_fail=dng_in_live=log_in_live=0;log_files=0;
+    cover_seen=ending_seen=skip_dark_press=tactical_seen=0;exit_timer_b=0;cancel_at_us=0;dng_files=0;
+    lvbr_n=lvbr_files=lvdk_files=0;lvbr_reads=0;canon_abort_vd=0;canon_aborts=0;warm_slurps=0;
 }
 int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={0,6,0,1,LC_MODE_COMPOSITE};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
+    struct lc_frlv_options o={0,6,0,1,LC_MODE_COMPOSITE,0,0};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -369,7 +416,7 @@ int main(void)
     dng_size_ok=2048+bytes;
     unsigned unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("happy: %s unsafe=%u frames=%d unpatched=%d zoom=%u\n",status,unsafe,slurp_frames,unpatched,zoom);
-    assert(!unsafe && slurp_frames>=6 && unpatched==4 && zoom==1 && lv_dispsize==1);
+    assert(!unsafe && slurp_frames>=6 && unpatched==5 && zoom==1 && lv_dispsize==1);
     assert(slurp_w==(int)(w*14/8) && slurp_h==(int)h && allocs==frees);
     assert(strstr(status,"saved: 6 frames") && dng_bytes==2048+bytes && locked==0 && csv_written);
     assert(!strstr(last_log,"HW_"));               /* no engine code in the product */
@@ -380,10 +427,10 @@ int main(void)
      * zoom; the exit switch back to 3 fps is logged; Canon's zoom overlay
      * hidden during the session and restored. */
     printf("first frame %u ms after zoom\n",(first_frame_us-zoom5_us)/1000);
-    assert(first_frame_us-zoom5_us<2500000u+1200000u);
+    assert(first_frame_us-zoom5_us<2500000u+1200000u+12u*333333u);   /* LCM62: + 12 warm-up frames */
     assert(strstr(last_log,"Timer_switch_after_zoom_ms_exit_switched_short_skipped: "));
     { const char *k=strstr(last_log,"exit_switched_short_skipped: ");unsigned sw,ex,sk;
-      assert(sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3 && ex==1 && sw<1500);printf("short frames skipped: %u\n",sk); }
+      assert(sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3 && ex==1 && sw<1500+12*333);   /* LCM62: after the 12-frame warm-up */printf("short frames skipped: %u\n",sk); }
     assert(gui_offs==1 && gui_off==0 && !notify_while_hidden);   /* NotifyBox redraws Canon's zoom box */
     /* Start-up: armed right after the transitional frame (no full period
      * lost waiting for the next vsync), i.e. 40-100 ms after a vsync. */
@@ -398,7 +445,7 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("bulb: %s\n",status);
     assert(!unsafe && strstr(status,"Bulb saved: 6 frames, 15 s") && dng_bytes==2048+bytes && allocs==frees &&
-           zoom==1 && unpatched==4 && locked==0);
+           zoom==1 && unpatched==5 && locked==0);
     assert(strstr(last_log,"Full-res live bulb") && strstr(last_log,"DNG: B:/DCIM/LIVE/LVBL0000.DNG") &&
            strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: bulb,15000,") && !strstr(status,"longer frames") && strstr(last_log,"strips: add,"));
     /* Live Bulb with partial frames: only the delivered rows are added. */
@@ -406,13 +453,99 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("bulb partial: %s\n",status);
     assert(!unsafe && strstr(status,"saved") && zoom==1);
+    /* LCM56: partial frames are not added in Live Bulb; the count stays exact. */
+    assert(strstr(last_log,"Column_fix_rms_x10_us_bulb_partials_skipped: ") && strstr(last_log,",2\nColumn_fix_img") &&
+           strstr(status,"Bulb saved: 6 frames, 15 s"));
     /* Live Bulb, no limit, SET at frame 9; and every shutter choice. */
     reset();o.limit=0;cancel_at=9;cancel_ptr=&cancel;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("bulb no limit: %s\n",status);
     assert(!unsafe && strstr(status,"Bulb saved") && zoom==1);
     cancel=0;cancel_at=0;o.limit=6;
+    /* LCM62: Canon's abort of channel 0x12 where the camera does it (the
+     * frame ending at VD 8 after x5) falls on a throwaway warm-up frame:
+     * no partial, all 6 frames whole; the trace has Canon's call. */
+    reset();canon_abort_vd=8;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("Canon abort at VD 8: %s (Canon aborts %u, tactical delay lines %d)\n",status,canon_aborts,tactical_seen);
+    assert(tactical_seen>=3);                          /* LCM63: the warm-up says what it is doing */
+    assert(!unsafe && canon_aborts==1 && strstr(status,"Bulb saved: 6 frames, 15 s") && zoom==1 && allocs==frees && unpatched==5);
+    assert(strstr(last_log,"Column_fix_rms_x10_us_bulb_partials_skipped: ") && strstr(last_log,",0\nColumn_fix_img"));
+    { const char *k=strstr(last_log,"Abort_hook_instr_hooked_calls");assert(k && strstr(k,"e92d4070,1,1 7:ff0abcde:") && strstr(k,":0:1\n"));
+      k=strstr(last_log,"Warmup_vds_slurps_done_ms_aborts: 12,");unsigned vds,sl,dn,ms,ab;
+      assert(k && sscanf(strchr(k,':')+1," %u,%u,%u,%u,%u",&vds,&sl,&dn,&ms,&ab)==5 && ab==1 && sl>=8);
+      printf("warm-up: %u slurps, %u ms\n",sl,ms); }
+    /* If Canon aborted later (after the warm-up) the trace shows it and the
+     * bulb skips that frame as before. */
+    reset();canon_abort_vd=12+4;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("Canon abort at VD 16: %s\n",status);
+    assert(!unsafe && canon_aborts==1 && strstr(status,"Bulb saved: 6 frames") && zoom==1 && allocs==frees);
+    assert(strstr(last_log,"_partials_skipped: ") && strstr(last_log,",1\nColumn_fix_img") && strstr(last_log,",1,1 15:ff0abcde:"));
+    /* LCM59 dark frames: countdown, as many frames as the bulb at the session
+     * shutter, each subtracted as it arrives; back to 3 fps before leaving
+     * x5. (The kernels' exactness is checked above; the simulated frames
+     * are not dark, so only the flow is checked here.) */
+    reset();o.dark_frame=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb + dark: %s (countdown lines %d, DNGs %u)\n",status,cover_seen,dng_files);
+    assert(!unsafe && strstr(status,"Bulb saved: 6 frames, 15 s, dark subtracted") && zoom==1 && allocs==frees && unpatched==5 && locked==0);
+    assert(cover_seen>=9 && dng_files==1 && lvbr_files==0 && lvdk_files==0 && exit_timer_b==0x1E03);
+    { const char *k=strstr(last_log,"Dark_want_");unsigned v[8];
+      assert(k && sscanf(strchr(k,':')+1," %u,%u,%u,%u,%u,%u,%u,%u",&v[0],&v[1],&v[2],&v[3],&v[4],&v[5],&v[6],&v[7])==8);
+      printf("dark: state %u, %u frames, %u ms from the last light frame\n",v[2],v[3],v[6]);
+      assert(v[0]==1 && v[1]==0 && v[2]==3 && v[3]==6 && v[4]==0 && v[5]==0 && v[7]==0);
+      assert(v[6]>=10000+6*2500 && v[6]<=10000+8*2500+3000); }
+    /* Save unprocessed + dark: LVBR first, darks summed apart (LVDK), LVBR
+     * read back and the dark sum subtracted: three DNGs. */
+    reset();o.save_orig=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb + dark + unprocessed: %s (DNGs %u)\n",status,dng_files);
+    assert(!unsafe && strstr(status,"Bulb saved: 6 frames, 15 s, dark subtracted") && zoom==1 && allocs==frees);
+    assert(dng_files==3 && lvbr_files==1 && lvdk_files==1 && lvbr_reads==1 && lvbr_n==2048+bytes);
+    assert(strstr(last_log,"_end_wait_ms: 1,1,3,6,0,0,") && strstr(last_log,",1,1,1,1,"));   /* sep, saved, saved, read */
+    /* Save unprocessed without dark frames: LVBR + LVBL. */
+    reset();o.dark_frame=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb + unprocessed: %s (DNGs %u)\n",status,dng_files);
+    assert(!unsafe && strstr(status,"Bulb saved: 6 frames, 15 s") && dng_files==2 && lvbr_files==1 && lvdk_files==0 && allocs==frees);
+    o.save_orig=0;o.dark_frame=1;
+    /* SET during the countdown: no dark frames, the bulb is saved as usual. */
+    reset();skip_dark_press=1;press_ptr=&cancel;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("bulb + dark skipped: %s\n",status);
+    assert(!unsafe && strstr(status,"Bulb saved: 6 frames, 15 s") && !strstr(status,"dark") && zoom==1 && allocs==frees);
+    assert(dng_files==1 && exit_timer_b==0x1E03 && strstr(last_log,"_end_wait_ms: 1,0,1,0,"));
+    cancel=0;press_ptr=0;o.dark_frame=0;
+    /* LVBL0014: SET before the first full 60 s frame (the camera latches
+     * timers one frame late: the first frame is short and skipped). LCM59:
+     * that is a single-frame bulb; then wait for the late-latched long
+     * frame before leaving x5 (LCM57: FE_RESTORE; LCM58: no frame). */
+    reset();o.limit=0;o.fps_index=LC_FRR_FPS_CHOICES-1;sim_period_us=lc_frr_timing[o.fps_index].period_ms*1000u;
+    sim_late_latch=1;cancel_at_us=500000;cancel_ptr=&cancel;dng_size_ok=2048+bytes;   /* SET at the 667 ms vsync */
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("SET before the first 60 s frame: %s (then 3 fps: timer B %x)\n",status,exit_timer_b);
+    assert(!unsafe && zoom==1 && allocs==frees && unpatched==5 && exit_timer_b==0x1E03);
+    assert(strstr(status,"Bulb saved: 1 frames, 60 s") && strstr(last_log,"Stage_error_unsafe: 8,0,0"));
+    cancel=0;cancel_at_us=0;sim_late_latch=0;o.limit=6;o.fps_index=0;sim_period_us=2500000;
     o.mode=LC_MODE_COMPOSITE;
+    /* LCM61: Live Composite + dark frame: ONE dark frame (a maximum holds
+     * each pixel's offsets once), subtracted at the end; then the column
+     * correction. With Save unprocessed: LVCR + LVCK + LVFR. */
+    reset();o.dark_frame=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("composite + dark: %s (DNGs %u)\n",status,dng_files);
+    assert(!unsafe && strstr(status,"Composite saved: 6 frames, dark subtracted") && zoom==1 && allocs==frees && unpatched==5);
+    assert(cover_seen>=9 && dng_files==1 && exit_timer_b==0x1E03 && strstr(last_log,"_end_wait_ms: 1,0,3,1,0,0,"));
+    reset();o.save_orig=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("composite + dark + unprocessed: %s (DNGs %u)\n",status,dng_files);
+    assert(!unsafe && strstr(status,"Composite saved: 6 frames, dark subtracted") && dng_files==3 && lvbr_files==1 && lvdk_files==1 && lvbr_reads==1 && allocs==frees);
+    /* Composite + Save unprocessed without dark: nothing to save apart. */
+    reset();o.dark_frame=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && strstr(status,"Composite saved: 6 frames") && dng_files==1 && lvbr_files==0);
+    o.save_orig=0;
     /* Composite again: back to LVFR and the select kernel. */
     reset();dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -444,10 +577,10 @@ int main(void)
     assert(!unsafe && unpatched==2 && zoom==1 && strstr(status,"Hook"));
     /* Window not applied: restore and unhook, no capture. */
     reset();no_window=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && slurp_frames==0 && zoom==1 && unpatched==4);
+    assert(!unsafe && slurp_frames==0 && zoom==1 && unpatched==5);
     /* LV stall after switch: restore, unhook, nothing captured. */
     reset();stall_after_zoom=1;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
-    assert(!unsafe && slurp_frames==0 && zoom==1 && unpatched==4);
+    assert(!unsafe && slurp_frames==0 && zoom==1 && unpatched==5);
     /* DMA never completes but AbortEDmac stops it: safe, buffers freed. */
     reset();dma_stuck=1;aborts=0;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("stuck, aborted: %s unsafe=%u aborts=%d\n",status,unsafe,aborts);
@@ -486,7 +619,7 @@ int main(void)
     {   const unsigned old_mode=o.mode;
         reset();overrun_sim=1;o.mode=LC_MODE_BULB;dng_size_ok=2048+bytes;unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
         printf("bulb overrun: %s\n",status);
-        assert(!unsafe && strstr(status,"Bulb saved:") && strstr(status,"use longer frames") && zoom==1 && unpatched==4 &&
+        assert(!unsafe && strstr(status,"Bulb saved:") && strstr(status,"use longer frames") && zoom==1 && unpatched==5 &&
                strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: bulb,") && strstr(last_log,",1\n"));
         o.mode=old_mode; }
     /* Frames arrive faster than the (simulated 80 ms) merge: the session
@@ -513,7 +646,7 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("preview only: %s frames=%d hud='%s'\n",status,slurp_frames,hud_text);
     assert(!unsafe && slurp_frames==1 && !dng_created && !csv_written && strstr(status,"Preview: clipped")
-           && hud_draws>0 && hud_clears>0 && zoom==1 && unpatched==4 && frees==allocs && strstr(last_log_path,"LVPREVW.LOG"));
+           && hud_draws>0 && hud_clears>0 && zoom==1 && unpatched==5 && frees==allocs && strstr(last_log_path,"LVPREVW.LOG"));
     o.preview_only=0;o.limit=6;cancel=0;hold_cancel_vsyncs=0;
     /* Late-latching timers: the first frame after the switch is a short
      * 3 fps one; it is detected at the vsyncs and skipped, the composite

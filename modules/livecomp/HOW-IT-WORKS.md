@@ -9,7 +9,9 @@ resolution.
 
 Live Bulb (menu Mode, LCM54) uses the same capture and replaces the merge
 with a sum: the result is one long exposure of frames x shutter, shown on the
-LCD as it builds up (section 5a).
+LCD as it builds up (section 5a). Live Bulb removes the column pattern the
+sum builds up (section 5b), and both modes can subtract dark frames taken
+with the lens covered at the end (section 5c).
 
 Usage is in INSTALL.txt. This document explains the implementation. The
 development history is in FULLRES.md, and the failed hardware-merge work in
@@ -22,14 +24,18 @@ SET (Movie Live View, x1)
  |- checks: model/firmware fingerprints, camera state, fixed ISO, no other RAW user
  |- allocate 2 x 32.5 MB (capture buffer + accumulator); create DCIM/LIVE
  |- install 4 hooks (inert unless this session is active AND Canon is in x5)
+ |  + a trace-only hook on AbortEDmac
  |- request x5 zoom  ->  Canon reprograms the sensor through the hooks:
  |                        full-sensor readout at 3 fps
+ |- warm-up: 12 frames at 3 fps with throwaway RAW captures ("Tactical delay")
  |- switch the frame timers to the chosen shutter at a vsync
  |- loop: arm RAW DMA -> frame done -> merge into accumulator -> LCD preview
  |        (the next exposure is already running while merging)
  |- SET / frame limit / low battery: finish the frame in flight
- |- back to 3 fps, leave x5, remove hooks
- '- fix focus pixels, write DCIM/LIVE/LVFRnnnn.DNG (+ LOG/CSV with Debug ON)
+ |- Dark frame ON: countdown, dark frames at the same shutter, subtracted
+ |- back to 3 fps, wait until frames are short again, leave x5, remove hooks
+ '- column correction (Live Bulb; composite after a dark frame), fix focus
+    pixels, write DCIM/LIVE/LVFRnnnn.DNG / LVBLnnnn.DNG (+ LOG/CSV with Debug ON)
 ```
 
 Files:
@@ -41,8 +47,8 @@ Files:
 | `fullres-lv.c` | the session: hooks, x5 switch, timers, RAW DMA, merge, preview, DNG, LOG |
 | `fullres-regs.h` | sensor register values and the shutter (timer) table; pure, host-tested |
 | `raw14-max.h` | merge kernel on packed 14-bit RAW (Live Composite) |
-| `raw14-add.h` | sum kernel on packed 14-bit RAW (Live Bulb) |
-| `fullres-fix.h` | focus-pixel fix and DNG white balance |
+| `raw14-add.h` | sum kernel (Live Bulb) and subtract kernel (dark frames) on packed 14-bit RAW |
+| `fullres-fix.h` | column correction, focus-pixel fix and DNG white balance |
 | `fullres-gamma.h` | preview gamma table |
 | `lv-dng.h` | DNG header writer |
 | `camera-profile.h` | runtime selection of camera-specific constants (EOS M 2.0.2 only) |
@@ -100,7 +106,34 @@ vsync callback adopts the new pair, and the timer-reapply code writes
 latches the new timers one frame late, so the first frame after the switch
 may still be a short 3 fps frame. It is detected from the vsync intervals and
 skipped. On stop, the timers go back to 3 fps once the last frame is in
-flight, so leaving x5 does not wait for another long frame.
+flight.
+
+**Warm-up (LCM62).** A few frames after x5, Canon's Live View aborts our
+RAW transfer on channel 0x12 at the start of one readout (always the same
+frame: the 5th captured one since LCM18; 6 rows arrive, abort callback).
+LCM21 traced Canon's Evf VD handler running a "LastRamClear" around then. The
+session therefore stays at 3 fps for 12 vsyncs after x5, arming a throwaway
+capture on each, so that abort falls on a throwaway frame whether Canon
+counts vsyncs or captures. The screen says "Tactical delay... first frame in
+n s". Preview only has no warm-up (its single frame ends earlier). A
+trace-only hook on `AbortEDmac` (RAM 0x1CA60, installed only if the entry is
+an STMFD) logs every abort of the RAW channel: vsyncs since x5, caller LR,
+time, own abort or not, transfer in flight (LOG `Abort_hook`, and
+`Warmup_vds_slurps_done_ms_aborts`).
+
+**Leaving x5 (LCM58/59).** Because the timers latch one frame late, one more
+frame at the session shutter can follow the last one (or a stop during a long
+frame), and Canon cannot leave x5 before it ends. LCM57 gave up after 18 s
+(FE_RESTORE, camera half-restored). Now the session switches back to 3 fps
+if needed and waits until a vsync interval is actually short again (up to two
+shutters; "Ending the current frame: up to n s"), then leaves x5. Canon's
+drawing is turned back on only once at x1 (LCM60: before, Canon could draw
+its zoom box while the last long frame ended).
+
+**SET before the first frame (LCM59).** SET during the short transitional
+frame used to end the session with no frame. It now means "stop after the
+first full frame", so a single-frame bulb is possible; the exit switch is
+then made only inside a frame that has lasted 90 % of the shutter.
 
 ## 4. Capture
 
@@ -116,9 +149,10 @@ flight, so leaving x5 does not wait for another long frame.
   at the frame end, guards intact.
   - A frame that arrived while the previous merge was still running is
     skipped and counted.
-  - A partial frame (Canon cuts one readout short around the 5th frame) is
-    merged; the missing rows hold the previous frame, which is harmless for
-    a maximum.
+  - A partial frame (Canon's abort, see the warm-up above) is merged in
+    Live Composite (the missing rows hold the previous frame) and left out
+    in Live Bulb (LCM56: it used to be added and counted, so a "12 frames"
+    bulb had 11 frames of light).
   - If the DMA does not finish, it is aborted with Canon's `AbortEDmac`. If
     even that fails, buffer ownership is uncertain: the buffers stay
     allocated and the status asks for a reboot.
@@ -160,9 +194,9 @@ acc = clamp(acc + frame - black, 0, white)      per sample
   measured again (`acc_black`, rounded mean). The DNG black level and the
   preview use that value, so the integer rounding of the per-frame black
   cannot add up over many frames.
-- Partial frames: only the 2-block pairs the readout delivered are added
-  (the rest of the capture buffer still holds the previous frame, which
-  would otherwise be counted twice). Those rows lack one sub-exposure.
+- Partial frames are not added at all (LCM56) and not counted: a gap of one
+  sub-exposure for every row, the frame count and ExposureTime stay exact
+  (LOG `bulb_partials_skipped`).
 - A frame that arrives while a merge is still running is skipped as usual;
   the total exposure counts merged frames only, so the DNG ExposureTime
   (`merged x period`) stays true.
@@ -171,10 +205,85 @@ acc = clamp(acc + frame - black, 0, white)      per sample
   mode, total exposure and accumulator black level; the merge-kernel line
   says `add`.
 
-Every word changes, so there is no select-max shortcut: the kernel unpacks,
-adds, clamps and packs (O3). Its time per frame on the camera is not yet
-measured (LOG: `Merge_max_us`); at short shutters it may miss frames, which
-the session handles as for a slow composite.
+Every word changes, so there is no select-max shortcut. The word kernel
+`lc_raw14_add_sel` (LCM55) takes 2.3 s per full frame on the camera, so Live
+Bulb needs 3 s or longer frames; if the next readout overtakes the add, the
+session stops after the frame already armed ("use longer frames").
+
+## 5b. Column correction (Live Bulb; composite after a dark frame)
+
+Every sensor column has a small offset of its own. A maximum keeps it at one
+frame's size; a sum of N frames multiplies it by N while random noise grows
+only as sqrt(N): vertical bars in the shadows (LCM55: ~23 DN at 12 frames).
+Measured on the camera (LCM56-LCM60):
+
+- Part of the pattern repeats every 8 columns (one packed block, "lanes"),
+  and that part is not the same in the covered rows as in the image.
+- One large component (P, ~12.7 DN per frame) switches from frame to frame:
+  sums of 10-12 frames contain anything from 0 to 10 times it, and the
+  covered rows do not track how much the image rows got.
+
+So the offsets are estimated per session, at save time (`fullres-fix.h`):
+
+1. `lc_colfix_measure`: trimmed mean of covered rows 16-26 per column, minus
+   the mean of its CFA parity; `lc_colfix_split_lanes` removes its 8-column
+   part (only the non-periodic part is trusted); `lc_colfix_ob_var` gives
+   the noise variance of that estimate (9 samples: ~9 DN).
+2. `lc_colfix_scan_row` on rows with y % 8 < 2: for every sample whose 9
+   same-colour neighbours x-8..x+8 are all below black+1024, d = v -
+   mean(v[x+-2,4,6,8]). A column offset passes this high-pass unchanged;
+   flat scene and linear gradients cancel. Samples with |d| >= 200 are
+   skipped, and (LCM60) samples whose left and right neighbour means differ
+   by 2 sigma or more: a column offset looks the same from both sides, a
+   vertical scene edge does not (LCM59 LVBL0021: an edge in the shadows got
+   -31/+32 DN bands; with the check -6/+8).
+3. `lc_colfix_combine`: the lanes come from the image (mean d per x % 8,
+   zero mean per parity; fewer than 4000 samples per lane: the covered-row
+   lanes are kept). Per column, the image estimate (mean d minus its lane)
+   is weighted against the covered-row estimate, w = n*vob/(n*vob+vpix), so
+   a bright scene falls back to the covered rows. One Jacobi step corrects
+   for the neighbours' own error inside d.
+4. `lc_colfix_apply` subtracts the offsets from every row; saturated samples
+   stay.
+
+Offline on LVBL0005/0009 (estimate from one half, scored on the other):
+column error 9-11 DN with covered rows only (LCM56), 4.3-7.6 DN with the
+image estimate. The pass costs ~9 s on the camera ("Applying denoise..."
+once it takes more than 1 s).
+
+## 5c. Dark frames (menu Dark frame, LCM59/LCM61)
+
+After the last light frame the sensor keeps running at the session shutter
+(no exit switch). A 10 s countdown asks to cover the lens ("SET=skip"); the
+first dark frame is one whose every row started after the countdown (rolling
+shutter: the first rows of the frame ending at vsync V+1 started up to one
+readout before V). Then:
+
+- **Live Bulb:** as many dark frames as light frames, same shutter (the dark
+  lasts as long as the exposure). One dark frame x N does not work: P (5b)
+  differs between frames, and LCM58's N x one dark frame added ~13 DN bars
+  (LVBL0017/19); warm pixels too weak to see in one frame add up over N.
+- **Live Composite:** one dark frame. A maximum takes each pixel from one
+  frame, so its offsets are in it once, and max(L_k - D) = max(L_k) - D.
+
+Only two 32 MB buffers exist (LCM9-13), so:
+
+- Save unprocessed OFF: each dark frame is subtracted from the accumulator
+  as it arrives, `acc = clamp(acc - dark + black, 0, white)`
+  (`lc_raw14_sub_sel`, the exact inverse of the add, same speed; a sample at
+  white stays). The next dark frame is armed before the subtraction when the
+  subtraction ends before its readout, else every other frame.
+- Save unprocessed ON: the light result is saved first (LVBR/LVCR); the dark
+  frames are summed in the accumulator and saved (LVDK/LVCK); the light
+  result is read back from the card into the capture buffer and the dark sum
+  subtracted there.
+
+The column correction (5b) then runs on the result (Live Bulb always; Live
+Composite only after a dark frame), because the switching pattern P need not
+cancel between the light and the dark frames. SET during the dark frames
+stops after the current one ("dark partial"). The subtraction adds the dark
+frames' own noise (shadows ~1.4 x noisier), like Canon's long exposure noise
+reduction.
 
 ## 6. Preview and display
 
@@ -186,9 +295,14 @@ the session handles as for a slow composite.
 - If a full preview does not fit before the next readout, one quarter strip
   is rendered per frame instead.
 - Canon's x5 zoom box and arrows are hidden with
-  `canon_gui_disable_front_buffer()` for the session. Messages are drawn
-  directly on the BMP overlay. NotifyBox is not used during a session,
-  because its timeout calls `redraw()`, which brings Canon's overlay back.
+  `canon_gui_disable_front_buffer()` for the session, and drawing is turned
+  back on only after the camera is at x1 again. Messages are drawn directly
+  on the BMP overlay. NotifyBox is not used during a session, because its
+  timeout calls `redraw()`, which brings Canon's overlay back. After the
+  session (x1) the save steps use NotifyBox with a 60 s timeout ("Saving
+  the unprocessed DNG...", "Saving the dark frames...", "Subtracting the
+  dark frames...", "Applying denoise...", "Saving the DNG..."), so the
+  screen never goes blank while the camera works.
 - Global Draw would draw over the preview, so the controller switches it off
   for the session and restores the user's setting afterwards.
 
@@ -200,7 +314,18 @@ before module key callbacks run, but forwards the release. A small
 short press, and suppresses the fake and physical releases of long presses
 and of presses that began in a menu. While a session runs, every SET/Q press
 and release is consumed (Canon must never act on them in the modified x5
-mode). SET stops the session, and all other mapped keys are held.
+mode). SET stops the session, and all other mapped keys are held. Canon's own
+"button pressed" command (0x54) and touch events (0x6F-0x79) are swallowed
+too (LCM56): the EOS M screen sits next to SET, and in x5 either one opened
+Canon's zoom box and knocked the camera out of the mode. The stop request is
+a counter, so a further SET is seen during the dark-frame countdown (skip)
+and the dark frames (stop).
+
+A session cannot start while one runs (re-entry guard), and the controller
+no longer trusts `task_create()`'s return value (LCM56: it can be negative
+as an int, so LCM55 sometimes reported "Worker failed" while the worker ran,
+and a second SET started a second session): the worker reports itself, and
+failure is declared only after 3 s without it.
 
 ## 8. Output
 
@@ -215,8 +340,10 @@ mode). SET stops the session, and all other mapped keys are held.
 - DNG: uncompressed, the whole 5280-pixel raster with the active area marked.
   ISO, aperture, focal length and the shutter (= frame period) are written
   as EXIF.
-- Files go to `DCIM/LIVE/LVFRnnnn.DNG`; `DCIM` and `LIVE` are created if
-  missing. With Debug ON, `LVFRnnnn.LOG` (session summary, registers, hook
+- Files go to `DCIM/LIVE/LVFRnnnn.DNG` (Live Bulb `LVBLnnnn.DNG`); `DCIM`
+  and `LIVE` are created if missing. Save unprocessed adds `LVBR`/`LVCR`
+  (before any in-camera correction) and `LVDK`/`LVCK` (dark frames; Live
+  Bulb: their sum), same number, same metadata. With Debug ON, `LVFRnnnn.LOG` (session summary, registers, hook
   counters, timings, keys, vsync intervals) and `.CSV` (one line per frame)
   are written next to the DNG; the LOG is rewritten at each stage, so an
   interrupted session still leaves evidence. With Debug OFF no log file is
@@ -231,7 +358,8 @@ mode). SET stops the session, and all other mapped keys are held.
   RAW user (raw video, silent pictures, crop_rec), Global Draw still on, the
   menu open, or not in Movie mode.
 - The hooks are inert outside the session and outside x5, and they are
-  removed at the end.
+  removed at the end. The AbortEDmac hook only records (no change to the
+  call) and is skipped if the function does not start with an STMFD.
 - Battery: when the indicator reaches its last (red) level, the session
   stops like SET and saves while there is still power for the card write.
 - Two full-size allocations are the camera's measured capacity (LCM9-13); no
@@ -239,10 +367,16 @@ mode). SET stops the session, and all other mapped keys are held.
 
 ## 10. Limits
 
-- Shortest shutter 2.5 s. This is set by the CPU merge plus the time the GUI
-  task needs. Olympus goes down to 1/2 s.
-- Shutters tested on the camera: 2.5, 3, 4, 5 and 10 s. The others use the
-  same scheme and are marked "not yet tested" in the menu.
+- Shortest shutter 2.5 s (Live Bulb 3 s). This is set by the CPU merge plus
+  the time the GUI task needs. Olympus goes down to 1/2 s.
+- Shutters run on the camera: 2.5, 3, 4, 5, 6, 10, 15 and 50 s. The menu
+  still marks shutters other than 2.5-5 and 10 s "not yet tested".
+- Start-up is about 4 s longer than LCM61 (warm-up); whether it removes the
+  recurring partial frame is still to be confirmed on the camera.
+- Dark frames are taken at the end (best temperature match) and need the
+  lens covered by the user: the EOS M cannot close its shutter in Live View.
+  Subtracting them adds their noise; there is no memory for averaging more
+  dark frames in a composite.
 - ISO and aperture are Canon's Movie-mode settings, fixed for the session.
 - The DNG is written after the session (about 32 MB); the composite is not
   saved incrementally.

@@ -1,4 +1,4 @@
 #ifndef LIVECOMP_CONFIG_H
 #define LIVECOMP_CONFIG_H
-#define LIVECOMP_BUILD_ID "LCM55 Live Bulb word kernel"
+#define LIVECOMP_BUILD_ID "LCM63 tactical delay message"
 #endif
