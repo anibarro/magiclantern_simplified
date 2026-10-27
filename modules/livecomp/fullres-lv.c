@@ -552,7 +552,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     msleep(40);arm_from_task();
     if (*phase==LC_FRLV_PREVIEW) {
         *msg="Preview: first frame...";
-        NotifyBox(MIN(period_ms+2000,60000u),"Preview: SET starts composite");
+        NotifyBox(MIN(period_ms+2000,60000u),"PREVIEW, not saved. SET=start");
     } else { *msg="Composite: first frame...";NotifyBox(8000,"Composite: first frame"); }
     for (;;) {
         if (go && *go && !go_vsync) go_vsync=vsyncs;
@@ -564,7 +564,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
             if (go && *go && !go_vsync) {
                 go_vsync=vsyncs;
-                NotifyBox(MIN(period_ms*2+2000,60000u),"Composite starts next frame");
+                NotifyBox(MIN(period_ms*2+2000,60000u),"Starting composite...");
             }
             if (*cancel && cont_arm) { cont_arm=0;NotifyBox(5000,*phase==LC_FRLV_PREVIEW ? "Leaving the preview":"Stopping after this frame"); }
             if (ml_shutdown_requested || battery_low(r)) cont_arm=0;
@@ -611,7 +611,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
              * are exposed entirely after the press. */
             if (go_vsync && done_vsync>=go_vsync+2) {
                 *phase=LC_FRLV_COMPOSE;
-                NotifyBox(3000,"Composite: base frame");
+                NotifyBox(MIN(period_ms+2000,60000u),"COMPOSITE 1  SET=stop");
             } else {
                 /* Show this frame as exposed (same render as the composite). */
                 sync_caches();
@@ -627,8 +627,10 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
                  * message on one line of at most 30 characters (LCM43: a
                  * longer, two-line text was drawn as garbage). */
                 static char info[64];   /* the text itself stays <= 30 chars */
-                if (go_vsync) snprintf(info,sizeof(info),"Composite starts next frame");
-                else snprintf(info,sizeof(info),"ISO %d f/%d.%d clip %d.%d%%",r->iso,r->aperture/10,r->aperture%10,r->clip_x10/10,r->clip_x10%10);
+                /* Every message names the phase (LCM44 camera run: the
+                 * preview was taken for a composite that did not blend). */
+                if (go_vsync) snprintf(info,sizeof(info),"Starting composite...");
+                else snprintf(info,sizeof(info),"PREVIEW clip %d.%d%% SET=start",r->clip_x10/10,r->clip_x10%10);
                 *msg="Exposure preview";
                 NotifyBox(MIN(period_ms+2000,60000u),"%s",info);
                 continue;
@@ -710,8 +712,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);*msg=line;
             NotifyBox(5000,"%s",line);
         } else {
-            snprintf(line,sizeof(line),"Composite: %d frames",r->merged);*msg=line;
-            NotifyBox(1500,"%s",line);
+            snprintf(line,sizeof(line),"COMPOSITE %d  SET=stop",r->merged);*msg=line;
+            NotifyBox(MIN(period_ms+2000,60000u),"%s",line);
         }
         if (r->merged%10==1) write_log(r,"composing");
     }

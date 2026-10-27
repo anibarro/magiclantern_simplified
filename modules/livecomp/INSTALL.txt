@@ -1,4 +1,4 @@
-Live Composite LCM43 - Canon EOS M firmware 2.0.2
+Live Composite LCM45 - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite for the EOS M at full sensor resolution
 (5208x3478): the camera keeps exposing frames of the chosen shutter speed,
@@ -39,13 +39,13 @@ RUN
  1. Close the menu and press/release SET. The camera switches to the
     full-sensor mode (about 10 s; for long shutters the first frame takes
     as long as the shutter).
- 2. EXPOSURE PREVIEW: every frame is shown as exposed, nothing is recorded.
-    The message shows shutter, ISO, aperture and the share of clipped
-    highlights. Too bright or too dark? Half-press the shutter button to
+ 2. EXPOSURE PREVIEW ("PREVIEW clip 0.3% SET=start" at the top): every
+    frame is shown as exposed, NOT blended and NOT recorded. The message
+    shows the share of clipped highlights. Too bright or too dark? Half-press the shutter button to
     leave, change ISO/aperture/shutter, and press SET again.
  3. Press SET to start the composite. The frame being exposed at that
     moment is discarded; the next one is the base exposure.
- 4. The LCD shows the growing composite. Press SET to stop: the exposure in
+ 4. "COMPOSITE n  SET=stop": the LCD shows the growing composite. Press SET to stop: the exposure in
     progress is completed and merged. Or wait for the frame limit.
  5. The camera returns to normal view and saves LVFRnnnn.DNG (composite,
     camera WB as DNG white balance, EOS M focus pixels removed), .LOG and
