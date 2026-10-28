@@ -58,6 +58,33 @@ Movie mode:
   using Magic Lantern's crop-mode hack. It cannot be switched while recording,
   because the sensor readout has to restart.
 
+## Making your own LUTs
+
+Looks are ordinary 3D `.cube` files, so they can be made in DaVinci Resolve
+or any other grading tool that exports `.cube` LUTs.
+
+* **Input.** With *Tone base = Cineon log* (the default), XPan first converts
+  Canon's image to Cineon log, so build the look for footage in
+  **Rec.709 colour gamut with Cineon Film Log gamma**. In Resolve, for
+  example, use a Color Space Transform or set the clip's input to
+  Rec.709 / Cineon Film Log. With *Tone base = Canon Neutral* there is no log
+  step, and the look receives normal Rec.709 (display) images instead.
+* **Output.** Rec.709 display, the same as a normal JPEG.
+* **Size.** Export a **17-point** cube (`LUT_3D_SIZE 17`, Resolve's
+  *Generate LUT > 17 Point Cube*). Any size from 2 to 33 is accepted, so
+  33-point files work too, but they take longer to load and are no more
+  accurate. 65-point files are rejected.
+* **How it is applied.** Canon's picture-style colour table has a 10x10x10
+  grid, and XPan resamples every LUT onto it. A look is therefore smoothed
+  slightly. Very narrow corrections, such as a key on a single hue, come
+  out softer than in Resolve.
+* **Format limits.** One 3D LUT per file: no 1D or shaper LUTs, and
+  `DOMAIN_MIN 0 0 0` / `DOMAIN_MAX 1 1 1` with output values between 0 and 1.
+  At most 16 files, with plain ASCII names under 48 characters.
+
+Copy the files to `ML/XPAN/LUTS/` and use *Refresh Cube list*, or restart the
+camera.
+
 ## Card layout
 
 The XPan build puts everything in `magiclantern.zip`. Each file comes from
