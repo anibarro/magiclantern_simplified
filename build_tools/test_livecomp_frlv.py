@@ -119,6 +119,9 @@ int main(void) {
         lc_frr_configure(&c,i);assert(c.blanking==10);          /* 100% exposure, no gap */
     }
     assert(LC_FRR_TESTED<=LC_FRR_FPS_CHOICES && LC_FRR_FPS_DEFAULT<LC_FRR_TESTED);
+    /* LCB3: 2 s test shutter, k=1, outside the menu list */
+    { const struct lc_frr_timing *t=lc_frr_timing_of(LC_FRR_FPS_2S);double period=(double)(t->timer_a+1)*(t->timer_b+1)/32e6;
+      assert(t->period_ms==2000 && t->timer_a==0x56B && period>1.999 && period<2.001 && lc_frr_timing_of(99)==&lc_frr_timing[LC_FRR_FPS_DEFAULT]); }
     /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8), 3 fps. */
     c.timer_a=0x56B;c.timer_b=0x1E03;c.blanking=lc_frr_blanking(0x1E03,100);
     /* period = (A+1)(B+1) / 32 MHz, within 0.1% of the menu value */
@@ -407,7 +410,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={0,6,0,1,LC_MODE_COMPOSITE,0,0};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
+    struct lc_frlv_options o={0,6,0,1,LC_MODE_COMPOSITE,0,0,0,0};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */

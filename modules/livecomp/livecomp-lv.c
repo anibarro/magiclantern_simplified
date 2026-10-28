@@ -54,6 +54,11 @@ static CONFIG_INT("livecomp.debug",debug,0);
 static CONFIG_INT("livecomp.dark",dark_frame,0);
 /* Save unprocessed (LCM59): also the DNG before in-camera noise reduction. */
 static CONFIG_INT("livecomp.orig",save_orig,0);
+/* LCB3 speed experiments (branch livecomp-speed): merge code, preview copy,
+ * 2 s test shutter (Live Composite only). */
+static CONFIG_INT("livecomp.mcode",merge_code,1);
+static CONFIG_INT("livecomp.pvdma",preview_dma,1);
+static CONFIG_INT("livecomp.t2s",shutter_2s,0);
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
 /* Speed benchmark: requested from the menu, started once the menu is closed. */
@@ -116,8 +121,9 @@ static void run(void *unused)
     (void)unused;
     worker_alive=1;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
-    struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug,
-        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig};
+    struct lc_frlv_options o={shutter_2s && !bulb() ? LC_FRR_FPS_2S:(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug,
+        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig,
+        (unsigned)merge_code,(unsigned)preview_dma};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
     /* A message still on screen would call redraw() when it expires and
@@ -159,7 +165,9 @@ static MENU_UPDATE_FUNC(update_shutter)
     else MENU_SET_RINFO("Auto ISO!");
     MENU_SET_HELP("%s",bulb() ? "Length of each frame, no gaps. Bulb total = frames x shutter.":
         "Length of each frame, no gaps. The LCD shows the composite after every frame.");
+    if (shutter_2s && !bulb()) MENU_SET_VALUE("2 s (test)");
     if (!iso) MENU_SET_WARNING(MENU_WARN_ADVICE,"Auto ISO: set a fixed ISO on the camera (Movie M).");
+    else if (shutter_2s && !bulb()) MENU_SET_WARNING(MENU_WARN_ADVICE,"2 s test shutter ON (Speed tests): this setting is ignored.");
     /* LCM55 camera: adding a frame takes ~2.3 s, plus ~0.25 s preview; at
      * 2.5 s the next readout overtakes it and the session stops. */
     else if (bulb() && lc_frr_timing[shutter>=0 && shutter<(int)LC_FRR_FPS_CHOICES ? shutter:(int)LC_FRR_FPS_DEFAULT].period_ms<3000u)
@@ -254,6 +262,17 @@ static struct menu_entry lv_children[]={
     {.name="Debug",.priv=&debug,.max=1,
      .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
      .help2="OFF: no log files; only the composite DNG is saved."},
+    {.name="Merge code",.priv=&merge_code,.max=2,
+     .choices=CHOICES("C","ARM","ARM fast load"),
+     .help="SPEED TEST. Live Composite merge: C (LCM63), ARM (hand-written,",
+     .help2="branch-free), ARM fast load (LDM; CSV changed_pct then 0). Same image."},
+    {.name="Preview copy",.priv=&preview_dma,.max=1,
+     .choices=CHOICES("CPU","EDMAC"),
+     .help="SPEED TEST. Copy of the LCD preview into Canon's 3 LV buffers:",
+     .help2="CPU memcpy (LCM63, ~110 ms) or EDMAC hardware copy (~5 ms)."},
+    {.name="2 s shutter (test)",.priv=&shutter_2s,.max=1,
+     .help="SPEED TEST. Live Composite with 2 s frames (ignores Shutter).",
+     .help2="Live Bulb is not affected. Debug ON to see the merge times in the LOG."},
     {.name="Speed benchmark",.select=bench_select,.update=update_bench,
      .help="Measures memory and merge speed with Live View running (~1 min).",
      .help2="Movie mode, x1. Nothing is saved except DCIM/LIVE/LVBENCH.LOG."},
@@ -295,4 +314,7 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(debug)
     MODULE_CONFIG(dark_frame)
     MODULE_CONFIG(save_orig)
+    MODULE_CONFIG(merge_code)
+    MODULE_CONFIG(preview_dma)
+    MODULE_CONFIG(shutter_2s)
 MODULE_CONFIGS_END()

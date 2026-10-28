@@ -52,7 +52,8 @@ def main():
         (t/'k.c').write_text('#include <stdint.h>\n#include "raw14-max.h"\n#include "raw14-max-asm.h"\n'
             'unsigned (*volatile k1)(uint32_t*,const uint32_t*,unsigned)=lc_raw14_max_sel;\n'
             'unsigned (*volatile k2)(uint32_t*,const uint32_t*,unsigned)=lc_raw14_max_swar;\n'
-            'unsigned (*volatile k3)(uint32_t*,const uint32_t*,unsigned)=lc_raw14_max_field;\n')
+            'unsigned (*volatile k3)(uint32_t*,const uint32_t*,unsigned)=lc_raw14_max_field;\n'
+            'unsigned (*volatile k4)(uint32_t*,const uint32_t*,unsigned)=lc_raw14_max_ldm;\n')
         # Same code generation as the module (-Os, ARMv5TE, ARM state).
         subprocess.run([gcc, '-Os', '-march=armv5te', '-marm', '-fomit-frame-pointer', '-D__ARM__', '-I', str(MOD),
                         '-c', str(t/'k.c'), '-o', str(t/'k.o')], check=True)
@@ -61,7 +62,7 @@ def main():
         code = (t/'k.bin').read_bytes()
         syms = {l.split()[2]: int(l.split()[0], 16) for l in subprocess.check_output([nm, str(t/'k.elf')]).decode().splitlines() if len(l.split()) == 3}
     rnd = random.Random(14)
-    names = ['lc_raw14_max_sel', 'lc_raw14_max_swar', 'lc_raw14_max_field']
+    names = ['lc_raw14_max_sel', 'lc_raw14_max_swar', 'lc_raw14_max_field', 'lc_raw14_max_ldm']
     for kind in ['random', 'noise', 'ties', 'steady', 'none']:
         n = 257
         A, B = data(kind, n, rnd)
@@ -76,12 +77,13 @@ def main():
             c = CPU(mem, BASE); c.r[0], c.r[1], c.r[2], c.r[13] = da, db, n, BASE+SIZE-16
             c.run(syms[fn])
             assert bytes(mem[da-BASE:da-BASE+len(A)]) == bytes(R), (fn, kind, 'not exact')
-            changed.add(c.r[0])
+            if fn != 'lc_raw14_max_ldm': changed.add(c.r[0])
+            else: assert c.r[0] == 0 and c.r[13] == BASE+SIZE-16, 'ldm: return/stack'
             line.append(f'{fn[13:]} {c.count/n:.0f} instr/{c.cycles/n:.0f} cyc')
         assert len(changed) == 1, (kind, 'changed counts differ', changed)
         print(f'{kind:7s} changed {changed.pop():3d}/{n}: ' + ', '.join(line))
-    # zero pairs: returns 0 and touches nothing
-    print('PASS: ARM select-max kernels (SWAR, per field) bit-exact on ARMv5TE code')
+        # zero pairs: nothing touched, returns 0
+    print('PASS: ARM select-max kernels (SWAR, per field, per field LDM) bit-exact on ARMv5TE code')
 
 if __name__ == '__main__':
     main()

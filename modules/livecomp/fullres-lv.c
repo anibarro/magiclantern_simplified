@@ -32,6 +32,9 @@
 #include "mem.h"
 #include "patch.h"
 #include "edmac.h"
+#ifdef __ARM__
+#include "edmac-memcpy.h"                   /* LCB3: preview copy by EDMAC */
+#endif
 #include "fps.h"
 #include "shoot.h"
 #include "propvalues.h"
@@ -42,6 +45,7 @@
 #include "fullres-regs.h"
 #include "raw14-max.h"
 #include "raw14-add.h"
+#include "raw14-max-asm.h"                  /* LCB3: ARM kernels (camera build only) */
 #include "lv-dng.h"
 #include "vram.h"
 #include "fullres-gamma.h"
@@ -240,6 +244,7 @@ struct frlv_result {
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
     unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms,switch_ms,exit_switched,target_a,target_b,short_skipped;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
+    unsigned merge_code,preview_dma;   /* LCB3 */
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     unsigned mode;        /* LC_MODE_COMPOSITE / LC_MODE_BULB */
     unsigned acc_black;   /* Live Bulb: black level measured on the accumulator */
@@ -347,7 +352,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->limit,r->overrun_offset,r->missed,r->partials,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
-        r->zoom_done_ms,r->late_frames,is_bulb(r) ? "add":"select",FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips,
+        r->zoom_done_ms,r->late_frames,is_bulb(r) ? "add":r->merge_code==2 ? "select-arm-ldm":r->merge_code==1 ? "select-arm":"select",FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips,
         is_bulb(r) ? "bulb":"composite",total_exposure_ms(r),r->acc_black,r->too_slow);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Column_fix_rms_x10_us_bulb_partials_skipped: %d,%d,%d\n",r->colfix_rms_x10,r->colfix_us,r->bulb_partials);
@@ -356,6 +361,8 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->colfix_img,r->colfix_dark,r->colfix_vob,r->colfix_vpix,r->colfix_scan_us,
         r->colfix_lane_x10[0],r->colfix_lane_x10[1],r->colfix_lane_x10[2],r->colfix_lane_x10[3],
         r->colfix_lane_x10[4],r->colfix_lane_x10[5],r->colfix_lane_x10[6],r->colfix_lane_x10[7]);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Speed_merge_code_preview_dma_period_ms: %d,%d,%d\n",r->merge_code,r->preview_dma,r->period_ms);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Dark_want_orig_state_frames_partials_lost_wait_ms_sep_origsaved_darksaved_origread_black_merge_us_end_wait_ms: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
         r->dark_want,r->save_orig,r->dark_state,r->dark_frames,r->dark_partials,r->dark_lost,r->dark_wait_ms,r->dark_sep,
@@ -618,13 +625,32 @@ static __attribute__((optimize("O2"))) unsigned preview_render(const struct frlv
 }
 /* Overwrite Canon's three LV YUV buffers with the last render. Canon refills
  * one per frame near the vsync; the worker repeats this right after it. */
+/* LCB3: the copy into Canon's three LV buffers by EDMAC (LCB1 benchmark:
+ * 6-11 ms instead of 174 ms by memcpy from the uncached preview buffer).
+ * Only while the session holds edmac_memcpy's resources. */
+static unsigned preview_dma_on __attribute__((unused));
 static void preview_show(void)
 {
     if (!preview_yuv) return;
     for (unsigned i=0;i<3;i++) {
         uint8_t *dst=(uint8_t *)livecomp_camera.lv_yuv[i];
-        if (dst) memcpy(dst,preview_yuv,preview_pitch*preview_h);
+        if (!dst) continue;
+#ifdef __ARM__
+        if (preview_dma_on) { edmac_memcpy(dst,preview_yuv,preview_pitch*preview_h);continue; }
+#endif
+        memcpy(dst,preview_yuv,preview_pitch*preview_h);
     }
+}
+/* LCB3: merge kernel chosen in the experimental menu (camera build only;
+ * the host simulator always runs the C kernel). */
+static unsigned merge_code;
+static unsigned merge_max(uint32_t *d,const uint32_t *s,unsigned pairs)
+{
+#ifdef __ARM__
+    if (merge_code==1) return lc_raw14_max_field(d,s,pairs);
+    if (merge_code==2) return lc_raw14_max_ldm(d,s,pairs);
+#endif
+    return lc_raw14_max_sel(d,s,pairs);
 }
 static void preview_setup(void)
 {
@@ -860,6 +886,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
 {
     unsigned lost_ticks=0;
     preview_setup();r->preview_ok=preview_yuv!=NULL;
+#ifdef __ARM__
+    if (preview_yuv && r->preview_dma && preview_pitch*preview_h%16u==0) { edmac_memcpy_res_lock();preview_dma_on=1; }
+#endif
     const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28;
     static char line[64];
     unsigned last_engio=stats.engio_calls,last_adtg=stats.adtg_calls;
@@ -960,8 +989,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             continue;
         }
         /* Next frame: arm now (its readout starts ~period-readout later),
-         * never inside the vsync: preview_show (~110 ms) already waited. */
-        if (!preview_yuv) msleep(40);
+         * never inside the vsync (>= 40 ms after it). preview_show took
+         * ~110 ms with memcpy; with the EDMAC copy (LCB3) it is ~5 ms. */
+        while (((unsigned)get_us_clock()-last_vsync_us)/1000u<40u) msleep(1);
         /* No extra frame after the last one the limit allows. */
         if (cont_arm && !in_flight && r->merged+1<r->limit) arm_from_task();
         struct frlv_frame *c=r->merged<FRLV_CSV_MAX ? &cont_frames[r->merged]:&cont_overflow;
@@ -1011,7 +1041,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
                 if (b0<e) lc_raw14_add_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),e-b0,add_black,add_white);
                 changed+=b1-b0;
             }
-            else changed+=lc_raw14_max_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
+            else changed+=merge_max((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             msleep(10);
             /* Acknowledge Q/SET during the ~1.7 s merge too (LCM25). */
             if (*cancel && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
@@ -1085,6 +1115,9 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         !ml_shutdown_requested && zoom5() && !window_lost())
         dark_capture(r,cap,acc,cancel,period_ms,dma_uncertain);
     if (preview_only && r->merged && !r->error && !*dma_uncertain) preview_hold(r,acc,cancel);
+#ifdef __ARM__
+    if (preview_dma_on) { edmac_memcpy_res_unlock();preview_dma_on=0; }
+#endif
     if (preview_yuv) { fio_free(preview_yuv);preview_yuv=NULL; }
 }
 
@@ -1129,7 +1162,8 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     const unsigned target_a=cfg.timer_a,target_b=cfg.timer_b;
     cfg.timer_a=LC_FRR_ENTRY_A;cfg.timer_b=LC_FRR_ENTRY_B;pending_timers=0;
     r.target_a=target_a;r.target_b=target_b;
-    r.period_ms=lc_frr_timing[o->fps_index<LC_FRR_FPS_CHOICES ? o->fps_index:LC_FRR_FPS_DEFAULT].period_ms;
+    r.period_ms=lc_frr_timing_of(o->fps_index)->period_ms;
+    r.merge_code=merge_code=o->merge_code<=2 ? o->merge_code:0;r.preview_dma=o->preview_dma;
     const unsigned period_ms=r.period_ms;
     r.iso=raw2iso(lens_info.raw_iso);r.aperture=lens_info.aperture;r.battery_start=battery_level_bars;
     r.limit=o->preview_only ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */

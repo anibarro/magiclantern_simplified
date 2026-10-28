@@ -60,6 +60,11 @@ static const struct lc_frr_timing lc_frr_timing[LC_FRR_FPS_CHOICES]={
     {24983u,64040u,50000u},     /* 50 s, k=18 */
     {30535u,62876u,60000u},     /* 60 s, k=22 */
 };
+/* LCB3 (branch livecomp-speed): a 2 s test shutter, k=1 like 2.5 s (readout
+ * ~150 ms). Not in the menu list; selected by the experimental "2 s shutter
+ * (test)" item, Live Composite only. */
+#define LC_FRR_FPS_2S LC_FRR_FPS_CHOICES
+static const struct lc_frr_timing lc_frr_timing_2s_entry={1387u,46108u,2000u};
 
 struct lc_frr_config {
     uint32_t raw_h,raw_v,timer_a,timer_b,blanking;
@@ -101,12 +106,17 @@ static inline uint32_t lc_frr_blanking(uint32_t timer_b_reg,uint32_t pct)
 }
 /* The composite always exposes 100% of the frame: consecutive
  * sub-exposures leave no gap in a light trail. */
+static inline const struct lc_frr_timing *lc_frr_timing_of(unsigned fps_index)
+{
+    if (fps_index==LC_FRR_FPS_2S) return &lc_frr_timing_2s_entry;
+    return &lc_frr_timing[fps_index<LC_FRR_FPS_CHOICES ? fps_index:LC_FRR_FPS_DEFAULT];
+}
 static inline void lc_frr_configure(struct lc_frr_config *c,unsigned fps_index)
 {
-    if (fps_index>=LC_FRR_FPS_CHOICES) fps_index=LC_FRR_FPS_DEFAULT;
+    const struct lc_frr_timing *t=lc_frr_timing_of(fps_index);
     c->raw_h=LC_FRR_RAW_H;c->raw_v=LC_FRR_RAW_V;
-    c->timer_a=lc_frr_timing[fps_index].timer_a;
-    c->timer_b=lc_frr_timing[fps_index].timer_b;
+    c->timer_a=t->timer_a;
+    c->timer_b=t->timer_b;
     c->blanking=lc_frr_blanking(c->timer_b,100u);
 }
 

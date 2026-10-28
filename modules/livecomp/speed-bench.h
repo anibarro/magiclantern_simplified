@@ -1,6 +1,8 @@
 /* GPL-2.0-or-later. Speed benchmark (branch livecomp-speed, LCB1).
- * LCB2: also the hand-written ARM select-max kernels (raw14-max-asm.h:
- * per field, SWAR) next to the C kernel, on four data sets.
+ * LCB2/3: also the hand-written ARM select-max kernels (raw14-max-asm.h:
+ * per field, SWAR, per field with LDM) next to the C kernel, on four data
+ * sets. Power saving is held off while it runs (LCB2: the first run was
+ * interrupted).
  * Measures on the camera, with the same two 32 MB buffers a session uses
  * and Live View running (x1), what limits the shortest shutter:
  *  - memory: cached/uncached reads (word loop, LDM 4/8), two interleaved
@@ -20,7 +22,7 @@
 #define LCB_BANDS 8u
 #define LCB_PV_BYTES (720u*480u*2u)
 struct lcb_line { const char *name; unsigned us,bytes,extra; };
-static struct lcb_line lcb_lines[48];
+static struct lcb_line lcb_lines[56];
 static unsigned lcb_n;
 static uint8_t *lcb_a,*lcb_b;                    /* cached aliases */
 static unsigned lcb_alias;
@@ -84,6 +86,7 @@ static void lcb_do(unsigned kind,unsigned off,unsigned len)
     case 11: lc_raw14_add_sel((uint32_t *)(void *)a,(const uint32_t *)(void *)b,len/28,2047,15000);break;
     case 12: lcb_changed+=lc_raw14_max_field((uint32_t *)(void *)a,(const uint32_t *)(void *)b,len/28);break;
     case 13: lcb_changed+=lc_raw14_max_swar((uint32_t *)(void *)a,(const uint32_t *)(void *)b,len/28);break;
+    case 14: lcb_changed+=lc_raw14_max_ldm((uint32_t *)(void *)a,(const uint32_t *)(void *)b,len/28);break;
     }
 }
 static unsigned lcb_run(unsigned kind,unsigned bytes)
@@ -140,6 +143,7 @@ unsigned livecomp_bench_run(struct card_info *card,const char **status)
     lcb_n=0;lcb_alias=livecomp_camera.cache_alias_mask;
     const unsigned t_all=get_ms_clock();
     if (!lv || LV_PAUSED || lens_info.job_state || raw_lv_is_enabled()) { *status="Benchmark: Live View idle (x1), no RAW tools";return 0; }
+    powersave_prohibit();                        /* LCB2: auto power-off interrupted a run */
     for (unsigned i=0;i<2;i++) alloc[i]=fio_malloc(FRLV_ALLOCATION);
     if (!alloc[0] || !alloc[1]) { *status="Benchmark: not enough memory";goto out; }
     lcb_a=(uint8_t *)physical((void *)FRLV_ALIGN((uintptr_t)alloc[0]));
@@ -163,14 +167,15 @@ unsigned livecomp_bench_run(struct card_info *card,const char **status)
      * black (everything), independent noise (mixed), noise + 100 DN
      * ("steady": a long session, ~30 % of the pairs change). */
     lcb_text("Benchmark: merge kernels (~1 min)");
-    static const char *kn[3][4]={
+    static const char *kn[4][4]={
         {"max_sel_none_changed","max_sel_all_changed","max_sel_mixed","max_sel_steady"},
         {"asm_field_none_changed","asm_field_all_changed","asm_field_mixed","asm_field_steady"},
-        {"asm_swar_none_changed","asm_swar_all_changed","asm_swar_mixed","asm_swar_steady"}};
-    static const unsigned kk[3]={9,12,13};
+        {"asm_swar_none_changed","asm_swar_all_changed","asm_swar_mixed","asm_swar_steady"},
+        {"asm_ldm_none_changed","asm_ldm_all_changed","asm_ldm_mixed","asm_ldm_steady"}};
+    static const unsigned kk[4]={9,12,13,14};
     unsigned us;
-    for (unsigned k=0;k<3 && !ml_shutdown_requested;k++) {
-        snprintf(msg,sizeof(msg),"Benchmark: merge kernel %d/3",k+1);lcb_text(msg);
+    for (unsigned k=0;k<4 && !ml_shutdown_requested;k++) {
+        snprintf(msg,sizeof(msg),"Benchmark: merge kernel %d/4",k+1);lcb_text(msg);
         sync_caches();memset(lcb_unc(lcb_a),0xff,F);
         us=lcb_run(kk[k],F);lcb_add(kn[k][0],us,2*F,lcb_changed*100/(F/28));
         sync_caches();memset(lcb_unc(lcb_a),0,F);
@@ -204,19 +209,21 @@ unsigned livecomp_bench_run(struct card_info *card,const char **status)
     lcb_add("edmac_copy_4MB",(unsigned)get_us_clock()-t0,4u*1048576u,0);
     edmac_memcpy_res_unlock();
     {
-        unsigned mix=0,two=0,sel=0,fld=0,swr=0;
+        unsigned mix=0,two=0,sel=0,fld=0,swr=0,ldm=0;
         for (unsigned i=0;i<lcb_n;i++) {
             if (!strcmp(lcb_lines[i].name,"max_sel_mixed")) mix=lcb_lines[i].us;
             if (!strcmp(lcb_lines[i].name,"read_two_streams_cached")) two=lcb_lines[i].us;
             if (!strcmp(lcb_lines[i].name,"max_sel_steady")) sel=lcb_lines[i].us;
             if (!strcmp(lcb_lines[i].name,"asm_field_steady")) fld=lcb_lines[i].us;
             if (!strcmp(lcb_lines[i].name,"asm_swar_steady")) swr=lcb_lines[i].us;
+            if (!strcmp(lcb_lines[i].name,"asm_ldm_steady")) ldm=lcb_lines[i].us;
         }
-        snprintf(msg,sizeof(msg),"Benchmark: C %d ms, field %d, SWAR %d (steady)",sel/1000,fld/1000,swr/1000);(void)mix;(void)two;
+        snprintf(msg,sizeof(msg),"Benchmark: C %d ms, field %d, SWAR %d, LDM %d",sel/1000,fld/1000,swr/1000,ldm/1000);(void)mix;(void)two;
         *status=msg;
     }
 out:
     for (unsigned i=0;i<2;i++) if (alloc[i]) fio_free(alloc[i]);
+    powersave_permit();
     lcb_write_log(card,*status,get_ms_clock()-t_all);
     return 0;
 }
