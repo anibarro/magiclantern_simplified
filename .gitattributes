@@ -1,0 +1,49 @@
+# Line endings
+# https://docs.github.com/en/get-started/git-basics/configuring-git-to-handle-line-endings
+#
+# Every checkout behaves the same whatever core.autocrlf is set to: text files
+# are stored with LF in the repository and checked out with the platform's
+# line endings, so a file that was only checked out on Windows never shows as
+# modified.
+#
+# "text=auto" (not plain "text") on purpose: about 280 files inherited from
+# upstream were committed with CRLF or mixed line endings. Git leaves files
+# that already contain CRLF in the repository untouched under "auto", so they
+# do not turn into whitespace-only changes against upstream.
+* text=auto
+
+# Shell and Python scripts are also run by bash (Linux, WSL from a Windows
+# checkout) and must keep LF in the working tree.
+*.sh text=auto eol=lf
+*.py text=auto eol=lf
+
+# Windows command scripts keep CRLF in the working tree.
+*.cmd text=auto eol=crlf
+*.bat text=auto eol=crlf
+
+# Binary files: never converted or diffed as text.
+*.bin binary
+*.BIN binary
+*.fir binary
+*.FIR binary
+*.mo binary
+*.o binary
+*.a binary
+*.elf binary
+*.zip binary
+*.gz binary
+*.DNG binary
+*.dng binary
+*.CR2 binary
+*.MLV binary
+*.png binary
+*.jpg binary
+*.JPG binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.rbf binary
+*.lut binary
+*.fpm binary
