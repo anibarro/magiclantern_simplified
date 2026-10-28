@@ -13,15 +13,11 @@ struct lc_frlv_options {
     unsigned mode;         /* LC_MODE_COMPOSITE or LC_MODE_BULB */
     unsigned dark_frame;   /* 1: dark frames at the end (lens covered): Bulb N, Composite 1 */
     unsigned save_orig;    /* 1: also save LVBR/LVCR (unprocessed) and LVDK/LVCK (dark) */
-    unsigned merge_code;   /* LCB3: 0 C select-max, 1 ARM per field, 2 ARM per field with LDM */
-    unsigned preview_dma;  /* LCB3: 1 preview copy into the LV buffers by EDMAC (edmac_memcpy) */
 };
 /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,
     const volatile unsigned *cancel,const char **status);
 void livecomp_frlv_vsync(void);
-/* Speed benchmark (livecomp-speed): memory and merge timings, DCIM/LIVE/LVBENCH.LOG. */
-unsigned livecomp_bench_run(struct card_info *card,const char **status);
 /* Diagnostics: record a key event seen while a session runs (LOG). */
 void livecomp_frlv_key_log(unsigned code,unsigned phase,unsigned result);
 #endif

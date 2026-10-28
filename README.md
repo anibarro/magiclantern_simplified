@@ -48,8 +48,7 @@ It does not need any other module or a modified Magic Lantern core.
 | Moving lights | Leave trails | Leave trails |
 | The rest of the scene | Stays at the exposure of one frame, however long you run | Keeps getting brighter, like one long bulb exposure |
 | Typical use | Light painting, car light trails, star trails over a fixed foreground, fireworks | A long exposure you want to watch and stop at the right moment: dark landscapes, night scenes, very dim interiors |
-| Shutter per frame | 2.5 s to 60 s | 3 s to 60 s |
-| Noise reduction | Optional dark frame (one frame long) | Automatic column-stripe correction; optional dark frames (as long as the whole exposure) |
+| Shutter per frame | 2 s to 60 s | 3 s to 60 s |
 | File name | `DCIM/LIVE/LVFRnnnn.DNG` | `DCIM/LIVE/LVBLnnnn.DNG` |
 
 Rule of thumb: if the scene around your lights is lit (a room, a city
@@ -97,11 +96,9 @@ each frame** is set in the module's menu, not on the camera.
 | --- | --- |
 | **Live Composite / Live Bulb** | ON arms the module. Nothing starts until you close the menu and press SET. |
 | **Mode** | Live Composite (default) or Live Bulb. |
-| **Shutter** | The exposure of each frame: 2.5, 3, 4, 5, 6, 8, 10, 13, 15, 20, 25, 30, 40, 50 or 60 s. Frames follow each other with no gap. The right side shows the camera's ISO and aperture. Live Bulb needs 3 s or longer. 2.5 to 6 s, 10, 15 and 50 s have been used on the camera; the menu still marks shutters from 6 s up (except 10 s) as not yet tested. |
+| **Shutter** | The exposure of each frame: 2, 2.5, 3, 4, 5, 6, 8, 10, 13, 15, 20, 25, 30, 40, 50 or 60 s (default 2.5 s). Frames follow each other with no gap. The right side shows the camera's ISO and aperture. Live Bulb needs 3 s or longer. 2 to 5 s and 10 s have been tested on the camera; the menu marks the others as not yet tested. |
 | **Preview only** | ON: SET takes one test frame with the current settings and shows it, with the percentage of clipped highlights. Nothing is saved. Use it to get the exposure right, then turn it OFF. |
-| **Frame limit** | No limit (default), 30, 60, 120 or 240 frames. The session stops and saves by itself after that many frames. In Live Bulb the right side shows the total exposure, e.g. "= 1m15s bulb". For a single long frame (for example one 50 s bulb), press SET while the first frame is being exposed. |
-| **Dark frame** | OFF (default) / ON. After the last frame the camera asks you to cover the lens and takes dark frames with the same shutter, which are then subtracted, like a camera's long exposure noise reduction. Live Bulb: as many dark frames as the picture has (they last as long as the whole exposure). Live Composite: one dark frame. See *Noise reduction* below. |
-| **Save unprocessed** | OFF (default) / ON. Also saves the picture without in-camera noise reduction, and the dark frames (with Dark frame ON), so you can process them yourself. Slower: extra card writes. |
+| **Frame limit** | No limit (default), 30, 60, 120 or 240 frames. The session stops and saves by itself after that many frames. In Live Bulb the right side shows the total exposure, e.g. "= 1m15s bulb". |
 | **Debug** | OFF (default): only the DNG is saved. ON: a log file and a CSV file are saved next to each DNG. Turn it on only when you want to report a problem. |
 | **Status** | Shows Off / Armed / Starting / Running / Reboot, setup reminders, and the result of the last session. |
 
@@ -114,11 +111,8 @@ each frame** is set in the module's menu, not on the camera.
    ISO or aperture on the camera, or the shutter in the menu, and repeat
    until it looks right. Then set *Preview only* back to OFF.
 2. **Start.** Close the menu and press and release **SET**. The screen
-   switches to the full-sensor view (about 1 s) and shows "Tactical
-   delay... first frame in n s": the camera waits about 4 s at a fast frame
-   rate before the real exposures start (this keeps a Canon quirk from
-   cutting one of your frames, see *Good to know*). Then the first frame
-   takes one full shutter time.
+   switches to the full-sensor view (about 1 s) and shows "First frame in
+   about n s". The first frame takes one full shutter time.
 3. **Watch it build up.** After every frame the screen shows the whole
    picture so far, with a line such as `COMPOSITE 12  SET=stop` or, in Live
    Bulb, `BULB 12  36s  SET=stop` (frames and total exposure so far).
@@ -126,23 +120,11 @@ each frame** is set in the module's menu, not on the camera.
    ignored on purpose.
 4. **Stop.** Press **SET** when the picture looks right (or let the frame
    limit stop it). The frame being exposed is finished and added, so
-   stopping takes up to one shutter time. SET during the very first frame
-   gives a picture of that one frame. Before returning to the normal view
-   the camera may need to finish one more frame at the chosen shutter; the
-   screen then says "Ending the current frame: up to n s".
-5. **Dark frames (only with Dark frame ON).** The screen shows "COVER THE
-   LENS: dark frames in 10 s  SET=skip". Put the lens cap on (or cover the
-   lens completely) and keep it covered until the screen says "Dark frames
-   done: lens can be uncovered". In Live Bulb this takes as long as the
-   picture itself ("DARK 3/12  54s  SET=stop"); in Live Composite one
-   frame. SET during the countdown skips the dark frames; SET during them
-   stops after the current one.
-6. **Saved.** The camera returns to the normal view, applies the noise
-   reduction ("Applying denoise...") and saves the DNG in `DCIM/LIVE` on
-   the card ("Saving the DNG..."). The Status line shows the result, for
-   example "Composite saved: 25 frames" or "Bulb saved: 18 frames, 54 s,
-   dark subtracted". You can start the next session right away with SET; no
-   restart is needed.
+   stopping takes up to one shutter time.
+5. **Saved.** The camera returns to the normal view and saves the DNG in
+   `DCIM/LIVE` on the card. The Status line shows the result, for example
+   "Composite saved: 25 frames" or "Bulb saved: 18 frames, 54 s". You can
+   start the next session right away with SET; no restart is needed.
 
 ## Getting the exposure right
 
@@ -159,49 +141,10 @@ final picture. The simplest way is to watch the screen and press SET when it
 looks right. Highlights that reach white stay white. As in any long
 exposure, shadow noise grows with the total time; ISO 100 helps.
 
-## Noise reduction
-
-**Column stripes (Live Bulb, automatic).** Each column of the EOS M sensor
-has a small offset of its own. Adding many frames adds those offsets up into
-vertical stripes in the shadows. Live Bulb measures them, from the covered
-rows at the top of the sensor and from flat dark areas of the picture
-itself, and removes them before saving. It needs no setting. The same
-correction runs on a Live Composite after its dark frame.
-
-**Dark frames (menu Dark frame).** With the lens covered the sensor still
-records hot and warm pixels, the dark current that lifts long exposures, and
-amp glow. A dark frame records exactly that, and subtracting it removes it,
-as Canon's long exposure noise reduction does:
-
-- **Live Bulb** subtracts as many dark frames as the picture has, with the
-  same shutter, so the dark lasts as long as the whole exposure (a
-  12 x 6 s bulb is followed by 12 x 6 s of dark frames).
-- **Live Composite** keeps each pixel's brightest frame, so the hot pixels
-  are in it only once: one dark frame of one shutter time is enough.
-
-Subtracting a dark frame also adds its own random noise: shadows get about
-1.4 times noisier, the same trade-off as Canon's long exposure noise
-reduction. Without a cap the dark frames are not dark; always cover the lens
-completely.
-
-**Save unprocessed.** Also writes the picture before any in-camera noise
-reduction and the dark frames, so you can do the subtraction yourself:
-
-| File | Live Bulb | Live Composite |
-| --- | --- | --- |
-| Final picture (noise reduction applied) | `LVBLnnnn.DNG` | `LVFRnnnn.DNG` |
-| Unprocessed picture | `LVBRnnnn.DNG` | `LVCRnnnn.DNG` (only with Dark frame ON) |
-| Dark frames (sum / single) | `LVDKnnnn.DNG` | `LVCKnnnn.DNG` |
-
-The camera has memory for two full-size images only, so with Save
-unprocessed ON the unprocessed picture is written to the card before the
-dark frames and read back afterwards: allow some extra seconds at the end.
-
 ## Your pictures
 
 - Files are saved in `DCIM/LIVE/` on the card: `LVFRnnnn.DNG` (Live
-  Composite) and `LVBLnnnn.DNG` (Live Bulb), plus the unprocessed and dark
-  files of *Save unprocessed* (see above). The folder is created
+  Composite) and `LVBLnnnn.DNG` (Live Bulb). The folder is created
   automatically.
 - The camera's own playback does not show this folder; copy the files to a
   computer.
@@ -226,11 +169,6 @@ to write the card ("Battery low: saved n frames").
 | Merge too slow / Too slow for n s frames | The camera could not keep up with the chosen shutter. What was taken so far is saved. Choose a longer shutter. |
 | Bulb saved: n frames; use longer frames | Live Bulb stopped early because the shutter was too short. Use 3 s or longer. |
 | Saved; stopped early, see LOG | Something interrupted the session; the picture so far was saved. Turn Debug ON and repeat if it happens again. |
-| Tactical delay... first frame in n s | Normal start-up pause (about 4 s plus one shutter). Wait. |
-| Ending the current frame: up to n s | After SET the sensor finishes a frame before the camera can return to the normal view. Wait. |
-| COVER THE LENS: dark frames in n s | Dark frame is ON: cover the lens now and keep it covered (SET skips the dark frames). |
-| ..., dark partial / dark failed | Fewer dark frames than needed were taken (SET, or a camera problem); the picture is saved with what was taken / without dark subtraction. |
-| Dark subtraction failed: see LVBR (LVCR) | With Save unprocessed, the unprocessed file could not be read back. That file is your picture; nothing else was saved. |
 | Status says **Reboot** / "DMA uncertain: reboot camera" | Switch the camera off and on before the next session. This is a safety stop; nothing is damaged. |
 
 If the camera ever stops responding, take the battery out and put it back.
@@ -239,14 +177,12 @@ To report a problem, turn **Debug** ON, repeat the session, and include the
 
 ## Good to know
 
-- Shutters shorter than 2.5 s (3 s in Live Bulb) are not possible: adding
-  each full-resolution frame takes the camera's processor about 1.5-2.3 s.
-- Canon's Live View aborts the RAW transfer of one frame a few frames after
-  the camera enters the full-sensor mode (always the same frame). Before
-  version LCM62 this cut one real frame short (a gap in light trails, one
-  frame missing in Live Bulb). The start-up "tactical delay" now lets that
-  happen on throwaway frames; with Debug ON the LOG records each abort
-  (`Abort_hook` line).
+- Shutters shorter than 2 s (3 s in Live Bulb) are not possible: adding
+  each full-resolution frame takes the camera's processor about 1.5 s
+  (Live Bulb about 2.3 s).
+- The camera needs about 4 s more before the first frame ("Tactical
+  delay..."): it lets the camera get a frame it always cuts short out of the
+  way, so no frame of your picture is lost.
 - The DNG contains the full sensor area, with the usable image area marked
   for your raw editor.
 - More detail on the module, its design and its test history is in

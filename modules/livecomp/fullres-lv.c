@@ -45,7 +45,7 @@
 #include "fullres-regs.h"
 #include "raw14-max.h"
 #include "raw14-add.h"
-#include "raw14-max-asm.h"                  /* LCB3: ARM kernels (camera build only) */
+#include "raw14-max-asm.h"                  /* ARM merge kernel (camera build only) */
 #include "lv-dng.h"
 #include "vram.h"
 #include "fullres-gamma.h"
@@ -244,7 +244,6 @@ struct frlv_result {
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
     unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms,switch_ms,exit_switched,target_a,target_b,short_skipped;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
-    unsigned merge_code,preview_dma;   /* LCB3 */
     int32_t neutral[3];unsigned wb_mode,kelvin,fp_fixed,fp_us,late_frames,zoom_done_ms;
     unsigned mode;        /* LC_MODE_COMPOSITE / LC_MODE_BULB */
     unsigned acc_black;   /* Live Bulb: black level measured on the accumulator */
@@ -352,7 +351,7 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->limit,r->overrun_offset,r->missed,r->partials,
         r->merge_max_us,r->merge_sum_ms,r->preview_ok,r->preview_us,r->preview_copy_us,
         r->wb_mode,r->kelvin,r->neutral[0],r->neutral[1],r->neutral[2],r->fp_fixed,r->fp_us,
-        r->zoom_done_ms,r->late_frames,is_bulb(r) ? "add":r->merge_code==2 ? "select-arm-ldm":r->merge_code==1 ? "select-arm":"select",FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips,
+        r->zoom_done_ms,r->late_frames,is_bulb(r) ? "add":"select",FRLV_BANDS,r->preview_skipped,r->behind,r->preview_strips,
         is_bulb(r) ? "bulb":"composite",total_exposure_ms(r),r->acc_black,r->too_slow);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Column_fix_rms_x10_us_bulb_partials_skipped: %d,%d,%d\n",r->colfix_rms_x10,r->colfix_us,r->bulb_partials);
@@ -362,7 +361,11 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->colfix_lane_x10[0],r->colfix_lane_x10[1],r->colfix_lane_x10[2],r->colfix_lane_x10[3],
         r->colfix_lane_x10[4],r->colfix_lane_x10[5],r->colfix_lane_x10[6],r->colfix_lane_x10[7]);
     ok&=write_text(f,t,n);
-    n=snprintf(t,sizeof(t),"Speed_merge_code_preview_dma_period_ms: %d,%d,%d\n",r->merge_code,r->preview_dma,r->period_ms);
+#ifdef __ARM__
+    n=snprintf(t,sizeof(t),"Merge_code_preview_copy: arm-ldm,edmac\n");
+#else
+    n=snprintf(t,sizeof(t),"Merge_code_preview_copy: c,memcpy\n");
+#endif
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Dark_want_orig_state_frames_partials_lost_wait_ms_sep_origsaved_darksaved_origread_black_merge_us_end_wait_ms: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
         r->dark_want,r->save_orig,r->dark_state,r->dark_frames,r->dark_partials,r->dark_lost,r->dark_wait_ms,r->dark_sep,
@@ -625,9 +628,9 @@ static __attribute__((optimize("O2"))) unsigned preview_render(const struct frlv
 }
 /* Overwrite Canon's three LV YUV buffers with the last render. Canon refills
  * one per frame near the vsync; the worker repeats this right after it. */
-/* LCB3: the copy into Canon's three LV buffers by EDMAC (LCB1 benchmark:
- * 6-11 ms instead of 174 ms by memcpy from the uncached preview buffer).
- * Only while the session holds edmac_memcpy's resources. */
+/* The copy into Canon's three LV buffers is done by EDMAC (LCM64; camera:
+ * ~6 ms instead of ~110-150 ms by memcpy from the uncached preview buffer),
+ * while the session holds edmac_memcpy's resources; memcpy otherwise. */
 static unsigned preview_dma_on __attribute__((unused));
 static void preview_show(void)
 {
@@ -641,16 +644,17 @@ static void preview_show(void)
         memcpy(dst,preview_yuv,preview_pitch*preview_h);
     }
 }
-/* LCB3: merge kernel chosen in the experimental menu (camera build only;
- * the host simulator always runs the C kernel). */
-static unsigned merge_code;
+/* Composite merge (LCM64): the hand-written ARM select-max with LDM loads
+ * on the camera (raw14-max-asm.h; 1.46-1.52 s per frame vs 1.54-1.78 s for
+ * the C kernel, LCB3), same result; it does not count changed pairs, so
+ * the CSV column changed_pct is 0. The host simulator runs the C kernel. */
 static unsigned merge_max(uint32_t *d,const uint32_t *s,unsigned pairs)
 {
 #ifdef __ARM__
-    if (merge_code==1) return lc_raw14_max_field(d,s,pairs);
-    if (merge_code==2) return lc_raw14_max_ldm(d,s,pairs);
-#endif
+    return lc_raw14_max_ldm(d,s,pairs);
+#else
     return lc_raw14_max_sel(d,s,pairs);
+#endif
 }
 static void preview_setup(void)
 {
@@ -887,7 +891,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     unsigned lost_ticks=0;
     preview_setup();r->preview_ok=preview_yuv!=NULL;
 #ifdef __ARM__
-    if (preview_yuv && r->preview_dma && preview_pitch*preview_h%16u==0) { edmac_memcpy_res_lock();preview_dma_on=1; }
+    if (preview_yuv && preview_pitch*preview_h%16u==0) { edmac_memcpy_res_lock();preview_dma_on=1; }
 #endif
     const unsigned end=physical(cap)+r->bytes,pairs=r->bytes/28;
     static char line[64];
@@ -990,7 +994,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         }
         /* Next frame: arm now (its readout starts ~period-readout later),
          * never inside the vsync (>= 40 ms after it). preview_show took
-         * ~110 ms with memcpy; with the EDMAC copy (LCB3) it is ~5 ms. */
+         * ~110 ms with memcpy; with the EDMAC copy (LCM64) it is ~6 ms. */
         while (((unsigned)get_us_clock()-last_vsync_us)/1000u<40u) msleep(1);
         /* No extra frame after the last one the limit allows. */
         if (cont_arm && !in_flight && r->merged+1<r->limit) arm_from_task();
@@ -1163,7 +1167,6 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     cfg.timer_a=LC_FRR_ENTRY_A;cfg.timer_b=LC_FRR_ENTRY_B;pending_timers=0;
     r.target_a=target_a;r.target_b=target_b;
     r.period_ms=lc_frr_timing_of(o->fps_index)->period_ms;
-    r.merge_code=merge_code=o->merge_code<=2 ? o->merge_code:0;r.preview_dma=o->preview_dma;
     const unsigned period_ms=r.period_ms;
     r.iso=raw2iso(lens_info.raw_iso);r.aperture=lens_info.aperture;r.battery_start=battery_level_bars;
     r.limit=o->preview_only ? 1u:o->limit ? o->limit:~0u;   /* 0 = no limit */
@@ -1504,7 +1507,3 @@ out:
     busy=0;
     return r.unsafe;
 }
-/* Speed benchmark (branch livecomp-speed); camera build only (not in the host simulator). */
-#ifdef __ARM__
-#include "speed-bench.h"
-#endif

@@ -7,7 +7,7 @@ Olympus-style Live Composite and Live Bulb: continuous light painting, or a bulb
 :License: GPL
 :Summary: Full-sensor live composite / live bulb with DNG for EOS M 2.0.2
 
-Full-sensor (5208x3478) composite, 2.5-60 s shutter (Live Bulb: 3 s and
+Full-sensor (5208x3478) composite, 2-60 s shutter (Live Bulb: 3 s and
 up), RAW DNG. Live Composite: brightest pixel wins (LVFRnnnn.DNG). Live Bulb:
 frames add up like one bulb exposure (LVBLnnnn.DNG), column stripes removed.
 Movie M, fixed ISO/WB, x1 view, FPS override OFF. ISO and aperture on the
@@ -36,13 +36,13 @@ livecomp.mo. The validation core is never included in the install ZIP.
 Validation
 ----------
 
-Camera-tested on an EOS M 2.0.2: full-res composites with 2.5, 3, 4, 5, 6
-and 10 s shutters (LCM23-LCM61), exact merges, LCD preview, focus-pixel fix,
+Camera-tested on an EOS M 2.0.2: full-res composites with 2, 2.5, 3, 4, 5, 6
+and 10 s shutters (LCM23-LCM64), exact merges, LCD preview, focus-pixel fix,
 white balance and DNG. Live Bulb: 3, 4, 6, 15 and 50 s frames (LCM55-LCM61,
 2.3 s per added frame), column correction, dark-frame subtraction (in place
 and with Save unprocessed) and single-frame bulbs; composite dark frame
-(LCM61, 6 s). Not yet confirmed on the camera: the LCM62/63 start-up delay
-against the recurring partial frame. Host tests cover the register rewriting, a
+(LCM61, 6 s); the LCM62/63 start-up delay against the recurring partial
+frame (confirmed). LCM64: ARM merge (1.5 s per frame), preview copy by EDMAC. Host tests cover the register rewriting, a
 simulated session (incl. dark frames, the late timer latch, a simulated
 Canon abort), the merge/sum/subtract kernels, the column correction, the
 DNG writer, the key gating and the ARM structure layouts.
