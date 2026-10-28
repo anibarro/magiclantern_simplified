@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 B=platform/EOSM.202/build_livecomp
 mkdir -p "$B"
 python3 build_tools/test_livecomp_dng.py
+python3 build_tools/test_livecomp_mlv.py
 python3 build_tools/test_livecomp_trigger.py
 python3 build_tools/test_livecomp_portability.py
 python3 build_tools/test_livecomp_frlv.py

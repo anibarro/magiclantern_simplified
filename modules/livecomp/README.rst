@@ -15,6 +15,7 @@ camera, the shutter in this menu. Preview only ON: one frame, nothing saved.
 SET starts, SET stops and saves in DCIM/LIVE (LOG/CSV only with Debug ON).
 Dark frame ON: cover the lens at the end; dark frames are subtracted.
 Save unprocessed ON: also LVBR/LVCR and the dark frames LVDK/LVCK.
+File format: DNG, DNG + MLV or MLV (one frame, for MLV App/mlv_dump).
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
 Standalone module
@@ -46,7 +47,7 @@ frame (confirmed). LCM64: ARM merge (1.5 s per frame), preview copy by EDMAC.
 LCM65/66: ARM Live Bulb add (2.0 s per frame), 2.5 s Live Bulb. Host tests cover the register rewriting, a
 simulated session (incl. dark frames, the late timer latch, a simulated
 Canon abort), the merge/sum/subtract kernels, the column correction, the
-DNG writer, the key gating and the ARM structure layouts.
+DNG and MLV writers, the key gating and the ARM structure layouts.
 
 Documentation
 -------------

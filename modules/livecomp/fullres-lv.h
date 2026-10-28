@@ -5,6 +5,10 @@ struct card_info;
 /* Session modes (menu "Mode"). */
 #define LC_MODE_COMPOSITE 0u   /* per-pixel maximum: Olympus-style Live Composite */
 #define LC_MODE_BULB      1u   /* per-pixel sum: one long bulb exposure, built up live */
+/* Result file format (menu "File format", LCM67). */
+#define LC_FORMAT_DNG     0u
+#define LC_FORMAT_DNG_MLV 1u   /* both, the MLV written first */
+#define LC_FORMAT_MLV     2u   /* one-frame MLV only (extra LVBR/LVDK files stay DNG) */
 struct lc_frlv_options {
     unsigned fps_index;    /* lc_frr_timing entry = sub-exposure length */
     unsigned limit;        /* frames to merge before stopping; 0 = no limit */
@@ -13,6 +17,7 @@ struct lc_frlv_options {
     unsigned mode;         /* LC_MODE_COMPOSITE or LC_MODE_BULB */
     unsigned dark_frame;   /* 1: dark frames at the end (lens covered): Bulb N, Composite 1 */
     unsigned save_orig;    /* 1: also save LVBR/LVCR (unprocessed) and LVDK/LVCK (dark) */
+    unsigned format;       /* LC_FORMAT_DNG, LC_FORMAT_DNG_MLV or LC_FORMAT_MLV */
 };
 /* Returns nonzero if DMA/hook ownership is uncertain; caller blocks retries. */
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,

@@ -371,8 +371,19 @@ failure is declared only after 3 s without it.
   matrix).
 - DNG: uncompressed, the whole 5280-pixel raster with the active area marked.
   ISO, aperture, focal length and the shutter (= frame period) are written
-  as EXIF.
-- Files go to `DCIM/LIVE/LVFRnnnn.DNG` (Live Bulb `LVBLnnnn.DNG`); `DCIM`
+  as EXIF. The DNG wants the two bytes of every 16-bit word swapped against
+  Canon's buffer: since LCM67 the swap goes a word at a time
+  (`lc_dng_swap_words`, ~3x fewer cycles than the byte loop) into a staging
+  buffer of up to 4 MiB, so the 32 MB raster takes ~8 card writes instead of
+  ~2000 of 16 KiB. The time is in the LOG (`Save_format_dng_ms_swap_ms_...`)
+  and on the result message.
+- MLV (File format, LCM67): a one-frame MLV v2.0 (MLVI, RAWI, IDNT, EXPO,
+  LENS, RTCI, VIDF; `lv-mlv.h`, same fields as ML's silent pictures). The
+  header is padded to 4 KiB and the raster written straight from the
+  accumulator in Canon's byte order: no copy and no swap. The LVBR/LVDK
+  extra files stay DNG (the dark-frame path reads LVBR back).
+- Files go to `DCIM/LIVE/LVFRnnnn.DNG` (Live Bulb `LVBLnnnn.DNG`; MLV:
+  `.MLV`, same number); `DCIM`
   and `LIVE` are created if missing. Save unprocessed adds `LVBR`/`LVCR`
   (before any in-camera correction) and `LVDK`/`LVCK` (dark frames; Live
   Bulb: their sum), same number, same metadata. With Debug ON, `LVFRnnnn.LOG` (session summary, registers, hook

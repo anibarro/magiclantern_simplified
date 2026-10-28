@@ -39,7 +39,7 @@ def main(width=5280,height=3506):
 #include <stdint.h>
 #include <string.h>
 #include "lv-dng.h"
-/* The module's DNG = lc_dng_header (2048 bytes) + lc_dng_swap_copy of the
+/* The module's DNG = lc_dng_header (2048 bytes) + lc_dng_swap_words of the
  * packed RAW14 raster, written in chunks (fullres-lv.c frlv_save_dng). */
 int main(int argc,char **argv) {
     assert(argc==5);
@@ -56,7 +56,11 @@ int main(int argc,char **argv) {
     struct lc_dng_metadata bad=m;bad.tvr=0;assert(!lc_dng_header(h,&bad));
     bad=m;bad.width=5288;assert(!lc_dng_header(h,&bad));
     assert(lc_dng_header(h,&m));
-    for (unsigned off=0;off<m.bytes;off+=16384) lc_dng_swap_copy(out+off,raw+off,m.bytes-off<16384 ? m.bytes-off:16384);
+    /* LCM67: word swap, 4 MiB chunks; equal to the byte swap for every tail length */
+    for (unsigned len=0;len<64;len+=2) {
+        uint32_t a[16],b[16];lc_dng_swap_copy((uint8_t *)a,raw+4*len,len);lc_dng_swap_words((uint8_t *)b,raw+4*len,len);assert(!memcmp(a,b,len));
+    }
+    for (unsigned off=0;off<m.bytes;off+=4u<<20) lc_dng_swap_words(out+off,raw+off,m.bytes-off<(4u<<20) ? m.bytes-off:4u<<20);
     char path[1024];snprintf(path,sizeof(path),"%s/normal.DNG",argv[2]);
     FILE *f=fopen(path,"wb");assert(f);
     assert(fwrite(h,1,sizeof(h),f)==sizeof(h) && fwrite(out,1,m.bytes,f)==m.bytes);fclose(f);

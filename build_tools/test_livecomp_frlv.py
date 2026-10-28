@@ -178,8 +178,10 @@ STUB = r'''
 #define UILOCK_SHUTTER 0x10
 int is_camera(const char *m,const char *f);
 struct card_info { const char *drive_letter; };
-struct raw_info { int white_level; uint32_t cfa_pattern; int32_t color_matrix1[18]; int calibration_illuminant1; };
-struct lens_info_t { int raw_iso,aperture,focal_len,job_state,wb_mode,kelvin; unsigned WBGain_R,WBGain_G,WBGain_B; int raw_aperture,raw_aperture_min,raw_aperture_max; };
+struct raw_info { int white_level; uint32_t cfa_pattern; int32_t color_matrix1[18]; int calibration_illuminant1; uint32_t api_version; int32_t dynamic_range; };
+struct lens_info_t { int raw_iso,aperture,focal_len,job_state,wb_mode,kelvin; unsigned WBGain_R,WBGain_G,WBGain_B; int raw_aperture,raw_aperture_min,raw_aperture_max; char name[32]; };
+#include <time.h>
+void LoadCalendarFromRTC(struct tm *tm); extern uint32_t camera_model_id;
 extern struct raw_info raw_info; extern struct lens_info_t lens_info;
 extern int lv,LV_PAUSED,RECORDING,lv_dispsize,ml_shutdown_requested,icu_uilock;
 extern uint32_t raw_write_chan;
@@ -232,8 +234,8 @@ SIM = r'''
 #include "fullres-lv.h"
 #include "fullres-regs.h"
 struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0},0x54,0x6f,0x79}; /* host: no alias bit, no LCD */
-struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21};
-struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024,40,27,80};
+struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21,1,1100};
+struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024,40,27,80,"EF-M22mm f/2 STM"};
 int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock,battery_level_bars=3;
 uint32_t raw_write_chan=0x12;
 static struct card_info card={"B"};
@@ -255,6 +257,8 @@ uint32_t sim_mem(uint32_t a)
     if (a==0x892E8+0x10) return pdm_zoom<<16;
     return 0;
 }
+uint32_t camera_model_id=0x80000331;
+void LoadCalendarFromRTC(struct tm *tm){ memset(tm,0,sizeof(*tm));tm->tm_year=126;tm->tm_mon=9;tm->tm_mday=28; }
 int is_movie_mode(void){return 1;} unsigned get_ms_clock(void){return now_us/1000;} unsigned get_us_clock(void){return now_us;}
 void sync_caches(void){}
 void *fio_malloc(size_t n){ if (n>1000000 && single_alloc && allocs>=1) return NULL; allocs++; return calloc(1,n); }
@@ -308,20 +312,23 @@ void AbortEDmac(unsigned ch){ (void)ch; aborts++; if (abort_fails) return; dma_s
 int get_global_draw_setting(void){ return gd_setting; }
 static int file_token; static unsigned dng_bytes,log_files,dng_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
+static int cur_mlv;static unsigned mlv_files,mlv_bytes,mlv_writes,dng_writes;static uint8_t mlv_head[4096];
 static int dng_created,cur_dng,cur_log;static char last_log[8192],last_log_path[64];static unsigned last_log_n;
 static int dirs_created,dir_fail,dng_in_live,log_in_live;static char last_dir[64];
 static uint8_t *lvbr_data;static unsigned lvbr_n,lvbr_pos,lvbr_files,lvdk_files;static int cur_lvbr,lvbr_reads;
 #define LVBR_MAX 40000000u
 FILE *FIO_OpenFile(const char *p,unsigned mode){ (void)mode; if (!(strstr(p,"LVBR") || strstr(p,"LVCR")) || !lvbr_n) return 0; lvbr_pos=0;lvbr_reads++; return (FILE *)&file_token; }
 int FIO_ReadFile(FILE *f,void *b,int n){ (void)f; unsigned k=lvbr_n-lvbr_pos<(unsigned)n ? lvbr_n-lvbr_pos:(unsigned)n; memcpy(b,lvbr_data+lvbr_pos,k);lvbr_pos+=k;return (int)k; }
-FILE *FIO_CreateFile(const char *p){ cur_lvbr=strstr(p,"LVBR") || strstr(p,"LVCR"); if (cur_lvbr) { lvbr_n=0;lvbr_files++; if (!lvbr_data) lvbr_data=malloc(LVBR_MAX); } if (strstr(p,"LVDK") || strstr(p,"LVCK")) lvdk_files++; if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) { dng_created=1;dng_files++; } return (FILE *)&file_token; }
-int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) dng_bytes+=n; if (cur_lvbr && lvbr_n+n<=LVBR_MAX) { memcpy(lvbr_data+lvbr_n,b,n);lvbr_n+=n; }
+FILE *FIO_CreateFile(const char *p){ cur_lvbr=strstr(p,"LVBR") || strstr(p,"LVCR"); if (cur_lvbr) { lvbr_n=0;lvbr_files++; if (!lvbr_data) lvbr_data=malloc(LVBR_MAX); } if (strstr(p,"LVDK") || strstr(p,"LVCK")) lvdk_files++; if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) { dng_created=1;dng_files++; } cur_mlv=!!strstr(p,".MLV"); if (cur_mlv) { mlv_files++;mlv_bytes=0;mlv_writes=0; } return (FILE *)&file_token; }
+int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) { dng_bytes+=n;dng_writes++; }
+  if (cur_mlv) { if (mlv_bytes+n<=sizeof(mlv_head)) memcpy(mlv_head+mlv_bytes,b,n); mlv_bytes+=n;mlv_writes++; } if (cur_lvbr && lvbr_n+n<=LVBR_MAX) { memcpy(lvbr_data+lvbr_n,b,n);lvbr_n+=n; }
   if (cur_log && last_log_n+n<sizeof(last_log)) { memcpy(last_log+last_log_n,b,n);last_log_n+=n;last_log[last_log_n]=0; } return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
 static unsigned dng_size_ok;
 int FIO_CreateDirectory(const char *p){ dirs_created++;snprintf(last_dir,sizeof(last_dir),"%s",p);return dir_fail ? -1:0; }
 int is_dir(const char *p){ return !dir_fail && !strcmp(p,"B:/DCIM/LIVE"); }
-int FIO_GetFileSize(const char *p,uint32_t *s){ if (strstr(p,".DNG") && dng_created) { *s=dng_size_ok; return 0; } return 1; }
+int FIO_GetFileSize(const char *p,uint32_t *s){ if (strstr(p,".DNG") && dng_created) { *s=dng_size_ok; return 0; }
+  if (strstr(p,".MLV") && mlv_files) { *s=mlv_bytes; return 0; } return 1; }
 /* Canon-like reconfiguration through the installed hooks. */
 static void canon_reconfigure(unsigned z)
 {
@@ -399,7 +406,7 @@ static void reset(void)
     now_us=next_vsync_us=0;zoom=pdm_zoom=1;lv_dispsize=1;raw_user=0;fps_now=29970;
     reg6800=0x10012;reg6804=0x4540298;nhooks=0;patch_fail_at=-1;unpatched=0;stall_after_zoom=0;
     no_window=0;dma_stuck=0;partial_frames=0;overrun_sim=0;csv_written=0;single_alloc=0;slurp_armed=0;slurp_frames=0;allocs=frees=0;dma_state=0;
-    dng_bytes=0;dng_size_ok=0;locked=0;dng_created=0;
+    dng_bytes=0;dng_size_ok=0;locked=0;dng_created=0;mlv_files=mlv_bytes=mlv_writes=dng_writes=0;cur_mlv=0;
     dirs_created=dir_fail=dng_in_live=log_in_live=0;log_files=0;
     cover_seen=ending_seen=skip_dark_press=tactical_seen=0;exit_timer_b=0;cancel_at_us=0;dng_files=0;
     lvbr_n=lvbr_files=lvdk_files=0;lvbr_reads=0;canon_abort_vd=0;canon_aborts=0;warm_slurps=0;
@@ -408,7 +415,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={LC_FRR_FPS_DEFAULT,6,0,1,LC_MODE_COMPOSITE,0,0};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
+    struct lc_frlv_options o={LC_FRR_FPS_DEFAULT,6,0,1,LC_MODE_COMPOSITE,0,0,LC_FORMAT_DNG};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -551,6 +558,25 @@ int main(void)
     reset();dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && strstr(status,"Composite saved: 6 frames") && strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: composite,2500,0,0"));
+    /* LCM67: large DNG writes (4 MiB staging, ~8 calls for the raster) and
+     * the save time on the message and in the LOG. */
+    assert(dng_writes>=2 && dng_writes<=12 && strstr(status,"; DNG ") && !strstr(status,"MLV"));
+    assert(strstr(last_log,"Save_format_dng_ms_swap_ms_write_ms_chunk_kb_mlv_saved_ms_write_ms_size: 0,") && strstr(last_log,",4096,0,0,0,0\n"));
+    /* LCM67 File format DNG + MLV: both files, the MLV a 4 KiB header then
+     * the raster straight from the accumulator (Canon byte order). */
+    reset();o.format=LC_FORMAT_DNG_MLV;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("DNG + MLV: %s (DNGs %u, MLVs %u, %u bytes)\n",status,dng_files,mlv_files,mlv_bytes);
+    assert(!unsafe && strstr(status,"Composite saved: 6 frames; DNG ") && strstr(status,"; MLV ") && dng_files==1 && mlv_files==1 && allocs==frees);
+    assert(mlv_bytes==4096+bytes && mlv_writes<=12 && !memcmp(mlv_head,"MLVI",4) && !memcmp(mlv_head+52,"RAWI",4));
+    assert(strstr(last_log,"MLV: B:/DCIM/LIVE/LVFR") && strstr(last_log,"_size: 1,"));
+    /* MLV only: no DNG at all. */
+    reset();o.format=LC_FORMAT_MLV;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("MLV only: %s (DNGs %u, MLVs %u)\n",status,dng_files,mlv_files);
+    assert(!unsafe && strstr(status,"Composite saved: 6 frames; MLV ") && !strstr(status,"DNG") && dng_files==0 && mlv_files==1 && mlv_bytes==4096+bytes);
+    assert(strstr(last_log,"Stage_error_unsafe: 8,0,0"));
+    o.format=LC_FORMAT_DNG;
     /* Debug OFF: the same session writes the DNG only, no LOG and no CSV. */
     reset();o.debug=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);

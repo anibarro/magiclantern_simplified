@@ -1344,3 +1344,35 @@ Product summary (EOS M 2.0.2):
 - LVBL0030, 3 s, 8 frames, Dark frame ON + Save unprocessed: LVBR/LVDK saved,
   LVBR read back, dark black 2055, subtraction 2.010 s.
 - LCM66: the "not yet tested" advice for 2.5 s Live Bulb is removed.
+
+## LCM67: save timing, fast DNG write, MLV option
+
+Why the DNG save is slow (LCM66 and before, `frlv_save_dng`):
+- the 32.4 MB raster was copied with a byte swap of every 16-bit word, two
+  bytes per loop pass: emulated ARM946 24 cycles per word, ~194 M cycles
+  for the raster;
+- then written in 16 KiB pieces: ~2000 FIO_WriteFile calls, each a round
+  trip to Canon's file task and its own card command.
+- The save itself was never timed.
+
+LCM67:
+- `lc_dng_swap_words`: four words per pass, `((x>>8)&0x00FF00FF)|((x&0x00FF00FF)<<8)`:
+  7.5 cycles per word emulated (~61 M cycles for the raster). Bit-exact
+  against the byte loop for every tail length (test_livecomp_dng.py).
+- Staging buffer of 4 MiB (1 MiB, 256 KiB, 16 KiB if memory is short): ~8
+  writes for the raster. The same for reading LVBR back (dark frames).
+- File format menu: DNG / DNG + MLV / MLV. The MLV is one frame (MLVI,
+  RAWI, IDNT, EXPO, LENS, RTCI, VIDF), header padded to 4 KiB, then the
+  raster written straight from the accumulator (Canon byte order, the
+  format MLV raw video uses): no copy, no swap. Checked against mlv.h
+  (struct sizes, every field read back, samples decoded) by
+  test_livecomp_mlv.py. DNG + MLV writes the MLV first.
+- Timing: the result message ends with "; DNG x.y s" and/or "; MLV x.y s".
+  LOG line `Save_format_dng_ms_swap_ms_write_ms_chunk_kb_mlv_saved_ms_write_ms_size`
+  (format, DNG total / swap / card write in ms, staging KiB, MLV saved,
+  total, card write, size) and `Save_orig_ms_dark_ms_load_ms` (LVBR, LVDK
+  saves and the LVBR read-back).
+- To test on the camera: one session with File format DNG + MLV and Debug
+  ON (e.g. Live Bulb 2.5 s, a few frames). The message compares the two
+  saves; the LOG splits the DNG into swap and write. Then open the MLV in
+  MLV App to check it.
