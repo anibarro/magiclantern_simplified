@@ -72,6 +72,14 @@ const char *xpan_native_cube_filename(void)
     return list_state==XPAN_CUBE_LIST_EMPTY ? "No .cube files":
         list_state==XPAN_CUBE_LIST_UNAVAILABLE ? "LUT folder unavailable":"Not scanned yet";
 }
+/* Name the queued wheel/menu steps will select, from the RAM catalogue only:
+ * the HUD shows it before the worker has picked the request up. */
+const char *xpan_native_cube_filename_after(int delta)
+{
+    if (list_state!=XPAN_CUBE_LIST_READY || !cube_count) return xpan_native_cube_filename();
+    int n=(int)cube_count;
+    return cube_names[(((int)cube_index+delta%n)%n+n)%n];
+}
 unsigned xpan_native_cube_file_count(void) { return cube_count; }
 enum xpan_cube_list_state xpan_native_cube_list_state(void) { return list_state; }
 void xpan_native_cube_invalidate(void) { cube_valid=0; }

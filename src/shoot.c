@@ -5062,6 +5062,14 @@ void display_shooting_info_lv()
         /* The HUD clears stock remnants in its spare bitmap before publishing a complete draw. */
         info_print_screen();
     }
+#ifdef CONFIG_XPAN
+    else
+    {
+        /* Movie mode has no XPan HUD: show the LUT loading box on its own. */
+        extern void xpan_movie_loading_draw(void);
+        xpan_movie_loading_draw();
+    }
+#endif
 #endif
 #ifndef CONFIG_5D2
 #ifdef FEATURE_LCD_SENSOR_REMOTE

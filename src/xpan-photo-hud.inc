@@ -364,6 +364,68 @@ static void xpan_grid_draw(int hud_y)
     xpan_grid_drawn.s0=s0; xpan_grid_drawn.s1=s1; xpan_grid_drawn.on=1;
 }
 
+#ifdef CONFIG_XPAN
+/* "Loading..." box in the middle of the picture while a LUT is prepared
+ * (photo 65:24 and 3:2, movie). The LUT name below it is the one selected,
+ * which may already be ahead of the table being built. */
+static struct { short x,y,w,h; } xpan_loading_drawn;
+#define XPAN_LOADING_W 320
+#define XPAN_LOADING_H 76
+static int xpan_loading_erase(void)
+{
+    if (!xpan_loading_drawn.w) return 0;
+    bmp_fill(COLOR_EMPTY,xpan_loading_drawn.x,xpan_loading_drawn.y,xpan_loading_drawn.w,xpan_loading_drawn.h);
+    xpan_loading_drawn.w=0;
+    return 1;
+}
+/* Picture rows top..bottom (LCD); the box is centred in them. */
+static void xpan_loading_box(int top, int bottom, int color)
+{
+    int x=360-XPAN_LOADING_W/2, y=(top+bottom)/2-XPAN_LOADING_H/2;
+    char name[64],state[24];
+    xpan_native_look_hud_label(name,sizeof(name),state,sizeof(state));
+    int background=xpan_hud_background;
+    xpan_hud_background=COLOR_TRANSPARENT_BLACK;   /* dims Live View, keeps it visible */
+    bmp_fill(COLOR_TRANSPARENT_BLACK,x,y,XPAN_LOADING_W,XPAN_LOADING_H);
+    bmp_draw_rect(color,x,y,XPAN_LOADING_W-1,XPAN_LOADING_H-1);
+    int w=bmp_string_width(FONT_LARGE,"Loading...")+1;
+    xpan_hud_text(360-w/2,y+6,w,36,FONT_LARGE,COLOR_WHITE,"Loading...");
+    w=MIN(XPAN_LOADING_W-24,bmp_string_width(FONT_MED,name)+1);
+    xpan_hud_text(360-w/2,y+44,w,26,FONT_MED,color,name);
+    xpan_hud_background=background;
+    xpan_loading_drawn.x=x; xpan_loading_drawn.y=y;
+    xpan_loading_drawn.w=XPAN_LOADING_W; xpan_loading_drawn.h=XPAN_LOADING_H;
+}
+/* Photo: the visible picture is the Live View frame, minus the HUD panel
+ * when it overlays the 3:2 view. Returns 0 when nothing is loading. */
+static int xpan_loading_photo_area(int hud_y, int *top, int *bottom)
+{
+    if (!xpan_native_look_loading()) return 0;
+    int fx,fy,fw,fh;
+    *top=0; *bottom=480;
+    if (xpan_photo_get_liveview_frame_rect(&fx,&fy,&fw,&fh)) { *top=os.y0+fy; *bottom=*top+fh; }
+    if (!xpan_photo_is_panoramic() && xpan_photo_hud_is_enabled() && hud_y>=0) {
+        if (hud_y<=*top) *top=MAX(*top,hud_y+XPAN_PHOTO_HUD_HEIGHT);
+        else *bottom=MIN(*bottom,hud_y);
+    }
+    if (*bottom-*top<XPAN_LOADING_H) { *top=0; *bottom=480; }
+    return 1;
+}
+int xpan_movie_enabled(void);   /* cropmarks.c: XPan ON/OFF in movie mode */
+/* Movie mode has no XPan HUD: called from ML's Live View info loop. Redrawn
+ * every half second, because Canon's movie screen can paint over it. */
+void xpan_movie_loading_draw(void)
+{
+    static int last_ms;
+    int want=is_movie_mode() && xpan_movie_enabled() && lv && !gui_menu_shown() &&
+        xpan_native_look_loading();
+    if (!want) { xpan_loading_erase(); return; }
+    if (xpan_loading_drawn.w && get_ms_clock()-last_ms<500) return;
+    last_ms=get_ms_clock();
+    xpan_loading_box(os.y0,os.y0+os.y_ex,xpan_photo_theme_color());
+}
+#endif
+
 /* Copy only the HUD rows between the live bitmap and the idle buffer, so
  * whatever else is on screen (Canon remnants, ML overlays) is never captured
  * into the idle buffer and written back. */
@@ -437,6 +499,11 @@ static void xpan_photo_render_hud(info_elem_t *config)
         xpan_af_draw(y);
         xpan_grid_drawn.on=0;       /* the whole screen was just cleared */
         xpan_grid_draw(y);
+#ifdef CONFIG_XPAN
+        int top,bottom;
+        xpan_loading_drawn.w=0;
+        if (xpan_loading_photo_area(y,&top,&bottom)) xpan_loading_box(top,bottom,theme);
+#endif
         bmp_draw_to_idle(0);
         bmp_idle_copy(1,0);
         last_hud_y=-1;
@@ -551,9 +618,9 @@ static void xpan_photo_render_hud(info_elem_t *config)
 
     char state[24];
 #ifdef CONFIG_XPAN
+    /* The name follows the selection at once, so the next LUT can be picked
+     * without waiting; "Loading..." goes in the middle of the picture. */
     xpan_native_look_hud_label(text,sizeof(text),state,sizeof(state));
-    /* Same feedback as the menu: a Cube change takes a few seconds. */
-    if (xpan_native_look_loading()) snprintf(text,sizeof(text),"LOADING...");
 #else
     snprintf(text,sizeof(text),"CANON");state[0]=0;
 #endif
@@ -573,6 +640,18 @@ static void xpan_photo_render_hud(info_elem_t *config)
     bmp_draw_to_idle(0);
     xpan_hud_copy_band(1,y,XPAN_PHOTO_HUD_HEIGHT);
     if (moved_from>=0) xpan_hud_copy_band(1,moved_from,XPAN_PHOTO_HUD_HEIGHT);
+#ifdef CONFIG_XPAN
+    /* Erased only when it ends or moves (no flicker), and before the AF
+     * frame and grid so they repair what it covered. */
+    int loading_top=0,loading_bottom=0;
+    int loading=xpan_loading_photo_area(y,&loading_top,&loading_bottom);
+    if (xpan_loading_drawn.w && (!loading ||
+        xpan_loading_drawn.y!=(loading_top+loading_bottom)/2-XPAN_LOADING_H/2))
+    { xpan_loading_erase(); xpan_grid_drawn.on=0; }
+#endif
     xpan_af_draw(y);            /* image area: drawn straight to the screen */
     xpan_grid_draw(y);          /* after the AF erase, which can cut the lines */
+#ifdef CONFIG_XPAN
+    if (loading) xpan_loading_box(loading_top,loading_bottom,theme);   /* on top */
+#endif
 }

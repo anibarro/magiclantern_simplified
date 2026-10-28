@@ -3,6 +3,11 @@
  * perform SD I/O or allocate a second background task. */
 static volatile unsigned workflow_request=1;
 static volatile int cube_file_delta,cube_refresh_requested;
+/* Loading feedback: last photo request the worker finished (ready or failed),
+ * 0 until the first one so the LUT counts as loading from boot; and whether
+ * the movie LUT gave up on the current selection (file or table error). */
+static volatile unsigned look_settled_request;
+static volatile int movie_lut_failed;
 /* Startup/phase feedback is RAM-only: it works even if SD logging blocks.
  * State1 reserves the single worker before task_create can schedule it. */
 static volatile unsigned workflow_worker_state,workflow_task_result;
@@ -158,7 +163,7 @@ int xpan_native_look_adjusting(void) { return look_busy; }
 void xpan_native_look_hud_label(char *name, unsigned name_size, char *state, unsigned state_size)
 {
     /* Copy RAM-only state; the LCD drawing task must never touch SD files. */
-    const char *label=selected_look==3 ? xpan_native_cube_filename():"LUT OFF";
+    const char *label=selected_look==3 ? xpan_native_cube_filename_after(cube_file_delta):"LUT OFF";
     snprintf(name,name_size,"%s",label);
     unsigned n=strlen(name);
     if (selected_look==3 && n>=5 && name[n-5]=='.') name[n-5]=0;
@@ -184,7 +189,7 @@ static const char *workflow_preview_status(void)
 static void workflow_changed(void)
 {
     /* Abort a stale table build and publish only the final queued selection. */
-    automatic_capture_ready=0; look_cancel=1; workflow_request++;
+    automatic_capture_ready=0; look_cancel=1; workflow_request++; movie_lut_failed=0;
     workflow_pause_preview();
     look_status="Preparing selected look";
 }
@@ -207,7 +212,7 @@ static void workflow_queue_cube_change(void)
 {
     /* A list request is safe to queue even during capture. Keep the current
      * capture configuration intact until the worker reaches its idle point. */
-    look_cancel=1; workflow_request++;
+    look_cancel=1; workflow_request++; movie_lut_failed=0;
     if (workflow_menu_can_change()) {
         automatic_capture_ready=0; workflow_pause_preview();
     }
@@ -278,14 +283,17 @@ void xpan_native_look_step_cube(int delta)
     hud_cube_since=get_ms_clock(); hud_cube_pending=1;
     workflow_queue_cube_change();
 }
-/* True while a queued Cube/look change has not finished preparing. The short
- * grace covers the gap before the worker picks the request up. */
+/* True while a queued Cube/look change has not finished preparing, including
+ * the first load after boot, in photo and in movie mode. The short grace
+ * covers the gap before the worker picks a HUD request up. */
 int xpan_native_look_loading(void)
 {
     if (cube_file_delta || cube_refresh_requested || look_busy) return 1;
     if (hud_cube_pending && get_ms_clock()-hud_cube_since<1500) return 1;
     hud_cube_pending=0;
-    return 0;
+    if (selected_look!=3) return 0;
+    if (is_movie_mode()) return xpan_movie_enabled() && !movie_lut_ready && !movie_lut_failed;
+    return xpan_photo_enabled() && look_settled_request!=workflow_request;
 }
 static MENU_SELECT_FUNC(request_cube_refresh)
 {
@@ -394,7 +402,8 @@ static void workflow_movie_lut(struct card_info *card)
     if (selected_look!=3) { movie_lut_ready=0; movie_lut_status="Movie LUT: turn Custom LUT ON"; return; }
     if (cube_reload_requested) { xpan_native_cube_invalidate(); cube_reload_requested=0; movie_lut_ready=0; }
     look_cancel=0;
-    if (!xpan_native_cube_load(card,&look_cancel)) { movie_lut_ready=0; movie_lut_status=xpan_native_cube_status(); return; }
+    if (!xpan_native_cube_load(card,&look_cancel))
+    { movie_lut_ready=0; movie_lut_failed=!look_cancel; movie_lut_status=xpan_native_cube_status(); return; }
     if (headroom_stops==1) workflow_base_load(card);
     unsigned strength=(unsigned)COERCE(cube_strength,0,100)*65535u/100;
     const struct xpan_lut *base=live_base();
@@ -404,10 +413,11 @@ static void workflow_movie_lut(struct card_info *card)
         movie_lut_ready=0;
         if (!xpan_live_native_prepare(xpan_native_cube_table(),xpan_native_cube_revision(),
                 strength,xpan_native_cube_identity(),base,&look_cancel))
-        { movie_lut_status="Movie LUT table failed"; return; }
+        { movie_lut_failed=!look_cancel; movie_lut_status="Movie LUT table failed"; return; }
         movie_prepared_revision=xpan_native_cube_revision();
         movie_prepared_strength=strength;movie_prepared_base=base;movie_lut_ready=1;
     }
+    movie_lut_failed=0;
     movie_lut_status=lens_info.raw_picstyle==0x84 ? "Movie LUT ready":"Movie LUT: setting Neutral";
 }
 static MENU_SELECT_FUNC(request_movie_lut)
@@ -675,7 +685,7 @@ static void xpan_workflow_task(void *unused)
             {
                 look_status=ok ? "Preparing selected look":xpan_native_cube_status();
                 if (!ok && !look_cancel && request==workflow_request)
-                { failed_request=request; prepared_card=card; workflow_save_status(card); }
+                { failed_request=request; prepared_card=card; look_settled_request=request; workflow_save_status(card); }
                 continue;
             }
             if (!workflow_menu_can_change()) continue;
@@ -685,7 +695,7 @@ static void xpan_workflow_task(void *unused)
             armed_headroom_ev=headroom_ev==2 ? 2u:1u;
             automatic_look_file=automatic_look_folder=0xffffffffu;
             armed_shooting_card=get_shooting_card(); look_state=1;
-            prepared=request; prepared_card=card;
+            prepared=request; prepared_card=card; look_settled_request=request;
             look_status="Ready; automatic crop and look";
             if (gui_menu_shown()) menu_redraw();
         }
