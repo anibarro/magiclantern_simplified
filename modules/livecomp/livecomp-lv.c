@@ -204,7 +204,7 @@ static MENU_UPDATE_FUNC(update_format)
 {
     if (file_format) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",file_format==(int)LC_FORMAT_MLV ?
         "MLV only: open LVxxnnnn.MLV with MLV App or mlv_dump (one frame).":
-        "Both files: compare the save times on the result message or LOG.");
+        "Both files: the MLV first, then the DNG (save times: Debug ON).");
 }
 static MENU_UPDATE_FUNC(update_status)
 {
@@ -242,7 +242,7 @@ static struct menu_entry lv_children[]={
     {.name="File format",.priv=&file_format,.max=2,.update=update_format,
      .choices=CHOICES("DNG","DNG + MLV","MLV"),
      .help="DNG opens anywhere. MLV: no byte swap, written straight from memory.",
-     .help2="LVBR/LVDK extra files stay DNG. The result message shows the save times."},
+     .help2="LVBR/LVDK extra files stay DNG. Debug ON: save times on the message and LOG."},
     {.name="Debug",.priv=&debug,.max=1,
      .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
      .help2="OFF: no log files; only the composite DNG is saved."},

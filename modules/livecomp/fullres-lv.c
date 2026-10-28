@@ -244,7 +244,7 @@ struct frlv_result {
     unsigned col_band[12],row_band[10];
     unsigned saved,save_stage,save_size;
     /* LCM67: file format (0 DNG, 1 DNG + MLV, 2 MLV) and save timing */
-    unsigned format,save_ms,save_swap_ms,save_write_ms,save_chunk,mlv_saved,mlv_ms,mlv_write_ms,mlv_size;
+    unsigned format,save_ms,save_swap_ms,save_write_ms,save_chunk,save_in_place,mlv_saved,mlv_ms,mlv_write_ms,mlv_size;
     unsigned orig_save_ms,dark_save_ms,load_ms;
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
     unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms,switch_ms,exit_switched,target_a,target_b,short_skipped;
@@ -377,9 +377,9 @@ static void write_log(const struct frlv_result *r,const char *status)
         r->dark_want,r->save_orig,r->dark_state,r->dark_frames,r->dark_partials,r->dark_lost,r->dark_wait_ms,r->dark_sep,
         r->orig_saved,r->dark_saved,r->orig_read,r->dark_black,r->dark_merge_us,r->end_wait_ms);
     ok&=write_text(f,t,n);
-    n=snprintf(t,sizeof(t),"Save_format_dng_ms_swap_ms_write_ms_chunk_kb_mlv_saved_ms_write_ms_size: %d,%d,%d,%d,%d,%d,%d,%d,%d\n"
+    n=snprintf(t,sizeof(t),"Save_format_dng_ms_swap_ms_write_ms_chunk_kb_in_place_mlv_saved_ms_write_ms_size: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n"
         "Save_orig_ms_dark_ms_load_ms: %d,%d,%d\nMLV: %s\n",
-        r->format,r->save_ms,r->save_swap_ms,r->save_write_ms,r->save_chunk>>10,r->mlv_saved,r->mlv_ms,r->mlv_write_ms,r->mlv_size,
+        r->format,r->save_ms,r->save_swap_ms,r->save_write_ms,r->save_chunk>>10,r->save_in_place,r->mlv_saved,r->mlv_ms,r->mlv_write_ms,r->mlv_size,
         r->orig_save_ms,r->dark_save_ms,r->load_ms,r->format ? r->mlv:"");
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Warmup_vds_slurps_done_ms_aborts: %d,%d,%d,%d,%d\n",FRLV_WARMUP_VDS,r->warmup_slurps,r->warmup_done,r->warmup_ms,r->warmup_aborts);
@@ -496,13 +496,18 @@ static uint8_t *frlv_scratch(unsigned *size)
     }
     *size=0;return NULL;
 }
-static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
+/* in_place (LCM68, the final DNG only: nothing reads acc afterwards): swap
+ * the cached accumulator itself and write from it, like the MLV. LCM67 on
+ * the camera: the swap into the uncached fio_malloc staging buffer took
+ * 1.24 s of the 2.3 s save, the card write 0.99 s. acc is left in DNG byte
+ * order. Otherwise acc is untouched (LVBR/LVDK, still needed). */
+static int frlv_save_dng(struct frlv_result *r,uint8_t *acc,unsigned in_place)
 {
     const unsigned t0=get_ms_clock();
     struct lc_dng_metadata m;frlv_metadata(r,&m);
-    r->save_stage=1;r->save_swap_ms=r->save_write_ms=0;
-    unsigned chunk;
-    uint8_t *scratch=frlv_scratch(&chunk);
+    r->save_stage=1;r->save_swap_ms=r->save_write_ms=0;r->save_in_place=in_place;
+    unsigned chunk=4u<<20;
+    uint8_t *scratch=in_place ? fio_malloc(LC_DNG_HEADER_BYTES):frlv_scratch(&chunk);
     if (!scratch) return 0;
     r->save_chunk=chunk;
     /* DNG needs width%8==0. Otherwise store the raw raster (.RAW, no header,
@@ -518,9 +523,10 @@ static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
     unsigned swap_us=0,write_us=0;
     for (unsigned off=0;ok && off<r->bytes;off+=chunk) {
         const unsigned n=MIN(chunk,r->bytes-off),u0=(unsigned)get_us_clock();
-        lc_dng_swap_words(scratch,acc+off,n);
+        uint8_t *out=in_place ? acc+off:scratch;
+        lc_dng_swap_words(out,acc+off,n);
         const unsigned u1=(unsigned)get_us_clock();
-        ok=FIO_WriteFile(f,scratch,n)==(int)n;
+        ok=FIO_WriteFile(f,out,n)==(int)n;
         swap_us+=u1-u0;write_us+=(unsigned)get_us_clock()-u1;
         if (ml_shutdown_requested) ok=0;
     }
@@ -887,7 +893,7 @@ static void dark_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,const v
         static struct frlv_result orig;
         show_text("Saving the unprocessed DNG...");
         orig=*r;path_prefix(orig.dng,sizeof(orig.dng),r->dng,orig_prefix(r));
-        r->orig_saved=frlv_save_dng(&orig,acc);r->orig_save_ms=orig.save_ms;
+        r->orig_saved=frlv_save_dng(&orig,acc,0);r->orig_save_ms=orig.save_ms;
         r->dark_sep=r->orig_saved;          /* else: subtract in place */
     }
     const unsigned c0=*cancel,tc=get_ms_clock();
@@ -1486,7 +1492,7 @@ out:
         dr=r;dr.merged=r.dark_frames;dr.acc_black=ob_mean(&r,acc);r.dark_black=dr.acc_black;
         path_prefix(dr.dng,sizeof(dr.dng),r.dng,dark_prefix(&r));
         *status="Saving the dark frames";NotifyBox(60000,"Saving the dark frames...");
-        r.dark_saved=frlv_save_dng(&dr,acc);r.dark_save_ms=dr.save_ms;
+        r.dark_saved=frlv_save_dng(&dr,acc,0);r.dark_save_ms=dr.save_ms;
         static char lpath[FIO_MAX_PATH_LENGTH];
         path_prefix(lpath,sizeof(lpath),r.dng,orig_prefix(&r));
         *status="Reading the unprocessed DNG";NotifyBox(60000,"Subtracting the dark frames...");
@@ -1513,7 +1519,7 @@ out:
         static struct frlv_result orig;
         orig=r;path_prefix(orig.dng,sizeof(orig.dng),r.dng,orig_prefix(&r));
         *status="Saving the unprocessed DNG";NotifyBox(60000,"Saving the unprocessed DNG...");
-        r.orig_saved=frlv_save_dng(&orig,acc);r.orig_save_ms=orig.save_ms;
+        r.orig_saved=frlv_save_dng(&orig,acc,0);r.orig_save_ms=orig.save_ms;
     }
     if (acc && r.merged && !r.preview_only && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
         !(r.error&(FE_GUARD|FE_SIZE|FE_REGS))) {
@@ -1563,7 +1569,8 @@ out:
             r.fp_fixed=lc_fix_focus_pixels(acc,r.width,r.height,r.pitch);
             r.fp_us=(unsigned)get_us_clock()-f0;
         }
-        /* LCM67: MLV first (the same data, no swap), then the DNG. */
+        /* LCM67: MLV first (the same data, no swap), then the DNG, swapped
+         * in place in acc (LCM68). */
         if (r.format) {
             *status="Saving the MLV";
             NotifyBox(60000,"Saving the MLV...");
@@ -1572,7 +1579,7 @@ out:
         if (r.format!=LC_FORMAT_MLV) {
             *status="Saving the DNG";
             NotifyBox(60000,"Saving the DNG...");
-            r.saved=frlv_save_dng(&r,acc);
+            r.saved=frlv_save_dng(&r,acc,1);          /* LCM68: last use of acc */
         }
         else r.saved=r.mlv_saved;
         if (!r.saved || (r.format && !r.mlv_saved)) r.error|=FE_IO;
@@ -1600,8 +1607,8 @@ out:
             r.dark_state==DK_FAILED ? ", dark failed":"");
         else snprintf(done,sizeof(done),"Composite saved: %d frames%s",r.merged,
             r.dark_state==DK_DONE ? ", dark subtracted":r.dark_state==DK_FAILED ? ", dark failed":"");
-        /* LCM67: how long the files took to write */
-        unsigned k=strlen(done);
+        /* LCM67: how long the files took to write (Debug ON; also in the LOG) */
+        unsigned k=r.log[0] ? strlen(done):sizeof(done);
         if (r.format!=LC_FORMAT_MLV && k<sizeof(done)) k+=snprintf(done+k,sizeof(done)-k,"; DNG %d.%d s",r.save_ms/1000u,r.save_ms/100u%10u);
         if (r.format && k<sizeof(done)) snprintf(done+k,sizeof(done)-k,"; MLV %d.%d s",r.mlv_ms/1000u,r.mlv_ms/100u%10u);
         msg=done;

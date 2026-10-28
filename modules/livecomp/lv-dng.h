@@ -96,11 +96,12 @@ static int lc_dng_header(uint8_t *h,const struct lc_dng_metadata *m)
 }
 static void lc_dng_swap_copy(uint8_t *dst,const uint8_t *src,unsigned bytes)
 {
-    for (unsigned i=0;i<bytes;i+=2) { dst[i]=src[i+1];dst[i+1]=src[i]; }
+    for (unsigned i=0;i<bytes;i+=2) { const uint8_t a=src[i],b=src[i+1];dst[i]=b;dst[i+1]=a; }   /* dst==src allowed */
 }
 /* LCM67: the same swap a word at a time, four words per pass: ~4
  * instructions per word instead of ~7 per halfword. dst and src 4-byte
- * aligned; a tail under 16 bytes goes through lc_dng_swap_copy. */
+ * aligned; a tail under 16 bytes goes through lc_dng_swap_copy. dst==src
+ * swaps in place (LCM68: the final DNG, every word read before written). */
 typedef uint32_t __attribute__((may_alias)) lc_dng_word;
 static __attribute__((optimize("O2"))) void lc_dng_swap_words(uint8_t *dst,const uint8_t *src,unsigned bytes)
 {

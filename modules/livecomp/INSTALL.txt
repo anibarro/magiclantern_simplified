@@ -57,9 +57,9 @@ MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
    File format      DNG (default) / DNG + MLV / MLV. MLV: the same picture
                     as a one-frame LVxxnnnn.MLV (open it with MLV App or
                     mlv_dump), written straight from memory without the
-                    byte swap a DNG needs. DNG + MLV writes both (MLV first)
-                    to compare: the result message shows each save time,
-                    e.g. "; DNG 3.1 s; MLV 1.6 s". The LVBR/LVDK extra files
+                    byte swap a DNG needs. DNG + MLV writes both (MLV first).
+                    With Debug ON the result message shows each save time,
+                    e.g. "; DNG 1.9 s; MLV 0.9 s". The LVBR/LVDK extra files
                     are always DNG.
    Debug            OFF (default): only the DNG is written, no log files.
                     ON: diagnostic LVFRnnnn.LOG and .CSV next to each DNG

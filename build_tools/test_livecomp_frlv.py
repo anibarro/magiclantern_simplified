@@ -312,16 +312,17 @@ void AbortEDmac(unsigned ch){ (void)ch; aborts++; if (abort_fails) return; dma_s
 int get_global_draw_setting(void){ return gd_setting; }
 static int file_token; static unsigned dng_bytes,log_files,dng_files;
 int is_camera(const char *m,const char *f){ return !strcmp(m,"EOSM") && !strcmp(f,"2.0.2"); }
-static int cur_mlv;static unsigned mlv_files,mlv_bytes,mlv_writes,dng_writes;static uint8_t mlv_head[4096];
+static int cur_mlv;static unsigned mlv_files,mlv_bytes,mlv_writes,dng_writes,dng_pos;static uint8_t mlv_head[4096];
+static uint64_t dng_sum,mlv_sum;   /* LCM68: position-weighted sums, the DNG byte q is the Canon byte q^1 */
 static int dng_created,cur_dng,cur_log;static char last_log[8192],last_log_path[64];static unsigned last_log_n;
 static int dirs_created,dir_fail,dng_in_live,log_in_live;static char last_dir[64];
 static uint8_t *lvbr_data;static unsigned lvbr_n,lvbr_pos,lvbr_files,lvdk_files;static int cur_lvbr,lvbr_reads;
 #define LVBR_MAX 40000000u
 FILE *FIO_OpenFile(const char *p,unsigned mode){ (void)mode; if (!(strstr(p,"LVBR") || strstr(p,"LVCR")) || !lvbr_n) return 0; lvbr_pos=0;lvbr_reads++; return (FILE *)&file_token; }
 int FIO_ReadFile(FILE *f,void *b,int n){ (void)f; unsigned k=lvbr_n-lvbr_pos<(unsigned)n ? lvbr_n-lvbr_pos:(unsigned)n; memcpy(b,lvbr_data+lvbr_pos,k);lvbr_pos+=k;return (int)k; }
-FILE *FIO_CreateFile(const char *p){ cur_lvbr=strstr(p,"LVBR") || strstr(p,"LVCR"); if (cur_lvbr) { lvbr_n=0;lvbr_files++; if (!lvbr_data) lvbr_data=malloc(LVBR_MAX); } if (strstr(p,"LVDK") || strstr(p,"LVCK")) lvdk_files++; if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) { dng_created=1;dng_files++; } cur_mlv=!!strstr(p,".MLV"); if (cur_mlv) { mlv_files++;mlv_bytes=0;mlv_writes=0; } return (FILE *)&file_token; }
-int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) { dng_bytes+=n;dng_writes++; }
-  if (cur_mlv) { if (mlv_bytes+n<=sizeof(mlv_head)) memcpy(mlv_head+mlv_bytes,b,n); mlv_bytes+=n;mlv_writes++; } if (cur_lvbr && lvbr_n+n<=LVBR_MAX) { memcpy(lvbr_data+lvbr_n,b,n);lvbr_n+=n; }
+FILE *FIO_CreateFile(const char *p){ cur_lvbr=strstr(p,"LVBR") || strstr(p,"LVCR"); if (cur_lvbr) { lvbr_n=0;lvbr_files++; if (!lvbr_data) lvbr_data=malloc(LVBR_MAX); } if (strstr(p,"LVDK") || strstr(p,"LVCK")) lvdk_files++; if (strstr(p,".DNG") && !strncmp(p,"B:/DCIM/LIVE/LVFR",17)) dng_in_live=1; if (strstr(p,".LOG") && !strncmp(p,"B:/DCIM/LIVE/",13)) log_in_live=1; if (strstr(p,".CSV")) csv_written=1; cur_log=!!strstr(p,".LOG"); if (cur_log) { log_files++;last_log_n=0;last_log[0]=0;snprintf(last_log_path,sizeof(last_log_path),"%s",p); } cur_dng=!!strstr(p,".DNG"); if (cur_dng) { dng_created=1;dng_files++;dng_pos=0;dng_sum=0; } cur_mlv=!!strstr(p,".MLV"); if (cur_mlv) { mlv_files++;mlv_bytes=0;mlv_writes=0;mlv_sum=0; } return (FILE *)&file_token; }
+int FIO_WriteFile(FILE *f,const void *b,int n){ (void)f; if (cur_dng) { for (int i=0;i<n;i++,dng_pos++) if (dng_pos>=2048) dng_sum+=((const uint8_t *)b)[i]*(uint64_t)(((dng_pos-2048)^1)+1); dng_bytes+=n;dng_writes++; }
+  if (cur_mlv) { if (mlv_bytes+n<=sizeof(mlv_head)) memcpy(mlv_head+mlv_bytes,b,n); for (int i=0;i<n;i++) if (mlv_bytes+i>=4096) mlv_sum+=((const uint8_t *)b)[i]*(uint64_t)(mlv_bytes+i-4096+1); mlv_bytes+=n;mlv_writes++; } if (cur_lvbr && lvbr_n+n<=LVBR_MAX) { memcpy(lvbr_data+lvbr_n,b,n);lvbr_n+=n; }
   if (cur_log && last_log_n+n<sizeof(last_log)) { memcpy(last_log+last_log_n,b,n);last_log_n+=n;last_log[last_log_n]=0; } return n; }
 void FIO_CloseFile(FILE *f){ (void)f; }
 static unsigned dng_size_ok;
@@ -558,10 +559,11 @@ int main(void)
     reset();dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     assert(!unsafe && strstr(status,"Composite saved: 6 frames") && strstr(last_log,"Mode_total_exposure_ms_acc_black_too_slow: composite,2500,0,0"));
-    /* LCM67: large DNG writes (4 MiB staging, ~8 calls for the raster) and
-     * the save time on the message and in the LOG. */
+    /* LCM67: large DNG writes (4 MiB, ~8 calls for the raster) and the save
+     * time on the message and in the LOG. LCM68: the final DNG is swapped in
+     * place in the accumulator (in_place 1). */
     assert(dng_writes>=2 && dng_writes<=12 && strstr(status,"; DNG ") && !strstr(status,"MLV"));
-    assert(strstr(last_log,"Save_format_dng_ms_swap_ms_write_ms_chunk_kb_mlv_saved_ms_write_ms_size: 0,") && strstr(last_log,",4096,0,0,0,0\n"));
+    assert(strstr(last_log,"Save_format_dng_ms_swap_ms_write_ms_chunk_kb_in_place_mlv_saved_ms_write_ms_size: 0,") && strstr(last_log,",4096,1,0,0,0,0\n"));
     /* LCM67 File format DNG + MLV: both files, the MLV a 4 KiB header then
      * the raster straight from the accumulator (Canon byte order). */
     reset();o.format=LC_FORMAT_DNG_MLV;dng_size_ok=2048+bytes;
@@ -570,6 +572,9 @@ int main(void)
     assert(!unsafe && strstr(status,"Composite saved: 6 frames; DNG ") && strstr(status,"; MLV ") && dng_files==1 && mlv_files==1 && allocs==frees);
     assert(mlv_bytes==4096+bytes && mlv_writes<=12 && !memcmp(mlv_head,"MLVI",4) && !memcmp(mlv_head+52,"RAWI",4));
     assert(strstr(last_log,"MLV: B:/DCIM/LIVE/LVFR") && strstr(last_log,"_size: 1,"));
+    /* LCM68: the in-place DNG raster is the MLV raster (written first, from
+     * the untouched accumulator) with the bytes of every word swapped. */
+    assert(dng_sum && dng_sum==mlv_sum && strstr(last_log,",4096,1,1,"));
     /* MLV only: no DNG at all. */
     reset();o.format=LC_FORMAT_MLV;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -581,7 +586,7 @@ int main(void)
     reset();o.debug=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("debug off: %s logs=%d csv=%d\n",status,log_files,csv_written);
-    assert(!unsafe && strstr(status,"saved: 6 frames") && dng_in_live && log_files==0 && !csv_written);
+    assert(!unsafe && strstr(status,"saved: 6 frames") && dng_in_live && log_files==0 && !csv_written && !strstr(status,"; DNG"));   /* save times: Debug ON only */
     /* ...and Preview only with Debug OFF writes nothing at all. */
     reset();o.preview_only=1;o.limit=0;hold_cancel_vsyncs=3;hold_vsyncs=0;cancel_ptr=&cancel;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);

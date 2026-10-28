@@ -1376,3 +1376,34 @@ LCM67:
   ON (e.g. Live Bulb 2.5 s, a few frames). The message compares the two
   saves; the LOG splits the DNG into swap and write. Then open the MLV in
   MLV App to check it.
+
+## LCM68: in-place DNG swap
+
+LCM67 on the camera (LVBL0031, Live Bulb 2.5 s x 6, DNG + MLV):
+- DNG 2297 ms = swap 1244 ms + card write 988 ms (4 MiB staging);
+- MLV 875 ms, card write 860 ms (~38 MB/s);
+- MLV blocks and pixels check out against the DNG (start, middle, end).
+
+The swap ran at ~26 MB/s, far below what its instruction count gives:
+every store went to the fio_malloc staging buffer, which is uncached.
+
+LCM68: the final DNG (the last use of the accumulator) swaps the cached
+accumulator in place, 4 MiB at a time, and writes each piece straight from
+it (FIO_WriteFile cleans the cache first). Only the 2 KiB header needs a
+buffer of its own. Afterwards the accumulator is in DNG byte order; nothing
+reads it. The LVBR/LVDK/LVCR/LVCK saves keep the staging buffer (the
+accumulator is still needed). `lc_dng_swap_copy` now also works in place
+(the tail). LOG: `Save_format_dng_ms_swap_ms_write_ms_chunk_kb_in_place_...`
+gains the in-place flag. Host test: with DNG + MLV, the DNG raster equals
+the MLV raster (written first, untouched) with the bytes of each word
+swapped.
+
+Camera (LVBL0032, Live Bulb 2.5 s x 14, DNG + MLV): DNG 1920 ms = swap
+1033 ms + write 867 ms (LCM67: 2297 = 1244 + 988); MLV 909 ms. The DNG and
+MLV rasters match (bytes of each word swapped). The cached swap is only
+~17% faster: at ~31 MB/s it is bound by the memory bus (the Live Bulb add,
+which reads 64 MB and writes 32 MB per frame, takes 2 s), not by the
+instructions or the cache. The MLV stays the fastest save (no swap at all).
+
+Production: the save times on the result message only with Debug ON (the
+LOG keeps the full split).

@@ -375,8 +375,11 @@ failure is declared only after 3 s without it.
   Canon's buffer: since LCM67 the swap goes a word at a time
   (`lc_dng_swap_words`, ~3x fewer cycles than the byte loop) into a staging
   buffer of up to 4 MiB, so the 32 MB raster takes ~8 card writes instead of
-  ~2000 of 16 KiB. The time is in the LOG (`Save_format_dng_ms_swap_ms_...`)
-  and on the result message.
+  ~2000 of 16 KiB. Since LCM68 the final DNG is swapped in place in the
+  (cached) accumulator and written straight from it: nothing reads the
+  accumulator after that save. The LVBR/LVDK extra files still go through
+  the staging buffer, since the accumulator is needed afterwards. The time
+  is in the LOG (`Save_format_dng_ms_swap_ms_...`) and on the result message.
 - MLV (File format, LCM67): a one-frame MLV v2.0 (MLVI, RAWI, IDNT, EXPO,
   LENS, RTCI, VIDF; `lv-mlv.h`, same fields as ML's silent pictures). The
   header is padded to 4 KiB and the raster written straight from the

@@ -59,6 +59,9 @@ int main(int argc,char **argv) {
     /* LCM67: word swap, 4 MiB chunks; equal to the byte swap for every tail length */
     for (unsigned len=0;len<64;len+=2) {
         uint32_t a[16],b[16];lc_dng_swap_copy((uint8_t *)a,raw+4*len,len);lc_dng_swap_words((uint8_t *)b,raw+4*len,len);assert(!memcmp(a,b,len));
+        /* LCM68: in place (dst==src), the final DNG */
+        uint32_t c[16];memcpy(c,raw+4*len,len);lc_dng_swap_words((uint8_t *)c,(const uint8_t *)c,len);assert(!memcmp(a,c,len));
+        memcpy(c,raw+4*len,len);lc_dng_swap_copy((uint8_t *)c,(const uint8_t *)c,len);assert(!memcmp(a,c,len));
     }
     for (unsigned off=0;off<m.bytes;off+=4u<<20) lc_dng_swap_words(out+off,raw+off,m.bytes-off<(4u<<20) ? m.bytes-off:4u<<20);
     char path[1024];snprintf(path,sizeof(path),"%s/normal.DNG",argv[2]);
