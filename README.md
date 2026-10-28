@@ -96,7 +96,7 @@ each frame** is set in the module's menu, not on the camera.
 | --- | --- |
 | **Live Composite / Live Bulb** | ON arms the module. Nothing starts until you close the menu and press SET. |
 | **Mode** | Live Composite (default) or Live Bulb. |
-| **Shutter** | The exposure of each frame: 2, 2.5, 3, 4, 5, 6, 8, 10, 13, 15, 20, 25, 30, 40, 50 or 60 s (default 2.5 s). Frames follow each other with no gap. The right side shows the camera's ISO and aperture. Live Bulb needs 2.5 s or longer (2.5 s Live Bulb is not yet tested on the camera; 3 s is). 2 to 5 s and 10 s have been tested on the camera; the menu marks the others as not yet tested. |
+| **Shutter** | The exposure of each frame: 2, 2.5, 3, 4, 5, 6, 8, 10, 13, 15, 20, 25, 30, 40, 50 or 60 s (default 2.5 s). Frames follow each other with no gap. The right side shows the camera's ISO and aperture. Live Bulb needs 2.5 s or longer. 2 to 5 s and 10 s have been tested on the camera; the menu marks the others as not yet tested. |
 | **Preview only** | ON: SET takes one test frame with the current settings and shows it, with the percentage of clipped highlights. Nothing is saved. Use it to get the exposure right, then turn it OFF. |
 | **Frame limit** | No limit (default), 30, 60, 120 or 240 frames. The session stops and saves by itself after that many frames. In Live Bulb the right side shows the total exposure, e.g. "= 1m15s bulb". |
 | **Debug** | OFF (default): only the DNG is saved. ON: a log file and a CSV file are saved next to each DNG. Turn it on only when you want to report a problem. |
@@ -179,8 +179,7 @@ To report a problem, turn **Debug** ON, repeat the session, and include the
 
 - Shutters shorter than 2 s (2.5 s in Live Bulb) are not possible: adding
   each full-resolution frame takes the camera's processor about 1.5 s
-  (Live Bulb about 2.3 s before LCM65; its faster ARM version is not yet
-  measured on the camera).
+  (Live Bulb about 2.0 s).
 - The camera needs about 4 s more before the first frame ("Tactical
   delay..."): it lets the camera get a frame it always cuts short out of the
   way, so no frame of your picture is lost.

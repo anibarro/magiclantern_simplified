@@ -1328,3 +1328,19 @@ Product summary (EOS M 2.0.2):
 - To check on the camera (Debug ON): Live Bulb at 3 s (merge_us in the CSV
   against 2.30 s), then 2.5 s (no lost bands, no "Too slow"), and a dark
   frame session (in place and with Save unprocessed).
+
+## LCM65 camera result (LVBL0027-0030; LCM66)
+
+- LVBL0027, 3 s, 8 frames: add 2.004 s every frame (merge_us 2003670-
+  2003735), 0 lost bands, 0 partials. Same day with the C kernel (LVBL0026,
+  LCB3 build, 3 s): 2.06-2.30 s, varying. The ARM add is 8-13% faster and
+  constant; less than the 16% the emulated cycles suggested.
+- LVBL0028, 2.5 s, 10 frames: add 2.000-2.030 s, 0 lost bands, 0 missed,
+  too_slow 0, DMA offset after the merge 0 every frame. Slack per frame is
+  ~0.3 s (2.5 s minus the ~45 ms arm delay, the add and the ~130 ms preview
+  render).
+- LVBL0029, 3 s, 7 frames, Dark frame ON, in place: 7 dark frames, 0
+  partials/lost, dark subtract 2.003 s per frame.
+- LVBL0030, 3 s, 8 frames, Dark frame ON + Save unprocessed: LVBR/LVDK saved,
+  LVBR read back, dark black 2055, subtraction 2.010 s.
+- LCM66: the "not yet tested" advice for 2.5 s Live Bulb is removed.

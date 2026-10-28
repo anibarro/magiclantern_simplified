@@ -234,8 +234,9 @@ result bit for bit. Words come in by LDM, two at a time; an inner field is
 one AND of the native word rotated, a field across two words one AND after
 putting their halves together (no per-word rotation); the clamp is one
 unsigned compare and a BICHI. Emulated ARM946: 199 instructions / ~216
-cycles per 16 pixels vs 241 / ~257 for the C kernel. So Live Bulb allows
-2.5 s frames (not yet run on the camera). If the next readout overtakes
+cycles per 16 pixels vs 241 / ~257 for the C kernel; on the camera 2.00-2.04
+s per frame (C: 2.06-2.30 s), so Live Bulb runs at 2.5 s frames (LCM65
+camera result). If the next readout overtakes
 the add, the session stops after the frame already armed ("use longer
 frames").
 
@@ -398,8 +399,8 @@ failure is declared only after 3 s without it.
 
 ## 10. Limits
 
-- Shortest shutter 2 s (Live Bulb 2.5 s, LCM65, not yet camera-tested).
-  This is set by the CPU merge (1.5 s, Bulb 2.3 s with the C kernel) plus
+- Shortest shutter 2 s (Live Bulb 2.5 s). This is set by the CPU merge
+  (1.5 s, Bulb 2.0 s) plus
   the preview, the ~150 ms readout and the time the GUI task needs.
   Olympus goes down to 1/2 s. A further idea (merge chasing the readout)
   is in FULLRES.md, LCM64.

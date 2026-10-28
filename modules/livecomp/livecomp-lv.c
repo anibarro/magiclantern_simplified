@@ -160,12 +160,10 @@ static MENU_UPDATE_FUNC(update_shutter)
         "Length of each frame, no gaps. The LCD shows the composite after every frame.");
     if (!iso) MENU_SET_WARNING(MENU_WARN_ADVICE,"Auto ISO: set a fixed ISO on the camera (Movie M).");
     /* LCM55 camera: adding a frame took ~2.3 s with the C kernel, too slow
-     * for 2.5 s. LCM65: the ARM kernel has ~16% fewer cycles and LDM loads;
-     * 2.5 s is allowed but not yet run on the camera, 2 s stays too short. */
+     * for 2.5 s. LCM65/66 camera: the ARM kernel takes 2.00-2.04 s, 2.5 s
+     * runs without lost bands; 2 s stays too short. */
     else if (bulb() && lc_frr_timing[shutter>=0 && shutter<(int)LC_FRR_FPS_CHOICES ? shutter:(int)LC_FRR_FPS_DEFAULT].period_ms<2500u)
         MENU_SET_WARNING(MENU_WARN_ADVICE,"Live Bulb needs 2.5 s or longer: adding a frame takes ~2 s.");
-    else if (bulb() && lc_frr_timing[shutter>=0 && shutter<(int)LC_FRR_FPS_CHOICES ? shutter:(int)LC_FRR_FPS_DEFAULT].period_ms<3000u)
-        MENU_SET_WARNING(MENU_WARN_ADVICE,"Live Bulb at 2.5 s is not yet tested on the camera.");
     else if (shutter>=(int)LC_FRR_TESTED && lc_frr_timing[shutter].period_ms!=10000u) MENU_SET_WARNING(MENU_WARN_ADVICE,"This shutter is not yet tested on the camera.");
 }
 static MENU_UPDATE_FUNC(update_mode)
