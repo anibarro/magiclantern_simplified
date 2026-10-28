@@ -63,5 +63,9 @@ zip_contents:: $(ZIP_DIR) | $(BUILD_DIR)
 	mkdir -p $(ZIP_DIR)/ML/XPAN/LUTS
 	$(CP) $(XPAN_DATA_DIR)/*.CUBE $(XPAN_DATA_DIR)/*.BIN $(ZIP_DIR)/ML/XPAN/
 	find $(XPAN_DATA_DIR)/LUTS -maxdepth 1 -type f -iname '*.cube' -exec $(CP) {} $(ZIP_DIR)/ML/XPAN/LUTS/ \;
+# XPan is incompatible with almost every module, so ship none: ML/modules/
+# keeps only the symbol file. This rule runs after the generic zip_contents
+# rules in ../Makefile, which have already copied the default modules.
+	rm -f $(ZIP_MODULES_DIR)/*.mo $(ZIP_MODULES_DIR)/*.MO $(ZIP_MODULES_DIR)/*.hid $(ZIP_MODULES_DIR)/*.HID
 endif
 .DEFAULT_GOAL := $(BUILD_DIR)/cam_complete

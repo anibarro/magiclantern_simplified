@@ -12,6 +12,15 @@ created and no image buffer is reserved at boot.
 **Only the EOS M 2.0.2 is supported.** Use at your own risk, like any Magic
 Lantern build.
 
+> **Disable all external modules.** XPan changes Canon's colour tables, JPEG
+> encoder, sensor crop, key routing and several properties. These changes make
+> it incompatible with almost every other Magic Lantern module (`.mo` files
+> in `ML/MODULES/`). Before using this build, go to the **Modules** tab, set
+> every module to OFF and restart the camera. Better still, start from an
+> empty `ML/MODULES/` folder. Do not load raw video, crop, Dual ISO, Lua or
+> other modules together with XPan. They can conflict with it, corrupt images
+> or make the camera lock up.
+
 ## Features
 
 Photo mode (menu **Shoot > XPan** for framing and HUD, **XPan** tab for look, grain and watermark):
@@ -62,6 +71,10 @@ ML/XPAN/WMARK.BIN          watermark logo (from extras/XPan_tools)
 ML/XPAN/GRAIN.BIN          grain texture for Grain type = Canon
 ML/XPAN/LUTS/              your looks: every *.cube in data/XPAN/LUTS/
 ```
+
+The zip contains **no modules**: `ML/MODULES/` holds only the symbol file
+(`EOSM_202.sym`). Unzipping does not delete modules already on the card, so
+delete any old `.mo` files from `ML/MODULES/` yourself (see the warning above).
 
 `ML/XPAN/LUTS/` is created even when the repository folder holds no looks.
 The camera reads these files once, when a feature first needs them, so
