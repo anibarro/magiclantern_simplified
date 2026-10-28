@@ -46,6 +46,7 @@
 #include "raw14-max.h"
 #include "raw14-add.h"
 #include "raw14-max-asm.h"                  /* ARM merge kernel (camera build only) */
+#include "raw14-add-asm.h"                  /* ARM Live Bulb kernels (camera build only) */
 #include "lv-dng.h"
 #include "vram.h"
 #include "fullres-gamma.h"
@@ -656,6 +657,25 @@ static unsigned merge_max(uint32_t *d,const uint32_t *s,unsigned pairs)
     return lc_raw14_max_sel(d,s,pairs);
 #endif
 }
+/* Live Bulb add and dark-frame subtract (LCM65): the ARM kernels with LDM
+ * loads on the camera (raw14-add-asm.h; 199 instructions per 16 pixels vs
+ * 241 for lc_raw14_add_sel, emulated), same result; C in the simulator. */
+static void merge_add(uint8_t *d,const uint8_t *s,unsigned pairs,unsigned black,unsigned white)
+{
+#ifdef __ARM__
+    lc_raw14_add_ldm((uint32_t *)(void *)d,(const uint32_t *)(const void *)s,pairs,black,white);
+#else
+    lc_raw14_add_sel((uint32_t *)(void *)d,(const uint32_t *)(const void *)s,pairs,black,white);
+#endif
+}
+static void merge_sub(uint8_t *d,const uint8_t *s,unsigned pairs,unsigned black,unsigned white)
+{
+#ifdef __ARM__
+    lc_raw14_sub_ldm((uint32_t *)(void *)d,(const uint32_t *)(const void *)s,pairs,black,white);
+#else
+    lc_raw14_sub_sel((uint32_t *)(void *)d,(const uint32_t *)(const void *)s,pairs,black,white);
+#endif
+}
 static void preview_setup(void)
 {
     struct vram_info *v=get_yuv422_vram();
@@ -748,7 +768,7 @@ static void preview_hold(struct frlv_result *r,const uint8_t *acc,const volatile
  * rows of the frame ending at vsync V+1 started up to one readout before V).
  * Only two 32 MB buffers exist (LCM9-13), so:
  *  - Save unprocessed OFF: each dark frame is subtracted from the sum as it
- *    arrives (lc_raw14_sub_sel, like the add, during the next exposure).
+ *    arrives (merge_sub, like the add, during the next exposure).
  *  - Save unprocessed ON: the light sum is first saved (LVBRnnnn.DNG), the
  *    dark frames are summed in the same buffer (saved as LVDKnnnn.DNG at
  *    the end) and the light sum is read back from the card to subtract.
@@ -779,8 +799,8 @@ static unsigned merge_frame(const struct frlv_result *r,uint8_t *dst,const uint8
         unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
         if (off && off<=r->bytes && off>b0*28) return FRLV_BANDS-b;
         if (kind==0) memcpy(dst+b0*28,src+b0*28,(b1-b0)*28);
-        else if (kind==1) lc_raw14_add_sel((uint32_t *)(void *)(dst+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0,black,white);
-        else lc_raw14_sub_sel((uint32_t *)(void *)(dst+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0,black,white);
+        else if (kind==1) merge_add(dst+b0*28,src+b0*28,b1-b0,black,white);
+        else merge_sub(dst+b0*28,src+b0*28,b1-b0,black,white);
         msleep(10);
     }
     return 0;
@@ -1042,7 +1062,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             if (!r->merged) memcpy(acc+b0*28,src+b0*28,(b1-b0)*28);
             else if (is_bulb(r)) {
                 const unsigned e=MIN(b1,valid);
-                if (b0<e) lc_raw14_add_sel((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),e-b0,add_black,add_white);
+                if (b0<e) merge_add(acc+b0*28,src+b0*28,e-b0,add_black,add_white);
                 changed+=b1-b0;
             }
             else changed+=merge_max((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
@@ -1406,7 +1426,7 @@ out:
             const unsigned lb=is_bulb(&r) ? r.acc_black:r.black,pairs=r.bytes/28,white=frlv_white(lb ? lb:2048);
             for (unsigned b=0;b<FRLV_BANDS;b++) {
                 const unsigned b0=pairs*b/FRLV_BANDS,b1=pairs*(b+1)/FRLV_BANDS;
-                lc_raw14_sub_sel((uint32_t *)(void *)(light+b0*28),(const uint32_t *)(const void *)(acc+b0*28),b1-b0,r.dark_black,white);
+                merge_sub(light+b0*28,acc+b0*28,b1-b0,r.dark_black,white);
                 msleep(10);
             }
             acc=light;                                   /* the result; both buffers freed below */

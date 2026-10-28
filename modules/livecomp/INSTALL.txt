@@ -27,7 +27,8 @@ CAMERA SETUP
 MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
    Live Composite   ON arms the module. Nothing starts until you press SET.
    Mode             Live Composite (default) / Live Bulb. See above.
-                    Live Bulb needs a shutter of 3 s or longer.
+                    Live Bulb needs a shutter of 2.5 s or longer
+                    (2.5 s not yet tested on the camera).
    Shutter          2 s ... 60 s (default 2.5 s): the exposure of every
                     frame; frames follow each other with no gap. The right
                     side shows the camera's ISO and aperture.
@@ -123,9 +124,10 @@ the same exposure as one n x t bulb shot. Choose ISO and aperture for the
 TOTAL time you have in mind (Preview only shows a single frame, i.e. 1/n of
 it) and stop with SET when the LCD looks right. Highlights that reach the
 white level stay white. Shadow noise adds up like in any long exposure.
-Adding a Live Bulb frame touches every pixel and takes ~2.3 s (a Live
-Composite merge ~1.5 s), so Live Bulb needs a shutter of 3 s or longer
-(camera-tested at 3 s with the LCD updated after every frame). If a frame
+Adding a Live Bulb frame touches every pixel and took ~2.3 s (a Live
+Composite merge ~1.5 s); LCM65 adds it with a faster ARM kernel, so Live
+Bulb allows 2.5 s (not yet tested on the camera; 3 s is, with the LCD
+updated after every frame). If a frame
 cannot be added before the next one is read out, the session stops and
 saves what it has ("Too slow for n s frames: stopping", then "Bulb saved:
 n frames; use longer frames") instead of leaving part of the image with

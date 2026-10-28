@@ -9,6 +9,7 @@ python3 build_tools/test_livecomp_portability.py
 python3 build_tools/test_livecomp_frlv.py
 python3 build_tools/test_livecomp_fullres_fix.py
 python3 build_tools/test_livecomp_raw14_asm.py
+python3 build_tools/test_livecomp_raw14_add_asm.py
 make -C modules/livecomp -j1 CONFIG_QEMU=n CONFIG_DEBUGMSG=0 \
   build/module_complete build/effective-config.txt 2>&1 | tee "$B/module-build.log"
 # Standard core only for import checking; never packaged or installed.

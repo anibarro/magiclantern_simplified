@@ -42,7 +42,8 @@ white balance and DNG. Live Bulb: 3, 4, 6, 15 and 50 s frames (LCM55-LCM61,
 2.3 s per added frame), column correction, dark-frame subtraction (in place
 and with Save unprocessed) and single-frame bulbs; composite dark frame
 (LCM61, 6 s); the LCM62/63 start-up delay against the recurring partial
-frame (confirmed). LCM64: ARM merge (1.5 s per frame), preview copy by EDMAC. Host tests cover the register rewriting, a
+frame (confirmed). LCM64: ARM merge (1.5 s per frame), preview copy by EDMAC.
+LCM65 (not yet on the camera): ARM Live Bulb add, 2.5 s Live Bulb. Host tests cover the register rewriting, a
 simulated session (incl. dark frames, the late timer latch, a simulated
 Canon abort), the merge/sum/subtract kernels, the column correction, the
 DNG writer, the key gating and the ARM structure layouts.
