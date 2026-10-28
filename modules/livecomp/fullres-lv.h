@@ -18,6 +18,8 @@ struct lc_frlv_options {
 unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *options,
     const volatile unsigned *cancel,const char **status);
 void livecomp_frlv_vsync(void);
+/* Speed benchmark (livecomp-speed): memory and merge timings, DCIM/LIVE/LVBENCH.LOG. */
+unsigned livecomp_bench_run(struct card_info *card,const char **status);
 /* Diagnostics: record a key event seen while a session runs (LOG). */
 void livecomp_frlv_key_log(unsigned code,unsigned phase,unsigned result);
 #endif

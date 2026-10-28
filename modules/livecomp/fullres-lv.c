@@ -1470,3 +1470,7 @@ out:
     busy=0;
     return r.unsafe;
 }
+/* Speed benchmark (branch livecomp-speed); camera build only (not in the host simulator). */
+#ifdef __ARM__
+#include "speed-bench.h"
+#endif

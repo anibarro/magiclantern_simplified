@@ -56,6 +56,8 @@ static CONFIG_INT("livecomp.dark",dark_frame,0);
 static CONFIG_INT("livecomp.orig",save_orig,0);
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
+/* Speed benchmark: requested from the menu, started once the menu is closed. */
+static volatile unsigned bench_requested;
 static const char *status;   /* last result; NULL = show the setup hint */
 static int bulb(void) { return live_mode==(int)LC_MODE_BULB; }
 static const char *mode_name(void) { return bulb() ? "Live Bulb":"Live Composite"; }
@@ -196,6 +198,26 @@ static MENU_UPDATE_FUNC(update_orig)
     if (save_orig) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",bulb() ? "LVBRnnnn.DNG: no in-camera correction; LVDKnnnn.DNG: dark frames (sum).":
         "With Dark frame: LVCRnnnn.DNG unprocessed, LVCKnnnn.DNG the dark frame.");
 }
+static MENU_SELECT_FUNC(bench_select)
+{
+    (void)priv;(void)delta;
+    if (running || attempted) return;
+    bench_requested=1;status="Benchmark: close the menu (~1 min)";
+}
+static MENU_UPDATE_FUNC(update_bench)
+{
+    MENU_SET_VALUE("%s",bench_requested ? "Requested":running ? "Running":"Run");
+}
+static void bench_task(void *unused)
+{
+    (void)unused;
+    worker_alive=1;
+    NotifyBoxHide();msleep(100);
+    livecomp_bench_run(get_ml_card(),&status);
+    NotifyBox(8000,"%s",status);
+    stop_requested=requested=0;
+    attempted=0;running=0;
+}
 static MENU_UPDATE_FUNC(update_status)
 {
     if (!running && !attempted && !is_movie_mode()) {
@@ -232,6 +254,9 @@ static struct menu_entry lv_children[]={
     {.name="Debug",.priv=&debug,.max=1,
      .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
      .help2="OFF: no log files; only the composite DNG is saved."},
+    {.name="Speed benchmark",.select=bench_select,.update=update_bench,
+     .help="Measures memory and merge speed with Live View running (~1 min).",
+     .help2="Movie mode, x1. Nothing is saved except DCIM/LIVE/LVBENCH.LOG."},
     {.name="Status",.update=update_status,
      .help="SET: start (or preview). SET again: stop and save."},
     MENU_EOL
@@ -246,6 +271,12 @@ void livecomp_lv_poll(struct card_info *card)
 {
     if (!menu_added) { menu_add("Shoot",lv_menu,COUNT(lv_menu));menu_added=1; }
     if (!enabled || ml_shutdown_requested) { requested=0;return; }
+    if (bench_requested && !running && !attempted && card && !gui_menu_shown() &&
+        gui_state==livecomp_camera.gui_idle && lv && !LV_PAUSED && !lens_info.job_state) {
+        bench_requested=0;attempted=running=1;worker_alive=0;create_ms=get_ms_clock();
+        task_create("lcbench",0x1e,0x4000,bench_task,0);
+        return;
+    }
     if (requested && !attempted && card && !gui_menu_shown() &&
         gui_state==livecomp_camera.gui_idle && lv && !LV_PAUSED && !lens_info.job_state) {
         attempted=running=1;requested=0;worker_alive=0;create_ms=get_ms_clock();
