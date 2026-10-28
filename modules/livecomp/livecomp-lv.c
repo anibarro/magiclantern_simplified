@@ -54,6 +54,7 @@ static CONFIG_INT("livecomp.debug",debug,0);
 static CONFIG_INT("livecomp.dark",dark_frame,0);
 /* Save unprocessed (LCM59): also the DNG before in-camera noise reduction. */
 static CONFIG_INT("livecomp.orig",save_orig,0);
+
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
 static const char *status;   /* last result; NULL = show the setup hint */
@@ -213,7 +214,7 @@ static struct menu_entry lv_children[]={
      .help="Live Composite: brightest pixels. Live Bulb: frames add up (one long exposure).",
      .help2="Both show the result on the LCD after every frame and save a RAW DNG."},
     {.name="Shutter",.priv=&shutter,.max=LC_FRR_FPS_CHOICES-1,.update=update_shutter,
-     .choices=CHOICES("2.5 s","3 s","4 s","5 s","6 s","8 s","10 s","13 s","15 s",
+     .choices=CHOICES("2 s","2.5 s","3 s","4 s","5 s","6 s","8 s","10 s","13 s","15 s",
                       "20 s","25 s","30 s","40 s","50 s","60 s"),
      .help2="ISO and aperture: set them on the camera (Movie M); they stay fixed."},
     {.name="Preview only",.priv=&preview_only,.max=1,.update=update_preview,

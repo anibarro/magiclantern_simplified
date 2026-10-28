@@ -2,15 +2,18 @@
 
 This document records the investigation into using Canon's own image
 "maximum" engine to merge full-sensor frames instead of the CPU. It covers
-module builds LCM9-LCM40 (October 2026) and the experimental builds LCX1 and
-LCX2. The product does **not** use the engine; it merges on the CPU (see
+module builds LCM9-LCM40 (October 2026) and the experimental builds LCX1 to
+LCX7. The product does **not** use the engine; it merges on the CPU (see
 HOW-IT-WORKS.md). The engine is fast and exact, but on this camera it cannot
-run at full speed while the sensor is producing frames.
+run at full speed while the sensor is producing frames, and (LCX5-LCX7) it
+loses its accumulator input while a factory capture is in progress.
 
 Chronological notes, camera logs and every intermediate hypothesis are in
 FULLRES.md. Camera evidence is in `tests/livecomp/LCMnn-camera` and
-`tests/livecomp/LCX1-camera`, `LCX2-camera`. The experimental source code is
-kept, unbuilt, in `research/livecomp-hwx/` (see the README there).
+`tests/livecomp/LCX1-camera`, `LCX2-camera` (LCX3-LCX7: `LCX5-camera` to
+`LCX7-camera`). The experimental source code is kept, unbuilt, in
+`research/livecomp-hwx/` (see the README there); LCX3-LCX7 are on the local
+branch `livecomp-lcx3`.
 
 ## 1. Why a hardware merge was wanted
 
@@ -183,8 +186,11 @@ No register value, resource lock, power domain, channel or routing that the
 module can reach changes either row. Pausing Live View for every merge costs
 0.2 s (pause) + 0.7-1.0 s (resume) + re-entering the full-res mode per frame,
 i.e. more lost exposure than the CPU merge, which overlaps the next exposure
-with no gap. The product therefore uses the CPU merge with a 2.5 s minimum
-shutter.
+with no gap. The product therefore uses the CPU merge (2 s minimum shutter
+since LCM64, with a hand-written ARM merge and the preview copied by EDMAC).
+Sections 5a-5c add a path without Live View (factory captures): the engine
+is exact there between captures but not during one, which leaves a gap of
+~0.43-0.56 s per frame; for Live Composite the gapless Live View path stays.
 
 ## 5. What was not tried
 
@@ -198,6 +204,116 @@ These are open, high-effort directions. None is known to work.
 - Restart the sensor readout after `PauseLiveView` through Canon's own Live
   View start path (EvfState / LVCDEV), not through registers.
 - Use a different hardware block that Live View does not share.
+
+## 5a. LCX3: frames without Live View (branch livecomp-lcx3)
+
+Idea: do not use Live View at all. ML's full-resolution silent pictures take
+a sensor frame with Live View paused through Canon's factory test-image
+path (`FA_CreateTestImage`, `FA_CaptureTestImage`, `FA_GetCrawBuf`,
+`FA_DeleteTestImage`): an electronic exposure at the photo-mode M shutter,
+the RAW in a Canon buffer. Paused is exactly the state in which the engine
+is exact and fast (3.2), so a chain of such captures could be merged by the
+engine, with the preview drawn into the display buffer, which Canon does not
+refresh while Live View is paused.
+
+The LCX3 build (`hwx-fa.h`, menu "LCX3 FA engine test", photo mode M, RAW,
+shutter 15 s or shorter like silent.mo) does, with Live View paused once:
+
+1. 5 x: new FA job, capture, `FA_GetCrawBuf`; frame 1 is the accumulator.
+2. Frames 2-5: CPU hash of max(accumulator, frame); the engine (`native-max`,
+   output channel 5, rows 4..H-4 in two bands, out = frame in place); rows
+   0-3 and H-4..H-1 on the CPU; hash of the result compared with the CPU
+   one. If the engine refuses (reason logged), the CPU merges instead so the
+   timing still completes. The frame job then becomes the accumulator and
+   the old one is deleted (no ML allocation: Canon's factory memory mode
+   lasts while any job exists, and each job owns a RAW buffer).
+3. After every frame: `raw_preview_fast()` of the accumulator, display on.
+4. Composite saved as `DCIM/LIVE/LVHWX3.DNG`; log `DCIM/LIVE/LVHWX3.LOG`:
+   per frame the job/capture/merge/preview/delete times, buffer addresses,
+   engine reason/lock/setup/wait/us per band, hash verdict; per cycle the
+   start-to-start time and the capture overhead beyond the exposure.
+
+What the log answers:
+
+| Question | LOG field | Decides |
+| --- | --- | --- |
+| Gap between frames | `Cycle*_ms` minus the exposure; `capture_ms` minus exposure | whether short shutters are possible, and how dotted trails get |
+| Engine usable in this state | `reason1/2` (0), `verify` 1, `us1+us2` (~116 ms expected) | hardware merge yes/no |
+| Canon's buffers suitable | `buf`, `crawbuf`, geometry line (`engine_geometry` 1) | whether the engine accepts them (low RAM, pitch 9240) |
+| Preview without Live View | `preview_ms`, what the screen showed | the display path |
+
+Camera result (4 s, ISO 100): 5 frames, engine 4/4 bit-exact against the CPU
+hash, 57.4 ms per band (~115 ms per frame); FA capture 4409 ms for a 4 s
+exposure (409 ms overhead), job create ~20 ms, delete ~20 ms, preview 280 ms.
+Raw 5280x3528, pitch 9240, black 2047; Canon's buffers in low RAM
+(0x46000064/0x48000064) are accepted by the engine. The DNG is a valid
+light-painting composite. Rows 0-3 of an FA frame read 16383 (outside the
+active area).
+
+## 5b. LCX4: loop timing (branch livecomp-lcx3)
+
+`hwx-fa4.h`, menu "FA test mode" + "FA test run", 8 frames at 4 s, no hash
+verification. Log `LVHWX4.LOG`.
+
+| Mode | Result | Dead time per frame |
+| --- | --- | --- |
+| Fast loop (merge, then next capture) | 8 frames, engine every frame, valid DNG | 832 ms (779-850) |
+| Parallel engine (merge during the next capture, 3 FA jobs) | 8 frames, engine every frame, no BUSY, 57-60 ms per band, valid DNG | 447 ms (427-529) |
+| Job reuse | a second capture into the same job gives a new image in the same buffer | - |
+| Long exposure | 4 s: valid. 20 s (20.7 s): `FA_CaptureTestImage` returned after 20036 ms, before the exposure ended, with no RAW buffer; the session cleaned up and wrote its log, then the camera crashed | - |
+
+- The engine runs normally while an FA capture is exposing: the merge is
+  hidden inside the exposure, and the remaining gap (~440 ms) is essentially
+  Canon's FA capture overhead (capture_ms - exposure = 409 ms) plus ~35 ms of
+  job handling. This is the floor of this approach.
+- Canon's FA capture appears to give up after ~20 s (4 s took 4409 ms, 20 s
+  returned at 20036 ms without an image). The readout most likely finished
+  later into a job that had already been deleted, which would explain the
+  crash. This is the reason for silent.mo's 15 s limit: the FA path is
+  limited to 15 s frames (15.4 s capture, inside the ~20 s wait).
+- In the fast loop the preview (274 ms) was not overlapped: its helper task
+  had a higher priority than the main task and ran before the capture
+  started. With a lower priority it would give ~560 ms.
+- The parallel run was not hash-verified (the engine is the same as in LCX3,
+  but it now runs alongside the capture DMA); a sampled check is needed
+  before a product.
+- Compared with the Live View path (gapless, 1.5-2.3 s CPU merge, shutter
+  >= 2.5 s): ~0.45 s gap per frame (11% at 4 s, 2% at 20 s), visible as short
+  breaks in moving lights, but no CPU merge limit, photo mode and the FA
+  readout instead of the x5 Live View hooks.
+
+## 5c. LCX5-LCX7: live loop and the engine during a capture
+
+`hwx-fa4.h` mode "Live loop": three FA jobs reused, the engine merges frame k
+while frame k+1 is captured by a helper task, preview drawn during the
+exposure, stop with half-shutter (SET does not reach ML while Canon's
+buttons are locked; the shutter is left unlocked as in silent.mo's save
+loop). From LCX6 every merge is checked pixel by pixel on 8 blocks of 4
+rows (168,960 pixels) against max(accumulator, copy of the frame).
+
+| Run (4 s) | Result |
+| --- | --- |
+| LCX5 | 28 frames, stable, ~420 ms gap; hash check failed 27/27; SET never arrived (battery pull) |
+| LCX6 | 6 frames, half-shutter stop, DNG saved. Exact when no capture runs (frame 2, merged before the next capture; last frame). Wrong on every merge started 50 ms into a capture: 22-70% of the sampled pixels |
+| LCX7 | 14 frames, exact 2/13: the two idle merges. Merges started 300, 1000 or 2000 ms into the capture: all wrong (37-91% of the sampled pixels) |
+
+Every wrong pixel equals the new frame where the accumulator was brighter:
+while an FA capture is in progress (any phase, not only its start) the
+engine loses its accumulator input. The cached and uncached views agree,
+so it is not a cache effect. The LCX4 "parallel" DNGs looked plausible
+only because the losses are mostly in the noise floor.
+
+Also seen: in LCX7 Live View was no longer paused when the half-shutter
+stop was detected (`lv_resumed` 1), so the half-shutter stop is not safe
+for a product either.
+
+Conclusion for the FA path:
+- engine merge only while no capture runs (as in the fast loop): exact,
+  gap ~560 ms (409 ms FA overhead + 120 ms engine + ~20 ms job handling);
+- CPU merge during the exposure (1.5 s composite, 2.3 s bulb): exact, gap
+  ~430 ms, shutter >= 2.5 s (3 s bulb);
+- so the engine only helps frames shorter than ~2.5 s, where a 0.56 s gap
+  is 20-40% of the time and shows as dashed trails.
 
 ## 6. Safety lessons
 

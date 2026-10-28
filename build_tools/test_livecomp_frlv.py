@@ -111,14 +111,15 @@ int main(void) {
     struct lc_frr_config c; struct lc_frr_stats st; memset(&st,0,sizeof(st));
     lc_frr_configure(&c,LC_FRR_FPS_DEFAULT);
     assert(c.raw_h==0x538 && c.raw_v==0xDB2 && c.timer_a==0x56B && c.timer_b==57635 && c.blanking==10);
-    for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {   /* menu order, 2 s ... 60 s */
-        static const unsigned ms[]={2500,3000,4000,5000,6000,8000,10000,13000,15000,20000,25000,30000,40000,50000,60000};
+    for (unsigned i=0;i<LC_FRR_FPS_CHOICES;i++) {   /* menu order, 2 s ... 60 s (LCM64: 2 s back) */
+        static const unsigned ms[]={2000,2500,3000,4000,5000,6000,8000,10000,13000,15000,20000,25000,30000,40000,50000,60000};
         assert(LC_FRR_FPS_CHOICES==sizeof(ms)/sizeof(*ms) && lc_frr_timing[i].period_ms==ms[i]);
         /* timer A = k x 1388 - 1: the reference line time stretched k times */
         assert((lc_frr_timing[i].timer_a+1)%1388==0 && lc_frr_timing[i].timer_a<=0xFFFF);
         lc_frr_configure(&c,i);assert(c.blanking==10);          /* 100% exposure, no gap */
     }
     assert(LC_FRR_TESTED<=LC_FRR_FPS_CHOICES && LC_FRR_FPS_DEFAULT<LC_FRR_TESTED);
+    assert(lc_frr_timing_of(99)==&lc_frr_timing[LC_FRR_FPS_DEFAULT] && lc_frr_timing[0].timer_a==0x56B);   /* LCM64: 2 s, k=1 */
     /* Reference EOS M CROP_Full_Res constants (crop_rec 5f0cda8), 3 fps. */
     c.timer_a=0x56B;c.timer_b=0x1E03;c.blanking=lc_frr_blanking(0x1E03,100);
     /* period = (A+1)(B+1) / 32 MHz, within 0.1% of the menu value */
@@ -407,7 +408,7 @@ int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={0,6,0,1,LC_MODE_COMPOSITE,0,0};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
+    struct lc_frlv_options o={LC_FRR_FPS_DEFAULT,6,0,1,LC_MODE_COMPOSITE,0,0};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -527,7 +528,7 @@ int main(void)
     printf("SET before the first 60 s frame: %s (then 3 fps: timer B %x)\n",status,exit_timer_b);
     assert(!unsafe && zoom==1 && allocs==frees && unpatched==5 && exit_timer_b==0x1E03);
     assert(strstr(status,"Bulb saved: 1 frames, 60 s") && strstr(last_log,"Stage_error_unsafe: 8,0,0"));
-    cancel=0;cancel_at_us=0;sim_late_latch=0;o.limit=6;o.fps_index=0;sim_period_us=2500000;
+    cancel=0;cancel_at_us=0;sim_late_latch=0;o.limit=6;o.fps_index=LC_FRR_FPS_DEFAULT;sim_period_us=2500000;
     o.mode=LC_MODE_COMPOSITE;
     /* LCM61: Live Composite + dark frame: ONE dark frame (a maximum holds
      * each pixel's offsets once), subtracted at the end; then the column
@@ -599,7 +600,7 @@ int main(void)
         printf("sub-exposure %u: %s\n",i,status);
         assert(!unsafe && strstr(status,"saved: 6 frames") && zoom==1);
     }
-    o.fps_index=0;sim_period_us=2500000;
+    o.fps_index=LC_FRR_FPS_DEFAULT;sim_period_us=2500000;
     /* No frame limit: runs until SET (simulated at frame 9), then saves. */
     reset();o.limit=0;cancel_at=9;cancel_ptr=&cancel;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -632,13 +633,13 @@ int main(void)
       assert(!unsafe && strstr(status,"saved") && zoom==1 && behind>0); }
     sim_slow=1;
     /* Slow merge at 2.5 s: a full preview does not fit, a quarter strip does. */
-    reset();sim_period_us=2500000;o.fps_index=0;sim_slow=25;o.limit=8;dng_size_ok=2048+bytes;
+    reset();sim_period_us=2500000;o.fps_index=LC_FRR_FPS_DEFAULT;sim_slow=25;o.limit=8;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     { const char *k=strstr(last_log,"preview_skipped_behind_strips: select,");unsigned bands=0,skip=0,behind=0,strips=0;
       assert(k && sscanf(k,"preview_skipped_behind_strips: select,%u,%u,%u,%u",&bands,&skip,&behind,&strips)==4);
       printf("strips: %s (strips=%u skipped=%u behind=%u)\n",status,strips,skip,behind);
       assert(!unsafe && strstr(status,"saved") && strips>=2); }
-    sim_slow=1;o.fps_index=0;sim_period_us=2500000;o.limit=6;
+    sim_slow=1;o.fps_index=LC_FRR_FPS_DEFAULT;sim_period_us=2500000;o.limit=6;
     /* Preview only: exactly one frame captured, shown until SET (simulated
      * a few vsyncs later), nothing saved (no DNG, no CSV), clipped share in
      * the status; the next session numbers are not consumed (LVPREVW.LOG). */

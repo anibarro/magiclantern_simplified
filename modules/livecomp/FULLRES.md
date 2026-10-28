@@ -1272,3 +1272,32 @@ Product summary (EOS M 2.0.2):
   (remaining warm-up + one shutter), on the BMP overlay.
 - To confirm on the camera: Warmup aborts = 1, bulb partials skipped = 0, no
   gap in a light trail.
+
+## LCM64: 2 s shutter, ARM merge, EDMAC preview (branch livecomp-speed)
+
+- LCM62/63 confirmed on the camera: Canon's abort lands at VD 7 (caller LR
+  0xFF37DB5C), inside the warm-up; partials 0, no gap in light trails.
+- LCB1 benchmark (menu item, x1 Live View, the session's two 32 MB buffers;
+  times about twice a session's): reading both buffers 0.92 s with LDM,
+  ~1.25 s word by word; C select-max 2.82-3.55 s, so the merge is limited by
+  instructions; frame read uncached 4.8 s (worse); Bulb add 4.0 s; preview
+  copy 174 ms by memcpy from the uncached buffer, 6-11 ms by EDMAC.
+- LCB2/3: select-max in ARM assembly (raw14-max-asm.h, generated, checked
+  bit-exact as machine code on an ARM interpreter): per field branch-free
+  2.85-2.94 s; whole-pair SWAR 2.37-3.75 s (fast only when nothing changes);
+  per field with LDM loads 2.49-2.60 s. The compiled C is close to these by
+  instruction count (~160-200 cycles per 16 pixels), the gain is mostly the
+  LDM loads and a constant time.
+- LCB3 sessions (Debug ON, 2.5 s): merge C 1.54-1.78 s, ARM 1.53-1.58 s,
+  ARM LDM 1.46-1.52 s; preview copy 146 ms -> 5.5 ms. 2 s composite (ARM
+  LDM + EDMAC): 14 frames, 0 missed, 0 lost bands, SET handled. Bulb 3 s
+  with EDMAC copy: 6 frames, add 2.30 s.
+- LCM64 = LCB3 without the test menu: 2 s back in the Shutter list (first
+  entry, default stays 2.5 s), ARM LDM merge and EDMAC copy always on the
+  camera (C kernel and memcpy in the host simulator); the next slurp is
+  armed >= 40 ms after the vsync by a clock wait (the slow memcpy copy used
+  to provide it). CSV changed_pct is 0 with the ARM kernel.
+- Further ideas, not done: merge each band of a frame as soon as the RAW
+  DMA has written it ("chase the readout"; at k=1 the readout is ~150 ms,
+  worth ~0.15-0.3 s); an LDM/ARM version of the Bulb add (2.3 s) for 2.5 s
+  Live Bulb.
