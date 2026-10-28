@@ -54,6 +54,8 @@ static CONFIG_INT("livecomp.debug",debug,0);
 static CONFIG_INT("livecomp.dark",dark_frame,0);
 /* Save unprocessed (LCM59): also the DNG before in-camera noise reduction. */
 static CONFIG_INT("livecomp.orig",save_orig,0);
+/* File format (LCM67): DNG, DNG + MLV, MLV (LC_FORMAT_*). */
+static CONFIG_INT("livecomp.format",file_format,LC_FORMAT_DNG);
 
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
@@ -116,7 +118,7 @@ static void run(void *unused)
     worker_alive=1;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
     struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug,
-        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig};
+        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig,(unsigned)file_format};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
     /* A message still on screen would call redraw() when it expires and
@@ -198,6 +200,12 @@ static MENU_UPDATE_FUNC(update_orig)
     if (save_orig) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",bulb() ? "LVBRnnnn.DNG: no in-camera correction; LVDKnnnn.DNG: dark frames (sum).":
         "With Dark frame: LVCRnnnn.DNG unprocessed, LVCKnnnn.DNG the dark frame.");
 }
+static MENU_UPDATE_FUNC(update_format)
+{
+    if (file_format) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",file_format==(int)LC_FORMAT_MLV ?
+        "MLV only: open LVxxnnnn.MLV with MLV App or mlv_dump (one frame).":
+        "Both files: the MLV first, then the DNG (save times: Debug ON).");
+}
 static MENU_UPDATE_FUNC(update_status)
 {
     if (!running && !attempted && !is_movie_mode()) {
@@ -231,6 +239,10 @@ static struct menu_entry lv_children[]={
     {.name="Save unprocessed",.priv=&save_orig,.max=1,.update=update_orig,
      .help="Also save the DNG without in-camera noise reduction (LVBR/LVCR)",
      .help2="and the dark frames (LVDK/LVCK, Dark frame ON). Slower: extra card writes."},
+    {.name="File format",.priv=&file_format,.max=2,.update=update_format,
+     .choices=CHOICES("DNG","DNG + MLV","MLV"),
+     .help="DNG opens anywhere. MLV: no byte swap, written straight from memory.",
+     .help2="LVBR/LVDK extra files stay DNG. Debug ON: save times on the message and LOG."},
     {.name="Debug",.priv=&debug,.max=1,
      .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
      .help2="OFF: no log files; only the composite DNG is saved."},
@@ -266,4 +278,5 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(debug)
     MODULE_CONFIG(dark_frame)
     MODULE_CONFIG(save_orig)
+    MODULE_CONFIG(file_format)
 MODULE_CONFIGS_END()

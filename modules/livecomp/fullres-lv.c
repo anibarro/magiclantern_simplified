@@ -48,6 +48,7 @@
 #include "raw14-max-asm.h"                  /* ARM merge kernel (camera build only) */
 #include "raw14-add-asm.h"                  /* ARM Live Bulb kernels (camera build only) */
 #include "lv-dng.h"
+#include "lv-mlv.h"                       /* LCM67: optional MLV output */
 #include "vram.h"
 #include "fullres-gamma.h"
 #include "notify_box.h"
@@ -242,6 +243,9 @@ struct frlv_result {
     unsigned black,ob_stdev_x10,center_mean,max_value;
     unsigned col_band[12],row_band[10];
     unsigned saved,save_stage,save_size;
+    /* LCM67: file format (0 DNG, 1 DNG + MLV, 2 MLV) and save timing */
+    unsigned format,save_ms,save_swap_ms,save_write_ms,save_chunk,save_in_place,mlv_saved,mlv_ms,mlv_write_ms,mlv_size;
+    unsigned orig_save_ms,dark_save_ms,load_ms;
     unsigned period_ms,timer_fixes,timer_seen_b,pdm[6];
     unsigned preview_only,clip_x10,battery_start,battery_end,battery_stop,iso,aperture,mode_lost,dma_aborts,first_arm_after_vsync_ms,switch_ms,exit_switched,target_a,target_b,short_skipped;
     unsigned limit,overrun_offset,missed,preview_ok,preview_us,preview_copy_us,merge_max_us,merge_sum_ms,preview_skipped,behind,preview_strips;
@@ -257,7 +261,7 @@ struct frlv_result {
     unsigned orig_saved,dark_saved,orig_read,dark_black,dark_merge_us;
     unsigned end_wait_ms;
     unsigned bulb_partials;               /* Live Bulb: partial frames not added (LCM56) */
-    char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH];
+    char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH],mlv[FIO_MAX_PATH_LENGTH];
 };
 
 /* Output folder: DCIM/LIVE on the ML card (created if missing). Canon's
@@ -289,7 +293,8 @@ static int choose_paths(struct frlv_result *r,const char *dir,unsigned debug)
     for (unsigned i=0;i<10000;i++) {
         snprintf(r->dng,sizeof(r->dng),"%s/%s%04d.DNG",dir,prefix,i);
         snprintf(r->log,sizeof(r->log),"%s/%s%04d.LOG",dir,prefix,i);
-        if (FIO_GetFileSize(r->dng,&size) && (!debug || FIO_GetFileSize(r->log,&size))) {
+        snprintf(r->mlv,sizeof(r->mlv),"%s/%s%04d.MLV",dir,prefix,i);
+        if (FIO_GetFileSize(r->dng,&size) && FIO_GetFileSize(r->mlv,&size) && (!debug || FIO_GetFileSize(r->log,&size))) {
             if (!debug) r->log[0]=0;               /* Debug OFF: no LOG/CSV */
             return 1;
         }
@@ -371,6 +376,11 @@ static void write_log(const struct frlv_result *r,const char *status)
     n=snprintf(t,sizeof(t),"Dark_want_orig_state_frames_partials_lost_wait_ms_sep_origsaved_darksaved_origread_black_merge_us_end_wait_ms: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
         r->dark_want,r->save_orig,r->dark_state,r->dark_frames,r->dark_partials,r->dark_lost,r->dark_wait_ms,r->dark_sep,
         r->orig_saved,r->dark_saved,r->orig_read,r->dark_black,r->dark_merge_us,r->end_wait_ms);
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Save_format_dng_ms_swap_ms_write_ms_chunk_kb_in_place_mlv_saved_ms_write_ms_size: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n"
+        "Save_orig_ms_dark_ms_load_ms: %d,%d,%d\nMLV: %s\n",
+        r->format,r->save_ms,r->save_swap_ms,r->save_write_ms,r->save_chunk>>10,r->save_in_place,r->mlv_saved,r->mlv_ms,r->mlv_write_ms,r->mlv_size,
+        r->orig_save_ms,r->dark_save_ms,r->load_ms,r->format ? r->mlv:"");
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Warmup_vds_slurps_done_ms_aborts: %d,%d,%d,%d,%d\n",FRLV_WARMUP_VDS,r->warmup_slurps,r->warmup_done,r->warmup_ms,r->warmup_aborts);
     ok&=write_text(f,t,n);
@@ -454,26 +464,52 @@ static void statistics(struct frlv_result *r,const uint8_t *buf)
     }
     r->center_mean=c ? (unsigned)(a/c):0;r->max_value=mx;
 }
-static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
+/* DNG and MLV metadata of a result. */
+static void frlv_metadata(const struct frlv_result *r,struct lc_dng_metadata *m)
 {
-    struct lc_dng_metadata m={0};
-    m.width=r->width;m.height=r->height;m.pitch=r->pitch;m.bytes=r->bytes;
+    memset(m,0,sizeof(*m));
+    m->width=r->width;m->height=r->height;m->pitch=r->pitch;m->bytes=r->bytes;
     /* Live Bulb: the black level as it is in the sum (the per-frame estimate
      * is an integer; its rounding error would add up over many frames). */
-    m.black=is_bulb(r) && r->acc_black ? r->acc_black:r->black ? r->black:2048;
-    m.white=frlv_white(m.black);
-    m.cfa=raw_info.cfa_pattern;
+    m->black=is_bulb(r) && r->acc_black ? r->acc_black:r->black ? r->black:2048;
+    m->white=frlv_white(m->black);
+    m->cfa=raw_info.cfa_pattern;
     /* Crop guess only (left OB ~72 px, top ~28 rows); full raster is stored. */
-    m.active[0]=MIN(28u,r->height-2);m.active[1]=MIN(72u,r->width-8);
-    m.active[2]=r->height;m.active[3]=r->width;
-    memcpy(m.matrix,raw_info.color_matrix1,sizeof(m.matrix));
-    m.illuminant=raw_info.calibration_illuminant1;
-    memcpy(m.neutral,r->neutral,sizeof(m.neutral));
-    m.iso=raw2iso(lens_info.raw_iso);m.tvr=MAX(1u,1000000u/r->period_ms);m.exposure_ms=total_exposure_ms(r);   /* composite: frame period; bulb: frames x period */
-    m.fps=MAX(1u,1000000u/r->period_ms);m.aperture=lens_info.aperture;m.focal=lens_info.focal_len;
-    r->save_stage=1;
-    uint8_t *scratch=fio_malloc(16384);
+    m->active[0]=MIN(28u,r->height-2);m->active[1]=MIN(72u,r->width-8);
+    m->active[2]=r->height;m->active[3]=r->width;
+    memcpy(m->matrix,raw_info.color_matrix1,sizeof(m->matrix));
+    m->illuminant=raw_info.calibration_illuminant1;
+    memcpy(m->neutral,r->neutral,sizeof(m->neutral));
+    m->iso=raw2iso(lens_info.raw_iso);m->tvr=MAX(1u,1000000u/r->period_ms);m->exposure_ms=total_exposure_ms(r);   /* composite: frame period; bulb: frames x period */
+    m->fps=MAX(1u,1000000u/r->period_ms);m->aperture=lens_info.aperture;m->focal=lens_info.focal_len;
+    m->raw_api=raw_info.api_version;m->dynamic_range=raw_info.dynamic_range;
+}
+/* LCM67: the DNG staging buffer. Up to 4 MiB: each FIO_WriteFile is a
+ * round trip to Canon's file task and its own card command, so the writes
+ * are as large as memory allows (LCM66 and before: 16 KiB, ~2000 calls). */
+static uint8_t *frlv_scratch(unsigned *size)
+{
+    static const unsigned sizes[]={4u<<20,1u<<20,256u<<10,16u<<10};
+    for (unsigned i=0;i<COUNT(sizes);i++) {
+        uint8_t *p=fio_malloc(sizes[i]);
+        if (p) { *size=sizes[i];return p; }
+    }
+    *size=0;return NULL;
+}
+/* in_place (LCM68, the final DNG only: nothing reads acc afterwards): swap
+ * the cached accumulator itself and write from it, like the MLV. LCM67 on
+ * the camera: the swap into the uncached fio_malloc staging buffer took
+ * 1.24 s of the 2.3 s save, the card write 0.99 s. acc is left in DNG byte
+ * order. Otherwise acc is untouched (LVBR/LVDK, still needed). */
+static int frlv_save_dng(struct frlv_result *r,uint8_t *acc,unsigned in_place)
+{
+    const unsigned t0=get_ms_clock();
+    struct lc_dng_metadata m;frlv_metadata(r,&m);
+    r->save_stage=1;r->save_swap_ms=r->save_write_ms=0;r->save_in_place=in_place;
+    unsigned chunk=4u<<20;
+    uint8_t *scratch=in_place ? fio_malloc(LC_DNG_HEADER_BYTES):frlv_scratch(&chunk);
     if (!scratch) return 0;
+    r->save_chunk=chunk;
     /* DNG needs width%8==0. Otherwise store the raw raster (.RAW, no header,
      * DNG byte order) so the geometry can still be analysed offline. */
     unsigned header=LC_DNG_HEADER_BYTES;
@@ -484,37 +520,77 @@ static int frlv_save_dng(struct frlv_result *r,const uint8_t *acc)
     if (!f || f==(void *)-1) { fio_free(scratch);return 0; }
     int ok=!header || FIO_WriteFile(f,scratch,header)==(int)header;
     r->save_stage=4;
-    for (unsigned off=0;ok && off<r->bytes;off+=16384) {
-        unsigned n=MIN(16384u,r->bytes-off);
-        lc_dng_swap_copy(scratch,acc+off,n);
-        ok=FIO_WriteFile(f,scratch,n)==(int)n;
+    unsigned swap_us=0,write_us=0;
+    for (unsigned off=0;ok && off<r->bytes;off+=chunk) {
+        const unsigned n=MIN(chunk,r->bytes-off),u0=(unsigned)get_us_clock();
+        uint8_t *out=in_place ? acc+off:scratch;
+        lc_dng_swap_words(out,acc+off,n);
+        const unsigned u1=(unsigned)get_us_clock();
+        ok=FIO_WriteFile(f,out,n)==(int)n;
+        swap_us+=u1-u0;write_us+=(unsigned)get_us_clock()-u1;
         if (ml_shutdown_requested) ok=0;
     }
     FIO_CloseFile(f);fio_free(scratch);
+    r->save_swap_ms=swap_us/1000u;r->save_write_ms=write_us/1000u;r->save_ms=get_ms_clock()-t0;
     if (!ok) return 0;
     r->save_stage=5;
     uint32_t size=0;
     if (FIO_GetFileSize(r->dng,&size) || size!=header+r->bytes) return 0;
-    r->save_size=size;r->save_stage=6;return 1;
+    r->save_size=size;r->save_stage=6;r->save_ms=get_ms_clock()-t0;return 1;
+}
+/* LCM67: the result as a one-frame MLV (lv-mlv.h). The frame is written
+ * straight from the accumulator, Canon byte order, no copy and no swap. */
+static int frlv_save_mlv(struct frlv_result *r,const uint8_t *acc)
+{
+    const unsigned t0=get_ms_clock();
+    struct lc_dng_metadata m;frlv_metadata(r,&m);
+    struct lc_mlv_extra x;memset(&x,0,sizeof(x));
+    x.guid=((uint64_t)get_us_clock()<<32)^get_ms_clock()^r->merged;x.camera_model=camera_model_id;
+    memcpy(x.lens,lens_info.name,MIN(sizeof(x.lens),sizeof(lens_info.name)));x.lens[sizeof(x.lens)-1]=0;
+    struct tm t;LoadCalendarFromRTC(&t);
+    const int tm[9]={t.tm_sec,t.tm_min,t.tm_hour,t.tm_mday,t.tm_mon,t.tm_year,t.tm_wday,t.tm_yday,t.tm_isdst};
+    for (unsigned i=0;i<9;i++) x.tm[i]=(uint16_t)tm[i];
+    uint8_t *h=fio_malloc(LC_MLV_HEADER_BYTES);
+    if (!h) return 0;
+    const unsigned header=lc_mlv_header(h,&m,&x);
+    if (!header) { fio_free(h);return 0; }
+    FILE *f=FIO_CreateFile(r->mlv);
+    if (!f || f==(void *)-1) { fio_free(h);return 0; }
+    int ok=FIO_WriteFile(f,h,header)==(int)header;
+    fio_free(h);
+    const unsigned u0=(unsigned)get_us_clock();
+    for (unsigned off=0;ok && off<r->bytes;off+=4u<<20) {   /* 4 MiB: shutdown checked between */
+        const unsigned n=MIN(4u<<20,r->bytes-off);
+        ok=FIO_WriteFile(f,acc+off,n)==(int)n;
+        if (ml_shutdown_requested) ok=0;
+    }
+    r->mlv_write_ms=((unsigned)get_us_clock()-u0)/1000u;
+    FIO_CloseFile(f);
+    r->mlv_ms=get_ms_clock()-t0;
+    if (!ok) return 0;
+    uint32_t size=0;
+    if (FIO_GetFileSize(r->mlv,&size) || size!=header+r->bytes) return 0;
+    r->mlv_size=size;r->mlv_ms=get_ms_clock()-t0;return 1;
 }
 /* LCM59: read a DNG written by frlv_save_dng back into a raster (Canon
  * byte order). 1 = all r->bytes read. */
 static int frlv_load_dng(const struct frlv_result *r,const char *path,uint8_t *dst)
 {
     if (r->width%8) return 0;
-    uint8_t *scratch=fio_malloc(16384);
+    unsigned chunk;
+    uint8_t *scratch=frlv_scratch(&chunk);
     if (!scratch) return 0;
     FILE *f=FIO_OpenFile(path,O_RDONLY);
     if (!f || f==(void *)-1) { fio_free(scratch);return 0; }
     int ok=1;
     for (unsigned h=0;ok && h<LC_DNG_HEADER_BYTES;) {           /* skip the header */
-        const unsigned n=MIN(16384u,LC_DNG_HEADER_BYTES-h);
+        const unsigned n=MIN(chunk,LC_DNG_HEADER_BYTES-h);
         ok=FIO_ReadFile(f,scratch,n)==(int)n;h+=n;
     }
-    for (unsigned off=0;ok && off<r->bytes;off+=16384) {
-        const unsigned n=MIN(16384u,r->bytes-off);
+    for (unsigned off=0;ok && off<r->bytes;off+=chunk) {
+        const unsigned n=MIN(chunk,r->bytes-off);
         ok=FIO_ReadFile(f,scratch,n)==(int)n;
-        if (ok) lc_dng_swap_copy(dst+off,scratch,n);           /* the swap is its own inverse */
+        if (ok) lc_dng_swap_words(dst+off,scratch,n);          /* the swap is its own inverse */
         if (ml_shutdown_requested) ok=0;
     }
     FIO_CloseFile(f);fio_free(scratch);
@@ -817,7 +893,7 @@ static void dark_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,const v
         static struct frlv_result orig;
         show_text("Saving the unprocessed DNG...");
         orig=*r;path_prefix(orig.dng,sizeof(orig.dng),r->dng,orig_prefix(r));
-        r->orig_saved=frlv_save_dng(&orig,acc);
+        r->orig_saved=frlv_save_dng(&orig,acc,0);r->orig_save_ms=orig.save_ms;
         r->dark_sep=r->orig_saved;          /* else: subtract in place */
     }
     const unsigned c0=*cancel,tc=get_ms_clock();
@@ -1194,6 +1270,7 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.mode=o->mode==LC_MODE_BULB ? LC_MODE_BULB:LC_MODE_COMPOSITE;
     r.dark_want=o->dark_frame && !o->preview_only;      /* LCM61: composite too */
     r.save_orig=o->save_orig && !o->preview_only;
+    r.format=o->format<=LC_FORMAT_MLV ? o->format:LC_FORMAT_DNG;
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
@@ -1415,12 +1492,13 @@ out:
         dr=r;dr.merged=r.dark_frames;dr.acc_black=ob_mean(&r,acc);r.dark_black=dr.acc_black;
         path_prefix(dr.dng,sizeof(dr.dng),r.dng,dark_prefix(&r));
         *status="Saving the dark frames";NotifyBox(60000,"Saving the dark frames...");
-        r.dark_saved=frlv_save_dng(&dr,acc);
+        r.dark_saved=frlv_save_dng(&dr,acc,0);r.dark_save_ms=dr.save_ms;
         static char lpath[FIO_MAX_PATH_LENGTH];
         path_prefix(lpath,sizeof(lpath),r.dng,orig_prefix(&r));
         *status="Reading the unprocessed DNG";NotifyBox(60000,"Subtracting the dark frames...");
         uint8_t *light=(uint8_t *)physical(cap);
-        r.orig_read=frlv_load_dng(&r,lpath,light);
+        const unsigned l0=get_ms_clock();
+        r.orig_read=frlv_load_dng(&r,lpath,light);r.load_ms=get_ms_clock()-l0;
         if (r.orig_read) {
             /* light - (dark sum - its black): the light black level stays */
             const unsigned lb=is_bulb(&r) ? r.acc_black:r.black,pairs=r.bytes/28,white=frlv_white(lb ? lb:2048);
@@ -1441,7 +1519,7 @@ out:
         static struct frlv_result orig;
         orig=r;path_prefix(orig.dng,sizeof(orig.dng),r.dng,orig_prefix(&r));
         *status="Saving the unprocessed DNG";NotifyBox(60000,"Saving the unprocessed DNG...");
-        r.orig_saved=frlv_save_dng(&orig,acc);
+        r.orig_saved=frlv_save_dng(&orig,acc,0);r.orig_save_ms=orig.save_ms;
     }
     if (acc && r.merged && !r.preview_only && !r.unsafe && !ml_shutdown_requested && get_ml_card()==card &&
         !(r.error&(FE_GUARD|FE_SIZE|FE_REGS))) {
@@ -1491,10 +1569,20 @@ out:
             r.fp_fixed=lc_fix_focus_pixels(acc,r.width,r.height,r.pitch);
             r.fp_us=(unsigned)get_us_clock()-f0;
         }
-        *status="Saving the DNG";
-        NotifyBox(60000,"Saving the DNG...");
-        r.saved=frlv_save_dng(&r,acc);
-        if (!r.saved) r.error|=FE_IO;
+        /* LCM67: MLV first (the same data, no swap), then the DNG, swapped
+         * in place in acc (LCM68). */
+        if (r.format) {
+            *status="Saving the MLV";
+            NotifyBox(60000,"Saving the MLV...");
+            r.mlv_saved=frlv_save_mlv(&r,acc);
+        }
+        if (r.format!=LC_FORMAT_MLV) {
+            *status="Saving the DNG";
+            NotifyBox(60000,"Saving the DNG...");
+            r.saved=frlv_save_dng(&r,acc,1);          /* LCM68: last use of acc */
+        }
+        else r.saved=r.mlv_saved;
+        if (!r.saved || (r.format && !r.mlv_saved)) r.error|=FE_IO;
         else r.stage=8;
     }
     if (!r.unsafe) for (unsigned i=0;i<2;i++) if (alloc[i]) fio_free(alloc[i]);
@@ -1509,7 +1597,7 @@ out:
     else if (!r.error) msg=r.saved ? (is_bulb(&r) ? "Live Bulb saved":"Full-res composite saved"):"Full-res: no frame saved";
     else if (r.saved) msg="Saved; stopped early, see LOG";
     if (r.saved && !r.error && !r.unsafe) {
-        static char done[64];
+        static char done[96];
         const unsigned s=total_exposure_ms(&r)/1000u;
         if (r.too_slow) snprintf(done,sizeof(done),"Bulb saved: %d frames; use longer frames",r.merged);
         else if (r.late_frames || r.missed) snprintf(done,sizeof(done),"%s saved: %d (%d late)",mode_word(&r),r.merged,r.late_frames+r.missed);
@@ -1519,6 +1607,10 @@ out:
             r.dark_state==DK_FAILED ? ", dark failed":"");
         else snprintf(done,sizeof(done),"Composite saved: %d frames%s",r.merged,
             r.dark_state==DK_DONE ? ", dark subtracted":r.dark_state==DK_FAILED ? ", dark failed":"");
+        /* LCM67: how long the files took to write (Debug ON; also in the LOG) */
+        unsigned k=r.log[0] ? strlen(done):sizeof(done);
+        if (r.format!=LC_FORMAT_MLV && k<sizeof(done)) k+=snprintf(done+k,sizeof(done)-k,"; DNG %d.%d s",r.save_ms/1000u,r.save_ms/100u%10u);
+        if (r.format && k<sizeof(done)) snprintf(done+k,sizeof(done)-k,"; MLV %d.%d s",r.mlv_ms/1000u,r.mlv_ms/100u%10u);
         msg=done;
     }
     *status=msg;

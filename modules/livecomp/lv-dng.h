@@ -1,6 +1,7 @@
 /* GPL-2.0-or-later. Bounded uncompressed DNG for the LV RAW14 composite.
  * TIFF/DNG field choices follow src/chdk-dng.c. No thumbnail allocation and no
  * in-place byte swapping of the accumulator. AI-assisted module implementation.
+ * LCM67: two fields for the MLV writer (lv-mlv.h), unused by the DNG.
  */
 #ifndef LIVECOMP_LV_DNG_H
 #define LIVECOMP_LV_DNG_H
@@ -13,6 +14,7 @@ struct lc_dng_metadata {
     uint32_t iso,tvr,aperture,focal,fps,illuminant;
     uint32_t exposure_ms;  /* nonzero: ExposureTime = exposure_ms/1000 s (long shutters) */
     int32_t neutral[3];   /* AsShotNeutral x1e6 (R,G,B); all zero = fixed daylight */
+    uint32_t raw_api;int32_t dynamic_range;   /* MLV RAWI only (raw_info) */
 };
 static void lc_dng_u16(uint8_t *p,uint32_t v) { p[0]=v;p[1]=v>>8; }
 static void lc_dng_u32(uint8_t *p,uint32_t v)
@@ -94,6 +96,23 @@ static int lc_dng_header(uint8_t *h,const struct lc_dng_metadata *m)
 }
 static void lc_dng_swap_copy(uint8_t *dst,const uint8_t *src,unsigned bytes)
 {
-    for (unsigned i=0;i<bytes;i+=2) { dst[i]=src[i+1];dst[i+1]=src[i]; }
+    for (unsigned i=0;i<bytes;i+=2) { const uint8_t a=src[i],b=src[i+1];dst[i]=b;dst[i+1]=a; }   /* dst==src allowed */
+}
+/* LCM67: the same swap a word at a time, four words per pass: ~4
+ * instructions per word instead of ~7 per halfword. dst and src 4-byte
+ * aligned; a tail under 16 bytes goes through lc_dng_swap_copy. dst==src
+ * swaps in place (LCM68: the final DNG, every word read before written). */
+typedef uint32_t __attribute__((may_alias)) lc_dng_word;
+static __attribute__((optimize("O2"))) void lc_dng_swap_words(uint8_t *dst,const uint8_t *src,unsigned bytes)
+{
+    lc_dng_word *d=(lc_dng_word *)dst;const lc_dng_word *s=(const lc_dng_word *)src;
+    const uint32_t m=0x00FF00FFu;
+    for (unsigned n=bytes/16;n;n--) {
+        const uint32_t a=s[0],b=s[1],c=s[2],e=s[3];s+=4;
+        d[0]=((a>>8)&m)|((a&m)<<8);d[1]=((b>>8)&m)|((b&m)<<8);
+        d[2]=((c>>8)&m)|((c&m)<<8);d[3]=((e>>8)&m)|((e&m)<<8);d+=4;
+    }
+    const unsigned done=bytes&~15u;
+    lc_dng_swap_copy(dst+done,src+done,bytes-done);
 }
 #endif
