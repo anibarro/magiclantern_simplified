@@ -707,14 +707,20 @@ static void grain_capture_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
 }
 
 /* ---------------------------------------------------------------------------
- * Watermark: a logo blended into one corner of the saved JPEG, at the same
- * hook as the grain (finished YUV image, before JPEG encoding), after grain.
- * The PNG is converted once on a PC (extras/XPan_tools/xpan_watermark.py)
- * into ML/XPAN/WMARK.BIN with two sizes (small 386 px, big 776 px wide), per
- * pixel pair Y0 A0 Y1 A1 Cb Cr (full-range BT.601, signed chroma).
- * The file is read once, the first time the watermark is ON, and never
- * re-checked while the camera runs; both sizes stay in RAM, so changing the
- * size only switches between them. RAW files are never touched.
+ * Watermark: a logo blended into the top-left or bottom-left corner of the
+ * saved JPEG, at the same hook as the grain (finished YUV image, before JPEG
+ * encoding), after grain. Optionally the name of the LUT applied to that
+ * photo is written to the right of the logo, centred on it, in the logo's
+ * colour.
+ * The PNGs are converted once on a PC (extras/XPan_tools/xpan_watermark.py)
+ * into ML/XPAN/WMARK_1.BIN (orange) and WMARK_2.BIN (white), each with two
+ * sizes (small 386 px, big 776 px wide), per pixel pair Y0 A0 Y1 A1 Cb Cr
+ * (full-range BT.601, signed chroma). The text font is ML/XPAN/WMFONT.BIN
+ * (extras/XPan_tools/xpan_wmfont.py): anti-aliased ASCII glyphs at the two
+ * sizes, alpha only.
+ * Only the selected logo is kept in RAM; a colour change loads the other one
+ * at the next idle point. Each file is read at most once per boot (copy it,
+ * then restart the camera). RAW files are never touched.
  * --------------------------------------------------------------------------- */
 /* Canon's finished YUV buffer stores signed chroma (0 = neutral). If logos
  * ever come out tinted green/magenta, set this to 0 (offset-128 chroma). */
@@ -724,68 +730,150 @@ static void grain_capture_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
 #define WM_SIZES 2u
 #define WM_MARGIN 128u                   /* pixels from the frame edges */
 #define WM_MAX_BYTES (2u*1024u*1024u)
-/* XPan > Watermark: 0 OFF, 1 top left, 2 top right, 3 bottom left, 4 bottom right. */
-static CONFIG_INT("xpan.wm.position",wm_position,0);
-/* XPan > Watermark size: 0 small, 1 big. */
-static CONFIG_INT("xpan.wm.size",wm_size,0);
+#define WF_MAGIC 0x46575058u            /* "XPWF" */
+#define WF_VERSION 1u
+#define WF_MAX_BYTES (1024u*1024u)
+#define WM_COLORS 2u
+/* XPan > Watermark: ON/OFF, then the options in its submenu. */
+static CONFIG_INT("xpan.wm.on",wm_enabled,0);
+static CONFIG_INT("xpan.wm.color",wm_color,0);    /* 0 orange (WMARK_1), 1 white (WMARK_2) */
+static CONFIG_INT("xpan.wm.place",wm_place,1);    /* 0 top left, 1 bottom left */
+static CONFIG_INT("xpan.wm.size",wm_size,0);      /* 0 small, 1 big */
+static CONFIG_INT("xpan.wm.lut",wm_lut_name,1);   /* LUT name next to the logo */
+/* Text colour per logo, BT.601 full range like the logo files:
+ * #ff3300 -> Y 106, Cb -60, Cr 106; white -> Y 255, Cb 0, Cr 0. */
+static const int wm_text_yuv[WM_COLORS][3]={{106,-60,106},{255,0,0}};
 static uint8_t *wm_file_data;
 static const uint8_t *wm_data_size[WM_SIZES];
 static unsigned wm_w_size[WM_SIZES],wm_h_size[WM_SIZES];
 static unsigned wm_ready,wm_attempted,wm_applied,wm_skipped;
+static int wm_loaded_color=-1;
 static struct card_info *wm_last_card;
 static unsigned wm_last_file=0xffffffffu,wm_last_folder=0xffffffffu,wm_us;
 static const char *wm_status="OFF";
-int xpan_watermark_enabled(void) { return wm_position>=1 && wm_position<=4; }
+int xpan_watermark_enabled(void) { return wm_enabled==1; }
 static unsigned wm_selected(void) { return wm_size==1 ? 1u:0u; }
-/* One attempt per boot (copy WMARK.BIN, then restart the camera). */
-static int wm_load(struct card_info *card)
+static unsigned wm_selected_color(void) { return wm_color==1 ? 1u:0u; }
+/* Whole file into one malloc'd buffer through the small DMA bounce buffer
+ * used by the grain asset. NULL with *error set on failure. */
+static uint8_t *wm_read_file(struct card_info *card,const char *name,unsigned min_bytes,
+    unsigned max_bytes,unsigned *bytes,const char **error)
 {
-    if (wm_ready) return 1;
-    if (wm_attempted) return 0;
-    wm_attempted=1;
     char path[FIO_MAX_PATH_LENGTH];
-    snprintf(path,sizeof(path),"%s:/ML/XPAN/WMARK.BIN",card->drive_letter);
+    snprintf(path,sizeof(path),"%s:/ML/XPAN/%s",card->drive_letter,name);
     uint32_t file_bytes=0;
-    if (FIO_GetFileSize(path,&file_bytes) || file_bytes<=64 || file_bytes>64+WM_MAX_BYTES)
-    { wm_status="WMARK.BIN missing (restart after copying)"; return 0; }
+    if (FIO_GetFileSize(path,&file_bytes) || file_bytes<min_bytes || file_bytes>max_bytes)
+    { *error="missing (restart after copying)"; return NULL; }
     FILE *file=FIO_OpenFile(path,O_RDONLY|O_SYNC);
-    if (!file) { wm_status="Cannot open WMARK.BIN"; return 0; }
-    /* Same small DMA bounce buffer pattern as the grain asset. */
+    if (!file) { *error="cannot be opened"; return NULL; }
     uint8_t *io=__mem_malloc(4096,MEM_DMA,__FILE__,__LINE__);
-    if (!io) { FIO_CloseFile(file); wm_status="No watermark read buffer"; return 0; }
-    uint32_t header[16];
-    unsigned body=file_bytes-64;
-    int ok=FIO_ReadFile(file,io,64)==64;
-    if (ok) memcpy(header,io,64);
-    ok=ok && header[0]==WM_MAGIC && header[1]==WM_VERSION && header[2]==WM_SIZES;
-    for (unsigned i=0;ok && i<WM_SIZES;i++) {
-        unsigned w=header[3+i*4],h=header[4+i*4],offset=header[5+i*4],bytes=header[6+i*4];
-        ok=w>=2 && !(w&1) && w<=WIDTH-2*WM_MARGIN && h>=1 && h<=FULL_ROWS &&
-            bytes==w/2*h*6 && offset>=64 && offset-64+bytes<=body;
-    }
-    if (ok) wm_file_data=malloc(body);
-    if (ok && !wm_file_data) { __mem_free(io); FIO_CloseFile(file); wm_status="No memory for watermark"; return 0; }
-    for (unsigned pos=0;ok && pos<body;) {
-        unsigned n=MIN(4096u,body-pos);
+    uint8_t *data=io ? malloc(file_bytes):NULL;
+    int ok=data!=NULL;
+    for (unsigned pos=0;ok && pos<file_bytes;) {
+        unsigned n=MIN(4096u,file_bytes-pos);
         ok=FIO_ReadFile(file,io,n)==(int)n;
-        if (ok) memcpy(wm_file_data+pos,io,n);
+        if (ok) memcpy(data+pos,io,n);
         pos+=n;
     }
-    __mem_free(io); FIO_CloseFile(file);
-    if (!ok) {
-        if (wm_file_data) { free(wm_file_data); wm_file_data=0; }
-        wm_status="Invalid WMARK.BIN"; return 0;
+    if (io) __mem_free(io);
+    FIO_CloseFile(file);
+    if (!ok) { *error=data ? "short read":"no memory"; if (data) free(data); return NULL; }
+    *bytes=file_bytes;
+    return data;
+}
+/* The selected logo colour; switching colours reloads it from the card.
+ * A file that failed is not retried until the next boot. Called only from
+ * the idle poll, so the capture hook never sees a buffer being freed. */
+static int wm_load(struct card_info *card)
+{
+    unsigned color=wm_selected_color();
+    if (wm_ready && wm_loaded_color==(int)color) return 1;
+    if (wm_attempted&(1u<<color)) return 0;   /* this colour failed before */
+    wm_attempted|=1u<<color;
+    wm_ready=0;
+    if (wm_file_data) { free(wm_file_data); wm_file_data=NULL; }
+    wm_loaded_color=-1;
+    const char *error="";
+    unsigned bytes=0;
+    uint8_t *data=wm_read_file(card,color ? "WMARK_2.BIN":"WMARK_1.BIN",65,64+WM_MAX_BYTES,&bytes,&error);
+    if (!data) { wm_status=color ? "WMARK_2.BIN (white) not loaded":"WMARK_1.BIN (orange) not loaded"; return 0; }
+    const uint32_t *header=(const uint32_t *)data;
+    int ok=header[0]==WM_MAGIC && header[1]==WM_VERSION && header[2]==WM_SIZES;
+    for (unsigned i=0;ok && i<WM_SIZES;i++) {
+        unsigned w=header[3+i*4],h=header[4+i*4],offset=header[5+i*4],size=header[6+i*4];
+        ok=w>=2 && !(w&1) && w<=WIDTH-2*WM_MARGIN && h>=1 && h<=FULL_ROWS &&
+            size==w/2*h*6 && offset>=64 && offset<=bytes && size<=bytes-offset;
     }
+    if (!ok) { free(data); wm_status="Invalid watermark file"; return 0; }
     for (unsigned i=0;i<WM_SIZES;i++) {
         wm_w_size[i]=header[3+i*4]; wm_h_size[i]=header[4+i*4];
-        wm_data_size[i]=wm_file_data+header[5+i*4]-64;
+        wm_data_size[i]=data+header[5+i*4];
     }
+    wm_file_data=data; wm_loaded_color=color;
+    wm_attempted&=~(1u<<color);               /* loaded: may be reloaded later */
     wm_ready=1; wm_status="Ready; watermark on saved JPEG";
+    return 1;
+}
+/* LUT name font: glyphs 'first'..'first+count-1' per size. */
+struct wf_glyph { int16_t x,y; uint16_t w,h; uint32_t offset; };
+static uint8_t *wf_data;
+static const struct wf_glyph *wf_glyphs[WM_SIZES];
+static unsigned wf_advance_q6[WM_SIZES],wf_cap[WM_SIZES],wf_gap[WM_SIZES];
+static unsigned wf_first,wf_count,wf_ready,wf_attempted;
+static const char *wf_status="";
+static int wf_load(struct card_info *card)
+{
+    if (wf_ready) return 1;
+    if (wf_attempted) return 0;
+    wf_attempted=1;
+    const char *error="";
+    unsigned bytes=0;
+    uint8_t *data=wm_read_file(card,"WMFONT.BIN",64,WF_MAX_BYTES,&bytes,&error);
+    if (!data) { wf_status="WMFONT.BIN not loaded"; return 0; }
+    const uint32_t *header=(const uint32_t *)data;
+    unsigned count=header[4];
+    int ok=header[0]==WF_MAGIC && header[1]==WF_VERSION && header[2]==WM_SIZES &&
+        header[3]>=32 && count>=1 && header[3]+count<=127;
+    for (unsigned i=0;ok && i<WM_SIZES;i++) {
+        unsigned advance=header[6+i*5],cap=header[7+i*5],table=header[9+i*5];
+        ok=advance>=64 && cap>=4 && cap<FULL_ROWS && table>=64 && !(table&3) &&
+            table<=bytes && count*sizeof(struct wf_glyph)<=bytes-table;
+        for (unsigned g=0;ok && g<count;g++) {
+            const struct wf_glyph *glyph=(const struct wf_glyph *)(data+table)+g;
+            ok=glyph->offset<=bytes && (unsigned)glyph->w*glyph->h<=bytes-glyph->offset;
+        }
+    }
+    if (!ok) { free(data); wf_status="Invalid WMFONT.BIN"; return 0; }
+    wf_first=header[3]; wf_count=count;
+    for (unsigned i=0;i<WM_SIZES;i++) {
+        wf_advance_q6[i]=header[6+i*5]; wf_cap[i]=header[7+i*5]; wf_gap[i]=header[8+i*5];
+        wf_glyphs[i]=(const struct wf_glyph *)(data+header[9+i*5]);
+    }
+    wf_data=data; wf_ready=1; wf_status="";
     return 1;
 }
 static inline int wm_mix(int base,int logo,unsigned a)
 {
     return base+(((logo-base)*(int)a*257+32768)>>16);   /* a/255 */
+}
+/* Blend one pixel pair (U Y0 V Y1) towards Y0/Y1 and a shared chroma. */
+static inline void wm_blend_pair(volatile uint32_t *p,int ly0,unsigned a0,int ly1,unsigned a1,int lu,int lv)
+{
+    uint32_t w=*p;
+    int y0v=(w>>8)&255,y1v=w>>24;
+    y0v=wm_mix(y0v,ly0,a0); y1v=wm_mix(y1v,ly1,a1);
+    unsigned ac=(a0+a1+1)/2;
+#if WM_CHROMA_SIGNED
+    int u=(int8_t)(w&255),v=(int8_t)((w>>16)&255);
+    u=wm_mix(u,lu,ac); v=wm_mix(v,lv,ac);
+    u=COERCE(u,-128,127); v=COERCE(v,-128,127);
+#else
+    int u=w&255,v=(w>>16)&255;
+    u=wm_mix(u,lu+128,ac); v=wm_mix(v,lv+128,ac);
+    u=COERCE(u,0,255); v=COERCE(v,0,255);
+#endif
+    y0v=COERCE(y0v,0,255); y1v=COERCE(y1v,0,255);
+    *p=((uint32_t)(u&255))|((uint32_t)y0v<<8)|((uint32_t)(v&255)<<16)|((uint32_t)y1v<<24);
 }
 /* Blend one logo row (pairs of pixels) into the image row. */
 static void wm_blend_row(volatile uint32_t *row,const uint8_t *src,unsigned pairs)
@@ -793,22 +881,58 @@ static void wm_blend_row(volatile uint32_t *row,const uint8_t *src,unsigned pair
     for (unsigned i=0;i<pairs;i++,src+=6) {
         unsigned a0=src[1],a1=src[3];
         if (!(a0|a1)) continue;
-        uint32_t w=row[i];                 /* U Y0 V Y1 */
-        int y0v=(w>>8)&255,y1v=w>>24;
-        y0v=wm_mix(y0v,src[0],a0); y1v=wm_mix(y1v,src[2],a1);
-        unsigned ac=(a0+a1+1)/2;
-#if WM_CHROMA_SIGNED
-        int u=(int8_t)(w&255),v=(int8_t)((w>>16)&255);
-        u=wm_mix(u,(int8_t)src[4],ac); v=wm_mix(v,(int8_t)src[5],ac);
-        u=COERCE(u,-128,127); v=COERCE(v,-128,127);
-#else
-        int u=w&255,v=(w>>16)&255;
-        u=wm_mix(u,(int8_t)src[4]+128,ac); v=wm_mix(v,(int8_t)src[5]+128,ac);
-        u=COERCE(u,0,255); v=COERCE(v,0,255);
-#endif
-        y0v=COERCE(y0v,0,255); y1v=COERCE(y1v,0,255);
-        row[i]=((uint32_t)(u&255))|((uint32_t)y0v<<8)|((uint32_t)(v&255)<<16)|((uint32_t)y1v<<24);
+        wm_blend_pair(row+i,src[0],a0,src[2],a1,(int8_t)src[4],(int8_t)src[5]);
     }
+}
+/* LUT name of the current photo: characters, pen origin (even x, baseline
+ * row relative to the logo top) and colour. Set by wm_apply per photo. */
+static struct {
+    char text[48];
+    unsigned length,x,size,color;
+    int baseline;
+} wm_text;
+/* Blend the text pixels that fall on logo row 'y' (row = start of image row). */
+static void wm_text_row(volatile uint32_t *row,int y)
+{
+    const struct wf_glyph *glyphs=wf_glyphs[wm_text.size];
+    const int *yuv=wm_text_yuv[wm_text.color];
+    for (unsigned i=0;i<wm_text.length;i++) {
+        unsigned c=(unsigned char)wm_text.text[i]-wf_first;
+        if (c>=wf_count) continue;
+        const struct wf_glyph *g=&glyphs[c];
+        int top=wm_text.baseline+g->y;
+        if (y<top || y>=top+(int)g->h || !g->w) continue;
+        const uint8_t *alpha=wf_data+g->offset+(unsigned)(y-top)*g->w;
+        int gx=(int)wm_text.x+(int)((i*wf_advance_q6[wm_text.size]+32)>>6)+g->x;
+        for (int x=gx&~1;x<gx+(int)g->w;x+=2) {
+            if (x<0 || x+1>=(int)WIDTH) continue;
+            unsigned a0=x>=gx ? alpha[x-gx]:0, a1=x+1<gx+(int)g->w ? alpha[x+1-gx]:0;
+            if (a0|a1) wm_blend_pair(row+x/2,yuv[0],a0,yuv[0],a1,yuv[1],yuv[2]);
+        }
+    }
+}
+/* Fill wm_text for this photo; 0 when there is no name to write. */
+static int wm_text_prepare(unsigned sel,unsigned x0,unsigned w,unsigned h)
+{
+    wm_text.length=0;
+    if (wm_lut_name!=1 || !wf_ready) return 0;
+    char name[48];
+    if (!xpan_native_look_photo_lut(name,sizeof(name))) return 0;
+    unsigned advance=wf_advance_q6[sel];
+    wm_text.x=(x0+w+wf_gap[sel]+1)&~1u;
+    /* Fit inside the right-hand margin; cut long names with "...". */
+    unsigned room=WIDTH-WM_MARGIN>wm_text.x ? ((WIDTH-WM_MARGIN-wm_text.x)<<6)/advance:0;
+    unsigned n=0;
+    for (const char *s=name;*s && n<sizeof(wm_text.text)-1;s++) {
+        unsigned char c=*s;
+        wm_text.text[n++]=c>=wf_first && c<wf_first+wf_count ? c:'?';
+    }
+    if (n>room) { if (room<4) return 0; n=room-3; memcpy(wm_text.text+n,"...",3); n+=3; }
+    wm_text.text[n]=0; wm_text.length=n;
+    wm_text.size=sel; wm_text.color=(unsigned)wm_loaded_color;   /* same as the logo in RAM */
+    /* Centre the capital height on the logo. */
+    wm_text.baseline=(int)(h/2+wf_cap[sel]/2);
+    return n>0;
 }
 /* Change detector: 16 words (pixel pairs) spread across the logo row.
  * Canon rewrites whole rows, and sensor noise changes every word, so a few
@@ -830,28 +954,35 @@ static uint32_t wm_hash_words(const volatile uint32_t *p,unsigned words)
  * band just below the logo has changed (Canon's writer has passed it), or
  * after WM_WAIT_MS if nothing changes (the frame was already complete).
  * Canon writes top-down, so rows above the lowest changed row are final and
- * are not checked again. */
+ * are not checked again. The LUT name sits on the logo rows, so the same
+ * rows (hashed across logo and text) cover it. */
 #define WM_WAIT_MS 400
 #define WM_MAX_ROWS 1700u
 static uint32_t *wm_row_hash;
 static unsigned wm_repairs;
 static void wm_apply(unsigned address,unsigned top,unsigned rows)
 {
-    unsigned pos=(unsigned)wm_position,sel=wm_selected();
+    unsigned sel=wm_selected();
     unsigned w=wm_w_size[sel],h=wm_h_size[sel],pairs=w/2u;
     if (h+2*WM_MARGIN>rows || h>WM_MAX_ROWS) { wm_skipped++; wm_status="Watermark taller than the frame"; return; }
     if (!wm_row_hash) wm_row_hash=malloc(WM_MAX_ROWS*sizeof(uint32_t));
-    unsigned x0=(pos==1 || pos==3) ? WM_MARGIN : (WIDTH-WM_MARGIN-w)&~1u;
-    unsigned y0=(pos==1 || pos==2) ? top+WM_MARGIN : top+rows-WM_MARGIN-h;
+    unsigned x0=WM_MARGIN;
+    unsigned y0=wm_place==0 ? top+WM_MARGIN : top+rows-WM_MARGIN-h;
     const uint8_t *src=wm_data_size[sel];
-    #define WM_ROW(y) ((volatile uint32_t *)(address+(y0+(y))*WIDTH*2u)+x0/2u)
+    int text=wm_text_prepare(sel,x0,w,h);
+    /* Hashed span: the logo, plus the text to its right. */
+    unsigned span=text ? (WIDTH-WM_MARGIN-x0)/2u:pairs;
+    #define WM_LINE(y) ((volatile uint32_t *)(address+(y0+(y))*WIDTH*2u))
+    #define WM_ROW(y) (WM_LINE(y)+x0/2u)
+    #define WM_BLEND(y) do { wm_blend_row(WM_ROW(y),src+(y)*pairs*6u,pairs); \
+        if (text) wm_text_row(WM_LINE(y),(int)(y)); } while (0)
     /* Sentinel band: 8 rows just below the logo (inside the frame margin). */
     unsigned band_y=y0+h,band_rows=MIN(8u,top+rows-band_y);
     uint32_t band0=0;
-    for (unsigned r=0;r<band_rows;r++) band0^=wm_hash_words(WM_ROW(h+r),pairs)+r;
+    for (unsigned r=0;r<band_rows;r++) band0^=wm_hash_words(WM_ROW(h+r),span)+r;
     for (unsigned y=0;y<h;y++) {
-        wm_blend_row(WM_ROW(y),src+y*pairs*6u,pairs);
-        if (wm_row_hash) wm_row_hash[y]=wm_hash_words(WM_ROW(y),pairs);
+        WM_BLEND(y);
+        if (wm_row_hash) wm_row_hash[y]=wm_hash_words(WM_ROW(y),span);
     }
     wm_repairs=0;
     if (wm_row_hash) {
@@ -861,19 +992,21 @@ static void wm_apply(unsigned address,unsigned top,unsigned rows)
             msleep(10);
             unsigned lowest=first;
             for (unsigned y=first;y<h;y++) {
-                if (wm_hash_words(WM_ROW(y),pairs)==wm_row_hash[y]) continue;
-                wm_blend_row(WM_ROW(y),src+y*pairs*6u,pairs);
-                wm_row_hash[y]=wm_hash_words(WM_ROW(y),pairs); wm_repairs++;
+                if (wm_hash_words(WM_ROW(y),span)==wm_row_hash[y]) continue;
+                WM_BLEND(y);
+                wm_row_hash[y]=wm_hash_words(WM_ROW(y),span); wm_repairs++;
                 lowest=y;
             }
             first=lowest;                      /* re-check that row: it may be mid-write */
             if (passed) break;                 /* one last pass after the writer */
             uint32_t band=0;
-            for (unsigned r=0;r<band_rows;r++) band^=wm_hash_words(WM_ROW(h+r),pairs)+r;
+            for (unsigned r=0;r<band_rows;r++) band^=wm_hash_words(WM_ROW(h+r),span)+r;
             if (band!=band0) passed=1;
         }
     }
+    #undef WM_BLEND
     #undef WM_ROW
+    #undef WM_LINE
     wm_applied++; wm_status=wm_repairs ? "Ready; last logo re-applied after Canon" : "Ready; last JPEG watermarked";
 }
 static void wm_capture_hook(uint32_t *regs,uint32_t pc)
@@ -978,7 +1111,7 @@ static MENU_UPDATE_FUNC(display_grain)
     /* The menu's green status dot follows the real capture switch, not availability. */
     MENU_SET_ENABLED(film_grain);
     MENU_SET_VALUE("%s",film_grain ? "ON":"OFF");
-    MENU_SET_HELP("Saved JPEG only; Canon Creative Filters must be OFF. Live view and RAW pixels stay unchanged. %s",status);
+    MENU_SET_HELP("SET: ON/OFF, PLAY: options. Saved JPEG only; Canon Creative Filters must be OFF. %s",status);
     if (film_grain && !ready) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",status);
 }
 static MENU_UPDATE_FUNC(display_strength)
@@ -988,36 +1121,74 @@ static MENU_UPDATE_FUNC(display_strength)
     MENU_SET_HELP("25 is the accepted Subtle recipe;100 is the original strong grain. Live view has no grain.");
     if (!film_grain) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Film grain is OFF.");
 }
+static MENU_SELECT_FUNC(select_watermark)
+{
+    wm_enabled=!wm_enabled;
+    if (wm_enabled) wm_status="Loading watermark";
+}
 static MENU_UPDATE_FUNC(display_watermark)
 {
-    if (wm_position<0 || wm_position>4) wm_position=0;
     MENU_SET_ENABLED(xpan_watermark_enabled());
-    MENU_SET_HELP("Logo from ML/XPAN/WMARK.BIN (read once; restart after copying). %s (%d ms, %d rows redone).",
+    MENU_SET_VALUE("%s",xpan_watermark_enabled() ? "ON":"OFF");
+    MENU_SET_HELP("SET: ON/OFF, PLAY: options. %s (%d ms, %d rows redone).",
         wm_status,(int)(wm_us/1000),(int)wm_repairs);
     if (xpan_watermark_enabled() && !wm_ready) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",wm_status);
 }
-static MENU_UPDATE_FUNC(display_watermark_size)
+/* Values from older builds (four corners, Medium) are folded into range. */
+static MENU_UPDATE_FUNC(display_watermark_option)
 {
-    if (wm_size<0 || wm_size>1) wm_size=1;   /* old Medium/Big -> Big */
+    if (wm_color<0 || wm_color>1) wm_color=0;
+    if (wm_place<0 || wm_place>1) wm_place=1;
+    if (wm_size<0 || wm_size>1) wm_size=1;
+    if (wm_lut_name<0 || wm_lut_name>1) wm_lut_name=1;
     if (!xpan_watermark_enabled()) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Watermark is OFF.");
+}
+static MENU_UPDATE_FUNC(display_watermark_color)
+{
+    display_watermark_option(entry,info);
+    if (xpan_watermark_enabled() && wm_ready && wm_loaded_color!=(int)wm_selected_color())
+        MENU_SET_WARNING(MENU_WARN_ADVICE,"Loading %s",wm_color ? "WMARK_2.BIN":"WMARK_1.BIN");
+    else if (xpan_watermark_enabled() && !wm_ready) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",wm_status);
+}
+static MENU_UPDATE_FUNC(display_watermark_lut)
+{
+    display_watermark_option(entry,info);
+    if (xpan_watermark_enabled() && wm_lut_name==1 && wf_attempted && !wf_ready)
+        MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",wf_status);
 }
 static struct menu_entry entries[]={
     { .name="Film grain",.priv=&film_grain,.max=1,.select=select_grain,.update=display_grain,
-      .help="Optional native grain on the saved JPEG, independent of Canon Creative Filters." },
-    { .name="Grain strength",.priv=&grain_strength,.min=1,.max=100,.unit=UNIT_PERCENT,
-      .select=select_strength,.update=display_strength,.help="Strength1..100; default25 Subtle." },
-    { .name="Grain type",.priv=&grain_engine,.max=1,.select=select_engine,.update=display_engine,
-      .choices=CHOICES("Film","Canon"),
-      .help="Film: soft, brightness-dependent grain (CPU). Canon: native Grainy filter." },
-    { .name="Grain size",.priv=&grain_size,.max=2,.select=select_size,.update=display_size,
-      .choices=CHOICES("Fine","Medium","Coarse"),
-      .help="Film grain size." },
-    { .name="Watermark",.priv=&wm_position,.max=4,.update=display_watermark,
-      .choices=CHOICES("OFF","Top left","Top right","Bottom left","Bottom right"),
-      .help="Corner of the saved JPEG for the logo." },
-    { .name="Watermark size",.priv=&wm_size,.max=1,.update=display_watermark_size,
-      .choices=CHOICES("Small","Big"),
-      .help="Logo width: small 386 px, big 776 px (of the 5184 px image)." },
+      .select_Q=menu_open_submenu,
+      .help="Optional native grain on the saved JPEG, independent of Canon Creative Filters.",
+      .children=(struct menu_entry[]) {
+        { .name="Grain strength",.priv=&grain_strength,.min=1,.max=100,.unit=UNIT_PERCENT,
+          .select=select_strength,.update=display_strength,.help="Strength1..100; default25 Subtle." },
+        { .name="Grain type",.priv=&grain_engine,.max=1,.select=select_engine,.update=display_engine,
+          .choices=CHOICES("Film","Canon"),
+          .help="Film: soft, brightness-dependent grain (CPU). Canon: native Grainy filter." },
+        { .name="Grain size",.priv=&grain_size,.max=2,.select=select_size,.update=display_size,
+          .choices=CHOICES("Fine","Medium","Coarse"),
+          .help="Film grain size." },
+        MENU_EOL
+      } },
+    { .name="Watermark",.priv=&wm_enabled,.max=1,.select=select_watermark,.update=display_watermark,
+      .select_Q=menu_open_submenu,
+      .help="XPan logo in a corner of the saved JPEG, optionally with the LUT name.",
+      .children=(struct menu_entry[]) {
+        { .name="Logo colour",.priv=&wm_color,.max=1,.update=display_watermark_color,
+          .choices=CHOICES("Orange","White"),
+          .help="Orange: WMARK_1.BIN, LUT name in #ff3300. White: WMARK_2.BIN, white LUT name." },
+        { .name="Position",.priv=&wm_place,.max=1,.update=display_watermark_option,
+          .choices=CHOICES("Top left","Bottom left"),
+          .help="Logo in the top-left or bottom-left corner; the LUT name goes to its right." },
+        { .name="Size",.priv=&wm_size,.max=1,.update=display_watermark_option,
+          .choices=CHOICES("Small","Big"),
+          .help="Logo width: small 386 px, big 776 px (of the 5184 px image)." },
+        { .name="LUT name",.priv=&wm_lut_name,.max=1,.update=display_watermark_lut,
+          .choices=CHOICES("OFF","ON"),
+          .help="Name of the LUT applied to the photo, next to the logo (font: ML/XPAN/WMFONT.BIN)." },
+        MENU_EOL
+      } },
 };
 void xpan_film_grain_add_menu(void) { menu_add("XPan",entries,COUNT(entries)); }
 void xpan_film_grain_poll(struct card_info *card)
@@ -1049,5 +1220,6 @@ void xpan_film_grain_poll(struct card_info *card)
     /* Watermark: needs the same capture hook even with grain OFF. */
     if (xpan_watermark_enabled() && xpan_photo_enabled() && !is_movie_mode()) {
         if (wm_load(card) && !install()) wm_status="Cannot install JPEG hook";
+        if (wm_lut_name==1) wf_load(card);
     }
 }

@@ -525,13 +525,23 @@ void xpan_menu_mode_visibility(void)
 #ifdef CONFIG_XPAN
     xpan_native_look_menu_sanitize();
 #endif
-    static unsigned long long hidden_by_us;
+    static unsigned long long hidden_by_us,lut_hidden_by_us;
     int movie=is_movie_mode(),i=0;
+    struct menu_entry *lut=NULL;
     for (struct menu_entry *e=xpan_photo_menu[0].children; e && i<64; e=e->next, i++) {
         int keep=0;
         for (unsigned k=0;k<COUNT(movie_rows);k++) if (e->name && streq(e->name,movie_rows[k])) keep=1;
         if (movie && !keep) { if (!e->shidden) { e->shidden=1; hidden_by_us|=1ULL<<i; } }
         else if (hidden_by_us&(1ULL<<i)) { e->shidden=0; hidden_by_us&=~(1ULL<<i); }
+        if (e->name && streq(e->name,"Custom LUT") && e->children && !MENU_IS_PLACEHOLDER(e)) lut=e;
+    }
+    /* The LUT options live in the Custom LUT submenu: same rule one level down. */
+    i=0;
+    for (struct menu_entry *e=lut ? lut->children:NULL; e && i<64; e=e->next, i++) {
+        int keep=0;
+        for (unsigned k=0;k<COUNT(movie_rows);k++) if (e->name && streq(e->name,movie_rows[k])) keep=1;
+        if (movie && !keep) { if (!e->shidden) { e->shidden=1; lut_hidden_by_us|=1ULL<<i; } }
+        else if (lut_hidden_by_us&(1ULL<<i)) { e->shidden=0; lut_hidden_by_us&=~(1ULL<<i); }
     }
     /* Frame alignment: 65:24 photo only. */
     if (!movie) xpan_alignment_hide(!xpan_photo_is_panoramic());
@@ -672,21 +682,11 @@ static struct menu_entry xpan_photo_menu[] = {
                 .help = "Full-width XPan JPEG: Large Fine or Large Normal. RAW+JPEG uses Large Fine.",
             },
             /* --- Look (Cube LUT) --- */
-            MENU_PLACEHOLDER("Custom LUT"),
-            MENU_PLACEHOLDER("Cube file"),
-            MENU_PLACEHOLDER("Refresh Cube list"),
-            MENU_PLACEHOLDER("Cube strength"),
-            MENU_PLACEHOLDER("Tone base"),
-            MENU_PLACEHOLDER("Highlight headroom"),
-            MENU_PLACEHOLDER("Live LUT preview"),
+            MENU_PLACEHOLDER("Custom LUT"),   /* submenu: Cube file, strength, Tone base, ... */
 
             /* --- Film grain --- */
-            MENU_PLACEHOLDER("Film grain"),
-            MENU_PLACEHOLDER("Grain type"),
-            MENU_PLACEHOLDER("Grain strength"),
-            MENU_PLACEHOLDER("Grain size"),
-            MENU_PLACEHOLDER("Watermark"),
-            MENU_PLACEHOLDER("Watermark size"),
+            MENU_PLACEHOLDER("Film grain"),   /* submenu: strength, type, size */
+            MENU_PLACEHOLDER("Watermark"),    /* submenu: colour, position, size, LUT name */
             /* --- Display --- */
             {
                 .name = "XPan overlay",

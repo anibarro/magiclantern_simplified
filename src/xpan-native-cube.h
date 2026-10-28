@@ -21,6 +21,7 @@ enum xpan_cube_list_state xpan_native_cube_list_state(void);
 void xpan_native_cube_invalidate(void);
 const char *xpan_native_cube_filename(void);
 const char *xpan_native_cube_filename_after(int delta);
+const char *xpan_native_cube_loaded_name(void);
 const char *xpan_native_cube_status(void);
 int xpan_native_cube_load(struct card_info *card,volatile int *cancel);
 const struct xpan_lut *xpan_native_cube_table(void);

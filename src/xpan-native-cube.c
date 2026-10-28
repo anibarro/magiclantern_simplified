@@ -80,6 +80,8 @@ const char *xpan_native_cube_filename_after(int delta)
     int n=(int)cube_count;
     return cube_names[(((int)cube_index+delta%n)%n+n)%n];
 }
+/* Name of the Cube whose table is loaded (empty when none). */
+const char *xpan_native_cube_loaded_name(void) { return cube_valid ? cached_name:""; }
 unsigned xpan_native_cube_file_count(void) { return cube_count; }
 enum xpan_cube_list_state xpan_native_cube_list_state(void) { return list_state; }
 void xpan_native_cube_invalidate(void) { cube_valid=0; }

@@ -174,6 +174,16 @@ void xpan_native_look_hud_label(char *name, unsigned name_size, char *state, uns
     else snprintf(state,state_size,"--");
 }
 
+int xpan_native_look_photo_lut(char *name, unsigned size)
+{
+    /* 'matched' is reset for each photo and set once Canon's table carries
+     * the Cube; the Cube table only changes while the worker is idle. */
+    if (!size || !matched || armed_look!=3) return 0;
+    snprintf(name,size,"%s",xpan_native_cube_loaded_name());
+    unsigned n=strlen(name);
+    if (n>=5 && name[n-5]=='.') name[n-5]=0;
+    return name[0]!=0;
+}
 static int workflow_menu_can_change(void)
 {
     return !lens_info.job_state && !get_halfshutter_pressed() && look_state!=2;
@@ -437,30 +447,35 @@ static MENU_UPDATE_FUNC(movie_lut_display)
 /* These entries are appended to the existing XPan submenu, never a second
  * parent. EM_SHOW_LIVEVIEW uses ML's ISO-style transparent adjustment view. */
 static struct menu_entry workflow_menu[]={
+    /* SET: Custom LUT ON/OFF; PLAY: the LUT options. */
     { .name="Custom LUT", .icon_type=IT_BOOL,
       .select=request_custom_lut, .update=custom_lut_display,
-      .help="ON: apply the selected Cube file on Canon Neutral + Tone base. OFF: Canon passthrough." },
-    { .name="Cube file", .select=request_cube_file, .update=cube_file_display,
-      .icon_type=IT_DICE, .edit_mode=EM_SHOW_LIVEVIEW,
-      .help="Cycle files and select Custom .cube. Live LUT preview enables the LCD effect." },
-    { .name="Cube strength", .priv=&cube_strength, .max=100,
-      .select=request_cube_strength, .update=cube_strength_display,
-      .edit_mode=EM_SHOW_LIVEVIEW, .unit=UNIT_PERCENT,
-      .help="Blend the custom Cube0..100 percent. Zero preserves Canon colour." },
-    { .name="Tone base", .priv=&headroom_stops, .max=1,
-      .select=request_headroom, .update=headroom_display,
-      .choices=CHOICES("Canon Neutral","Cineon log"),
-      .help="Canon Neutral: Cube on Canon's render. Cineon log: extra highlight range, Cube gets Cineon log." },
-    { .name="Highlight headroom", .priv=&headroom_ev, .min=1, .max=2,
-      .select=request_headroom_ev, .update=headroom_ev_display,
-      .choices=CHOICES("+1 EV","+2 EV"),
-      .help="+1 EV: smoother shadows. +2 EV: one more stop of highlight colour, coarser deep shadows." },
-    { .name="Live LUT preview", .priv=&live_preview_enabled, .max=1,
-      .select=request_live_preview, .update=live_preview_display,
-      .help="Show the selected custom Cube on the LCD. Saved photos keep the look either way." },
-    /* Movie LUT has no switch any more: in movie mode it follows Custom LUT. */
-    { .name="Refresh Cube list", .select=request_cube_refresh, .update=cube_refresh_display,
-      .help="Rescan Cube files and reload the selected file. The menu stays open." },
+      .select_Q=menu_open_submenu,
+      .help="ON: apply the selected Cube file on Canon Neutral + Tone base. OFF: Canon passthrough.",
+      .children=(struct menu_entry[]) {
+        { .name="Cube file", .select=request_cube_file, .update=cube_file_display,
+          .icon_type=IT_DICE, .edit_mode=EM_SHOW_LIVEVIEW,
+          .help="Cycle files and select Custom .cube. Live LUT preview enables the LCD effect." },
+        /* Movie LUT has no switch any more: in movie mode it follows Custom LUT. */
+        { .name="Refresh Cube list", .select=request_cube_refresh, .update=cube_refresh_display,
+          .help="Rescan Cube files and reload the selected file. The menu stays open." },
+        { .name="Cube strength", .priv=&cube_strength, .max=100,
+          .select=request_cube_strength, .update=cube_strength_display,
+          .edit_mode=EM_SHOW_LIVEVIEW, .unit=UNIT_PERCENT,
+          .help="Blend the custom Cube0..100 percent. Zero preserves Canon colour." },
+        { .name="Tone base", .priv=&headroom_stops, .max=1,
+          .select=request_headroom, .update=headroom_display,
+          .choices=CHOICES("Canon Neutral","Cineon log"),
+          .help="Canon Neutral: Cube on Canon's render. Cineon log: extra highlight range, Cube gets Cineon log." },
+        { .name="Highlight headroom", .priv=&headroom_ev, .min=1, .max=2,
+          .select=request_headroom_ev, .update=headroom_ev_display,
+          .choices=CHOICES("+1 EV","+2 EV"),
+          .help="+1 EV: smoother shadows. +2 EV: one more stop of highlight colour, coarser deep shadows." },
+        { .name="Live LUT preview", .priv=&live_preview_enabled, .max=1,
+          .select=request_live_preview, .update=live_preview_display,
+          .help="Show the selected custom Cube on the LCD. Saved photos keep the look either way." },
+        MENU_EOL
+      } },
 };
 void xpan_native_look_add_menu(void)
 {

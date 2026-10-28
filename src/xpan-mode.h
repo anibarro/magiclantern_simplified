@@ -33,5 +33,8 @@ void xpan_native_look_start_worker(void);
 void xpan_native_look_note_jpeg(void);
 /* Read-only UI snapshot; never opens files or rebuilds a table. */
 void xpan_native_look_hud_label(char *name, unsigned name_size, char *state, unsigned state_size);
+/* Name (without extension) of the LUT Canon applied to the photo being
+ * saved; 0 when no LUT was applied. Safe in the JPEG capture hook. */
+int xpan_native_look_photo_lut(char *name, unsigned size);
 #endif
 #endif

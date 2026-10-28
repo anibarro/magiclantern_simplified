@@ -133,71 +133,72 @@ static const char *xpan_hud_metering(void)
     }
 }
 
-struct xpan_logo_point { short x, y; };
-
-static void xpan_hud_logo_polygon(int y, int color,
-    const struct xpan_logo_point *points, unsigned count)
-{
-    /* Bounded even/odd scan conversion: small flash-only paths, no logo image
-     * allocation. Half-open edges avoid duplicate intersections at vertices. */
-    for (int row=0;row<46;row++) {
-        int crossings[16],used=0;
-        for (unsigned i=0;i<count;i++) {
-            unsigned j=(i+1)%count;
-            int ay=(points[i].y-25)*46/185, by=(points[j].y-25)*46/185;
-            if (!((ay<=row && by>row) || (by<=row && ay>row))) continue;
-            int ax=(points[i].x-35)*125/504, bx=(points[j].x-35)*125/504;
-            int x=ax+(row-ay)*(bx-ax)/(by-ay);
-            if (used<COUNT(crossings)) crossings[used++]=x;
-        }
-        for (int i=1;i<used;i++) {
-            int x=crossings[i],j=i;
-            while (j && crossings[j-1]>x) { crossings[j]=crossings[j-1];j--; }
-            crossings[j]=x;
-        }
-        for (int i=0;i+1<used;i+=2) {
-            int width=crossings[i+1]-crossings[i];
-            if (width>0) bmp_fill(color,10+crossings[i],y+2+row,width,1);
-        }
-    }
-}
+/* XPan logo, 125x46 px: traced from extras/UI ideas/xpanlogo.jpg (orange
+ * coverage above 30% after an area downscale), so the X keeps its hollow
+ * diagonal, separate arms and the underline running under PAN. One bit per
+ * pixel, bit x%32 of word x/32; drawn as horizontal runs. */
+#define XPAN_LOGO_W 125
+#define XPAN_LOGO_H 46
+static const uint32_t xpan_logo_bits[XPAN_LOGO_H][4]={
+        {0x0003fffe,0x00000000,0x00000000,0x00000000},
+        {0x0003fffe,0x00000000,0x00000000,0x00000000},
+        {0x0007fffe,0x00000000,0x00000000,0x00000000},
+        {0x0007001c,0x00000000,0x00000000,0x00000000},
+        {0x000f0038,0x00000000,0x00000000,0x00000000},
+        {0x000e0078,0x00000000,0x00000000,0x00000000},
+        {0x001e0070,0x00000000,0x00000000,0x00000000},
+        {0x001c00f0,0x00000000,0x00000000,0x00000000},
+        {0x003800e0,0x00000000,0x00000000,0x00000000},
+        {0x007801e0,0x00000000,0x00000000,0x00000000},
+        {0x007001c0,0x00000000,0x00000000,0x00000000},
+        {0xf0f003c0,0xffffff1f,0x0000f000,0x1c00000f},
+        {0xf8e00780,0xffffff0f,0x0001f003,0x1c00001f},
+        {0x3de00700,0xe0000707,0x0003f807,0x1c00003f},
+        {0x9fc00f00,0x00000707,0x0003b80f,0x1c00007f},
+        {0xdfc00e00,0x00000703,0x0007bc0e,0x1c0000f7},
+        {0xef801e00,0x00000701,0x00071c1e,0x1c0001e7},
+        {0xe7801c00,0x00000701,0x000f1e1e,0x1c0003c7},
+        {0xf3003c00,0x00000700,0x000e0e1e,0x1c000787},
+        {0x7a003800,0x00000700,0x001e0f1e,0x1c000f07},
+        {0x3c007800,0x00000700,0x001c070e,0x1c001e07},
+        {0x3c007000,0x00000700,0x003c078f,0x1c003c07},
+        {0x3c00f000,0x80000700,0x00380387,0x1c007807},
+        {0x3800e000,0xffffff00,0x007801c7,0x1c00f007},
+        {0x7801c000,0xffffff00,0x007001c1,0x1c01e007},
+        {0x7001c000,0x7fffff00,0x00f001e0,0x1c03c007},
+        {0xf003c000,0x00000700,0x00e000e0,0x1c078007},
+        {0xe001e000,0x00000700,0x01e000f0,0x1c0f0007},
+        {0xc004e000,0x00000701,0x01fffff0,0x1c1e0007},
+        {0xc00ef000,0x00000701,0x03fffff8,0x1c3c0007},
+        {0x800e7800,0x00000703,0x03fffff8,0x1c780007},
+        {0x801f3c00,0x00000707,0x0700001c,0x1cf00007},
+        {0x001fbc00,0x00000707,0x0700001c,0x1de00007},
+        {0x003f9e00,0x0000070f,0x0e00000e,0x1fc00007},
+        {0x0039cf00,0x0000070e,0x1e00000e,0x1f800007},
+        {0x0071e780,0x0000071e,0x1c000007,0x1f000007},
+        {0x0070f380,0x8000071c,0x3c000007,0x1e000007},
+        {0x00e073c0,0x80000738,0x38000003,0x1c000007},
+        {0x01e079e0,0x00000000,0x00000000,0x00000000},
+        {0x01c03cf0,0x00000000,0x00000000,0x00000000},
+        {0x03c01e70,0x00000000,0x00000000,0x00000000},
+        {0x03800e78,0x00000000,0x00000000,0x00000000},
+        {0x07800f3c,0x00000000,0x00000000,0x00000000},
+        {0xff0007fe,0xffffffff,0xffffffff,0x1fffffff},
+        {0xff0003fe,0xffffffff,0xffffffff,0x1fffffff},
+        {0xfe0001ff,0xffffffff,0xffffffff,0x1fffffff},
+};
 
 static void xpan_hud_logo(int y, int color)
 {
-    /* Filled, closed outlines traced from the supplied xpanlogo.jpg. The X's
-     * hollow diagonal, separate arms and continuing underline are intentional.
-     * Coordinates stay in reference space; the scanline helper scales them. */
-    static const struct xpan_logo_point diagonal[]={
-        {37,26},{106,26},{188,178},{176,178},{101,35},{55,35},
-        {145,201},{539,201},{539,210},{139,210}};
-    static const struct xpan_logo_point lower_arm[]={
-        {95,130},{35,210},{72,210},{111,158},{105,148},{66,201},{54,201},{101,139}};
-    static const struct xpan_logo_point upper_arm[]={
-        {137,83},{149,69},{184,69},{146,119},{139,109},{164,79},{154,79},{142,94}};
-    static const struct xpan_logo_point p[]={
-        {197,69},{269,69},{290,72},{303,79},{311,91},{312,104},
-        {307,117},{296,125},{280,130},{207,130},{207,178},{197,178}};
-    static const struct xpan_logo_point p_hole[]={
-        {207,79},{269,79},{288,82},{299,91},{302,101},
-        {298,111},{288,118},{269,120},{207,120}};
-    static const struct xpan_logo_point a[]={
-        {312,178},{347,69},{362,69},{418,178},{405,178},{389,148},
-        {330,148},{324,178}};
-    static const struct xpan_logo_point a_hole[]={
-        {334,138},{354,87},{383,138}};
-    static const struct xpan_logo_point n[]={
-        {423,178},{423,69},{435,69},{529,158},{529,69},
-        {539,69},{539,178},{527,178},{433,89},{433,178}};
     if (xpan_hud_background==COLOR_TRANSPARENT_BLACK)
         bmp_fill(COLOR_TRANSPARENT_BLACK,8,y,542,50);
-    xpan_hud_logo_polygon(y,color,diagonal,COUNT(diagonal));
-    xpan_hud_logo_polygon(y,color,lower_arm,COUNT(lower_arm));
-    xpan_hud_logo_polygon(y,color,upper_arm,COUNT(upper_arm));
-    xpan_hud_logo_polygon(y,color,p,COUNT(p));
-    xpan_hud_logo_polygon(y,xpan_hud_background,p_hole,COUNT(p_hole));
-    xpan_hud_logo_polygon(y,color,a,COUNT(a));
-    xpan_hud_logo_polygon(y,xpan_hud_background,a_hole,COUNT(a_hole));
-    xpan_hud_logo_polygon(y,color,n,COUNT(n));
+    for (int row=0;row<XPAN_LOGO_H;row++)
+        for (int x=0;x<XPAN_LOGO_W;) {
+            if (!(xpan_logo_bits[row][x>>5]>>(x&31)&1)) { x++; continue; }
+            int start=x;
+            while (x<XPAN_LOGO_W && (xpan_logo_bits[row][x>>5]>>(x&31)&1)) x++;
+            bmp_fill(color,10+start,y+2+row,x-start,1);
+        }
 }
 
 static void xpan_hud_battery(int x, int y)

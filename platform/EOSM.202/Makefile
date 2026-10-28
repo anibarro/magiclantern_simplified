@@ -54,7 +54,8 @@ $(addprefix $(BUILD_DIR)/,xpan-native-table.o xpan-cube.o xpan-lut.o): CFLAGS +=
 
 # Card data, packaged as ML/XPAN/ in magiclantern.zip:
 #   data/XPAN/*.CUBE   Cineon tone bases (photo +1/+2 EV, Live View)
-#   data/XPAN/*.BIN    WMARK.BIN (watermark), GRAIN.BIN (Canon grain texture)
+#   data/XPAN/*.BIN    WMARK_1/2.BIN (orange/white logo), WMFONT.BIN (LUT name
+#                      font), GRAIN.BIN (Canon grain texture)
 #   data/XPAN/LUTS/    user looks (*.cube); the folder is created even if empty
 # Rebuilt on every zip so files removed from the repository leave the card too.
 XPAN_DATA_DIR = $(TOP_DIR)/data/XPAN

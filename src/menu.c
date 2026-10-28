@@ -2823,7 +2823,7 @@ skip_name:
     if (rlen) wmax -= rlen + char_width + 35;
     
     // no right info? then make sure there's room for the Q symbol
-    else if (entry->children && !in_submenu && !menu_lv_transparent_mode && (entry->priv || entry->select))
+    else if (entry->children && !edit_mode && !menu_lv_transparent_mode && (entry->priv || entry->select))
     {
         wmax -= 35;
     }
@@ -2888,14 +2888,17 @@ skip_name:
             ICON_ML_FORWARD
         );
     }
-    else if (entry->children && !SUBMENU_OR_EDIT && !menu_lv_transparent_mode)
+    else if (entry->children && !edit_mode && !menu_lv_transparent_mode)
     {
         // Q sign for selected item, if submenu opens with Q
         // Discrete placeholder for non-selected item
+        // Inside a submenu (nested submenus such as XPan > Watermark), align
+        // to the submenu's right edge, clear of its scroll bar.
+        int q_right = in_submenu ? x_end - 6 : 720;
         if (entry->selected)
-            submenu_key_hint(720-40, y + y_icon_offset, COLOR_WHITE, COLOR_BLACK, ICON_ML_Q_FORWARD);
+            submenu_key_hint(q_right-40, y + y_icon_offset, COLOR_WHITE, COLOR_BLACK, ICON_ML_Q_FORWARD);
         else
-            submenu_key_hint(720-35, y + y_icon_offset, 40, COLOR_BLACK, ICON_ML_FORWARD);
+            submenu_key_hint(q_right-35, y + y_icon_offset, 40, COLOR_BLACK, ICON_ML_FORWARD);
     }
 
     if (my_menu->selected && streq(my_menu->name, "Recent") && !junkie_mode)

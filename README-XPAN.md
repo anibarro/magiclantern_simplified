@@ -44,11 +44,17 @@ Photo mode (menu **Shoot > XPan** for framing and HUD, **XPan** tab for look, gr
   Canon's JPEG development by 1 or 2 EV (JPEG_OBWB gain) and maps it back
   through a calibrated log base (`ML/XPAN/CINEON7*.CUBE`) before the custom
   LUT, so highlights that Canon would clip survive into the LUT.
-* **Film grain**: *Film* (soft, brightness-dependent, computed on the CPU)
-  or *Canon* (Canon's native Grainy filter engine); three sizes, strength.
-  Added after the LUT, on the saved JPEG only.
-* **Watermark**: a logo in one of the four corners, small (386 px) or big
-  (776 px wide), from `ML/XPAN/WMARK.BIN`.
+* **Film grain** (SET: ON/OFF, PLAY: options): *Film* (soft,
+  brightness-dependent, computed on the CPU) or *Canon* (Canon's native
+  Grainy filter engine); three sizes, strength. Added after the LUT, on the
+  saved JPEG only.
+* **Watermark** (SET: ON/OFF, PLAY: options): the XPan logo in the top-left
+  or bottom-left corner, small (386 px) or big (776 px wide), in **Orange**
+  (`ML/XPAN/WMARK_1.BIN`) or **White** (`WMARK_2.BIN`). With *LUT name* ON,
+  the name of the LUT applied to the photo (its file name without `.cube`)
+  is written to the right of the logo, centred on it, in the logo's colour
+  (#ff3300 or white), with the OneSlot font from `ML/XPAN/WMFONT.BIN`. Long
+  names are cut with "...". Nothing is written when no LUT was applied.
 
 Movie mode:
 
@@ -94,7 +100,9 @@ The XPan build puts everything in `magiclantern.zip`. Each file comes from
 ML/XPAN/CINEON7.CUBE       tone base for +1 EV headroom
 ML/XPAN/CINEON7_2EV.CUBE   tone base for +2 EV headroom
 ML/XPAN/CINEONLV.CUBE      Live View tone base, 17^3
-ML/XPAN/WMARK.BIN          watermark logo (from extras/XPan_tools)
+ML/XPAN/WMARK_1.BIN        orange watermark logo (from extras/XPan_tools)
+ML/XPAN/WMARK_2.BIN        white watermark logo
+ML/XPAN/WMFONT.BIN         font for the LUT name next to the logo
 ML/XPAN/GRAIN.BIN          grain texture for Grain type = Canon
 ML/XPAN/LUTS/              your looks: every *.cube in data/XPAN/LUTS/
 ```
@@ -131,12 +139,18 @@ behind `CONFIG_XPAN`. Other cameras are unaffected (`CONFIG_EOSM`).
 
 ## Tools
 
-* `extras/XPan_tools/`: watermark source. `logo.png` is the PNG (with
-  transparency) and `xpan_watermark.py` converts it into `WMARK.BIN`
-  (386 and 776 px wide, BT.601 YCbCr + alpha, pixel pairs). `run.bat` (or
-  `python xpan_watermark.py logo.png --out ../../data/XPAN/WMARK.BIN --preview`)
-  rewrites `data/XPAN/WMARK.BIN`, so the next build packages the new logo.
+* `extras/XPan_tools/`: watermark sources. `logo_orange.png` and
+  `logo_white.png` are the logos (PNG with transparency); `xpan_watermark.py`
+  converts each into a `.BIN` (386 and 776 px wide, BT.601 YCbCr + alpha,
+  pixel pairs). `run1.bat` rewrites `data/XPAN/WMARK_1.BIN` (orange) and
+  `run2.bat` rewrites `data/XPAN/WMARK_2.BIN` (white), so the next build
+  packages the new logos. `xpan_wmfont.py` renders the font
+  (`extras/LUT_tools/OneSlot.ttf` by default) into `data/XPAN/WMFONT.BIN`,
+  with capital heights of 43 and 86 px to match the two logo sizes.
   Requires `pip install pillow numpy`.
+* `extras/LUT_tools/OneSlot.ttf`: OneSlot by Darren Rigby (Starving-4
+  Entertainment, 2003), distributed under the Design Science License
+  (http://dsl.org/copyleft/dsl.txt).
 * `build_tools/xpan_cineon_base_v7.py`: regenerates the Cineon tone bases from
   the calibration model in `build_tools/*.npy`:
 
