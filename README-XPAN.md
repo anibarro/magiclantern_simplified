@@ -92,6 +92,11 @@ or any other grading tool that exports `.cube` LUTs.
 * **Format limits.** One 3D LUT per file: no 1D or shaper LUTs, and
   `DOMAIN_MIN 0 0 0` / `DOMAIN_MAX 1 1 1` with output values between 0 and 1.
   At most 16 files, with plain ASCII names under 48 characters.
+* **FAT32 cards** (cards of 32 GB or less formatted in the camera): the
+  camera only sees the short 8.3 form of a long file name, so
+  `Cine Kodak.cube` appears as `CINEKO~1`. It still works, but use names of at
+  most 8 characters plus `.CUBE` (e.g. `KODAK.CUBE`) to see readable names in
+  the menu, the HUD and the watermark. exFAT cards show long names.
 
 Copy the files to `ML/XPAN/LUTS/` and use *Refresh Cube list*, or restart the
 camera.

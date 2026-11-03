@@ -98,7 +98,7 @@ int xpan_native_cube_select(struct card_info *card,int delta,int refresh)
     }
     if (!cube_count || refresh) {
         char previous[CUBE_NAME_BYTES],path[FIO_MAX_PATH_LENGTH];
-        snprintf(previous,sizeof(previous),"%s",cube_count ? cube_names[cube_index]:"IDENTITY.CUBE");
+        snprintf(previous,sizeof(previous),"%s",cube_count ? cube_names[cube_index]:"IDENT.CUBE");
         /* Browsing must not invalidate a table a Canon transfer may be using.
          * cached_name still lets the later loader detect a changed selection. */
         list_state=XPAN_CUBE_LIST_SCANNING;
@@ -114,9 +114,13 @@ int xpan_native_cube_select(struct card_info *card,int delta,int refresh)
         do {
             /* Bound both directory work and persistent list storage. */
             if (++visited>256 || cube_count>=MAX_CUBES) break;
+            /* .cube, or .CUB: on FAT32 Canon lists only the 8.3 alias of a long
+             * name (Cine Kodak.cube -> CINEKO~1.CUB). The alias opens normally. */
             unsigned length=strlen(file.name);
-            if ((file.mode&ATTR_DIRECTORY) || length<6 || length>=CUBE_NAME_BYTES ||
-                strcasecmp(file.name+length-5,".cube") || file.name[0]=='.') continue;
+            int cube=length>=6 && !strcasecmp(file.name+length-5,".cube");
+            int alias=length>=5 && !strcasecmp(file.name+length-4,".cub");
+            if ((file.mode&ATTR_DIRECTORY) || length>=CUBE_NAME_BYTES ||
+                !(cube || alias) || file.name[0]=='.') continue;
             int valid=1;
             for (unsigned i=0; i<length; i++)
                 if ((unsigned char)file.name[i]<32 || (unsigned char)file.name[i]>126 ||

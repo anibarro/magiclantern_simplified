@@ -160,13 +160,19 @@ const char *xpan_native_look_status(void)
 }
 int xpan_native_look_adjusting(void) { return look_busy; }
 
+/* Display name of a Cube file: without .cube (or .CUB, FAT32 8.3 aliases). */
+static void cube_display_name(char *name)
+{
+    unsigned n=strlen(name);
+    if (n>=5 && !strcasecmp(name+n-5,".cube")) name[n-5]=0;
+    else if (n>=4 && !strcasecmp(name+n-4,".cub")) name[n-4]=0;
+}
 void xpan_native_look_hud_label(char *name, unsigned name_size, char *state, unsigned state_size)
 {
     /* Copy RAM-only state; the LCD drawing task must never touch SD files. */
     const char *label=selected_look==3 ? xpan_native_cube_filename_after(cube_file_delta):"LUT OFF";
     snprintf(name,name_size,"%s",label);
-    unsigned n=strlen(name);
-    if (selected_look==3 && n>=5 && name[n-5]=='.') name[n-5]=0;
+    if (selected_look==3) cube_display_name(name);
     /* Canon's formatter consumes an argument even for literal%%. Copy the
      * percent as a%s argument instead. The HUD sub-label is strength only;
      * loading/LCD status remains in the XPan menu. */
@@ -180,8 +186,7 @@ int xpan_native_look_photo_lut(char *name, unsigned size)
      * the Cube; the Cube table only changes while the worker is idle. */
     if (!size || !matched || armed_look!=3) return 0;
     snprintf(name,size,"%s",xpan_native_cube_loaded_name());
-    unsigned n=strlen(name);
-    if (n>=5 && name[n-5]=='.') name[n-5]=0;
+    cube_display_name(name);
     return name[0]!=0;
 }
 static int workflow_menu_can_change(void)

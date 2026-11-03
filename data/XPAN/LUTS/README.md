@@ -12,6 +12,9 @@ Limits (src/xpan-native-cube.c and src/xpan-cube.c):
 
 * at most 16 files; the list is sorted by name
 * file name shorter than 48 characters, printable ASCII only
+* on FAT32 cards the camera lists only 8.3 names (`CINEKO~1.CUB` for
+  `Cine Kodak.cube`), which XPan accepts too; keep names to 8 characters plus
+  `.CUBE` (like the samples here) so they stay readable
 * `LUT_3D_SIZE` 2..33 (17 recommended: every look is resampled onto Canon's
   10x10x10 table), `DOMAIN_MIN 0 0 0` / `DOMAIN_MAX 1 1 1`, file up to 4 MB
 * input is Rec.709 / sRGB, the same as for any display-referred look. With
