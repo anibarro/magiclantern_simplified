@@ -3615,14 +3615,6 @@ static void draw_zoom_overlay(int dirty)
 
 int liveview_display_idle()
 {
-#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
-    /* XPan dial mode: Canon sits in ML's menu GUI mode (93) under the HUD so
-     * the MPU forwards the dial; Live View itself is unchanged. */
-    extern int xpan_hud_dial_mode_active(void);
-    if (xpan_hud_dial_mode_active())
-        return DISPLAY_IS_ON && LV_NON_PAUSED && job_state_ready_to_take_pic() &&
-            !menu_active_and_not_hidden() && !mirror_down;
-#endif
 // Common conditions required across all generations
     if( !DISPLAY_IS_ON
         || !LV_NON_PAUSED

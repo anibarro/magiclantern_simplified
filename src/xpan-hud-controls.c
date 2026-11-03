@@ -9,18 +9,19 @@
  * (button 38 -> GUI 0x54), so the direction never reaches the camera's processor.
  * In any other category (menus, Q) it forwards the dial as button 13 with a
  * signed value, which Canon turns into GUI events 2 (left) / 3 (right).
- * While the XPan HUD owns Live View it keeps the MPU out of category 0, so
- * every click arrives as 2/3. RIGHT arrives as 0x27. Therefore:
+ * Forcing another category made Canon's GUI oscillate (v41), so XPan stays in
+ * category 0 and decodes the dial and LEFT from the raw MPU messages instead,
+ * before Canon acts on them (mpu_input). RIGHT may arrive as 0x27 only.
+ * Therefore:
  *   UP / DOWN (short press): selected value up / down. DOWN also feeds ML's
  *          long-press detector (long = ML menu), which swallows a short press
  *          outside its menu; so a DOWN released within 300 ms counts here.
+ *   LEFT / RIGHT: previous / next field. Canon never sees LEFT's fake
+ *          half-press; real half-presses are untouched.
  *   Mode : XPan allows Tv, Av and M only; any other mode is switched to M.
  *   INFO : 3:2 = XPan layout on/off; 65:24 = layout top/bottom.
- *   dial : selects the next setting. In plain Live View the MPU applies the
- *          dial itself and reports only "a control was used" (0x54 with no
- *          follow-up key), so its direction is unknown; Canon's own change
- *          to its dial target is undone. If a 2/3 event does arrive (known
- *          direction), the selection moves next/previous accordingly.
+ *   dial : selected value down / up, like DOWN / UP (clockwise = up).
+ *          Canon's own exposure change is never applied.
  * With XPan > Debug info on, every key event (and the dial target value) is
  * logged to ML/LOGS/XPANKEYS.LOG.
  *   touch: tapping a HUD field only selects it; values change with UP/DOWN. Exception: tapping the
@@ -72,10 +73,14 @@ static volatile int set_down_ms;              /* Q/SET held since (ms); -1 = lon
 static volatile int wb_taps;                  /* taps on the selected WB field: next preset */
 static volatile int wheel_clicks;             /* dial clicks for the HUD field, signed */
 static volatile int value_request;           /* UP/DOWN value steps, signed */
-static volatile int dial_prefix_pending,dial_prefix_ms; /* bare 0x54 = dial in Live View */
-static volatile int dial_mode_replay;         /* key to replay after leaving dial mode */
-static volatile int open_menu_request;        /* long DOWN in the dial mode */
-static void dial_mode_schedule_clears(void);
+/* Raw MPU input (mpu_recv_hook): set from Canon's MPU receive path. */
+static volatile int hud_owns_lv;              /* HUD controls active (shoot_task) */
+static volatile int mpu_btn38_ms,mpu_sw1_ms;  /* "control used" / half-press switch */
+static volatile int mpu_dial_armed;           /* one dial message per "control used" */
+static volatile int mpu_dial_drop_ms;         /* last dropped dial message */
+static volatile int left_swallow,left_swallow_ms; /* dropping a LEFT press/release */
+static volatile int dial_resync_id,dial_resync_value; /* MPU copy to put back */
+static volatile int right_press_ms;           /* last PRESS_RIGHT, to pair its release */
 void xpan_photo_hud_force_redraw(void);       /* xpan-photo-hud.inc */
 static volatile int dbg_wheel_raw,dbg_wheel_seen;
 static volatile int dbg_touch_raw,dbg_touch_obj,dbg_touch_hit=-9;
@@ -109,13 +114,6 @@ static volatile int dbg_ring[9],dbg_ring_pos;
 
 int xpan_hud_controls_field(void) { return hud_field; }
 
-/* Dial mode (experiment, XPan > Debug info on): while the HUD owns Live
- * View, Canon is put in ML's own menu GUI mode (93 in Live View, as when the
- * ML menu is open). Canon's Live View keeps running, and its GUI state makes
- * the MPU forward the dial with its direction (button 13 -> 2/3). */
-#define XPAN_DIAL_GUI_MODE 93
-static volatile int dial_mode_held;           /* we put Canon in that mode */
-int xpan_hud_dial_mode_active(void) { return dial_mode_held && CURRENT_GUI_MODE==XPAN_DIAL_GUI_MODE; }
 static unsigned controls_block_mask(void)
 {
     unsigned m=0;
@@ -125,8 +123,7 @@ static unsigned controls_block_mask(void)
     if (RECORDING) m|=8;
     if (!xpan_photo_ui_active()) m|=16;
     if (!xpan_photo_hud_is_enabled()) m|=32;
-    if (gui_state!=GUISTATE_IDLE &&
-        !(dial_mode_held && CURRENT_GUI_MODE==XPAN_DIAL_GUI_MODE)) m|=64;
+    if (gui_state!=GUISTATE_IDLE) m|=64;
     if (!LV_NON_PAUSED) m|=128;
     return m;
 }
@@ -165,13 +162,10 @@ static int event_obj_word(struct event *event, int index)
     if ((obj&3) || ram<0x4000 || ram>=0x20000000u-64) return -1;
     return ((volatile int *)obj)[index];
 }
-static int target_field(unsigned target);
 static int target_value(unsigned target);
 static int key_inner(struct event *event)
 {
     if (event->param==GMT_OLC_INFO_CHANGED) return 1;   /* Canon status refresh */
-    /* A key right after 0x54 means that 0x54 was its prefix, not the dial. */
-    if (dial_prefix_pending && event->param!=GMT_GUICMD_PRESS_BUTTON_SOMETHING) dial_prefix_pending=0;
     /* Key log for XPan > Debug info only; slot 8 is a scratch slot otherwise. */
     int slot=8;
     if (xpan_photo_debug_enabled()) {
@@ -222,20 +216,6 @@ static int key_inner(struct event *event)
     if (IS_FAKE(event)) return 1;
     /* Short DOWN: timed here, both events still go on to ML's long-press code. */
     static int down_ms;
-    if (dial_mode_held && (event->param==BGMT_PRESS_DOWN || event->param==BGMT_UNPRESS_DOWN)) {
-        /* In the dial mode Canon auto-repeats PRESS_DOWN while held, which
-         * defeats ML's long-press detector: time the press here. Short =
-         * previous setting; held 600 ms = open the ML menu (shoot_task). */
-        if (event->param==BGMT_PRESS_DOWN) {
-            if (!down_ms) down_ms=get_ms_clock();
-            else if (get_ms_clock()-down_ms>=600 && down_ms>0) { open_menu_request=1; down_ms=-1; }
-        } else {
-            if (down_ms>0 && get_ms_clock()-down_ms<300) select_request--;
-            down_ms=0;
-        }
-        dbg_ring[slot]|=0x20000;
-        return 0;
-    }
     if (event->param==BGMT_PRESS_DOWN) { down_ms=get_ms_clock(); return 1; }
     if (event->param==BGMT_UNPRESS_DOWN) {
         if (down_ms>0 && get_ms_clock()-down_ms<300) { value_request--; dbg_ring[slot]|=0x20000; }
@@ -243,13 +223,9 @@ static int key_inner(struct event *event)
         return 1;
     }
     switch (event->param) {
-        case GMT_GUICMD_PRESS_BUTTON_SOMETHING:
-            /* Prefix of every control; a dial click if no key follows. */
-            dial_prefix_pending=1; dial_prefix_ms=get_ms_clock();
-            return 1;
         case BGMT_WHEEL_LEFT:
         case BGMT_WHEEL_RIGHT: {
-            /* Known direction: move the selection next / previous. */
+            /* Known direction (dial forwarded outside plain Live View). */
             int sign=event->param==BGMT_WHEEL_RIGHT ? 1:-1;
             uint32_t old=cli(); wheel_clicks=COERCE(wheel_clicks+sign,-8,8); sei(old);
             dbg_wheel_seen++;
@@ -287,17 +263,16 @@ static int key_inner(struct event *event)
             hud_field=hit;
             break;
         }
-        case BGMT_Q_SET:
-        case BGMT_MENU:
-        case BGMT_PLAY:
-            /* Canon's ML-menu mode would swallow these: return Canon to
-             * Live View first, then replay the key (shoot_task). */
-            if (!dial_mode_held) return 1;
-            dial_mode_replay=event->param;
-            break;
         case BGMT_PRESS_UP:                       /* value up (also blocks */
             value_request++; break;               /* Canon's drive dialog) */
         case BGMT_UNPRESS_UP:
+            break;
+        case BGMT_PRESS_RIGHT:                    /* next field */
+            right_press_ms=get_ms_clock(); select_request++; break;
+        case BGMT_UNPRESS_RIGHT:
+            /* Some RIGHT presses arrive as the release only. */
+            if (get_ms_clock()-right_press_ms>500) select_request++;
+            right_press_ms=0;
             break;
         default:
             return 1;
@@ -359,11 +334,6 @@ static void step_wb(int sign)
         if ((int)lens_info.kelvin>=KELVIN_MIN) last_kelvin=lens_info.kelvin;
         lens_set_kelvin(last_kelvin);
     } else set_wb_mode(presets[i]);
-}
-/* Wheel on WB: Kelvin adjustment only. */
-static void wheel_wb(int sign)
-{
-    if (lens_info.wb_mode==WB_KELVIN) kelvin_toggle(0,sign);
 }
 
 /* len 0: property.c uses Canon's own length (AF mode is 2 bytes on EOS M). */
@@ -442,20 +412,9 @@ static int target_value(unsigned target)
     }
     return 0;
 }
-static int target_field(unsigned target)
+static void step_field(int field, int sign)
 {
-    switch (target) {
-        case XPAN_WHEEL_SHUTTER: return XPAN_HUD_SHUTTER;
-        case XPAN_WHEEL_APERTURE: return XPAN_HUD_APERTURE;
-        case XPAN_WHEEL_ISO: return XPAN_HUD_ISO;
-        case XPAN_WHEEL_COMPENSATION: return XPAN_HUD_EV;
-    }
-    return -1;
-}
-static void step_field(int field, int sign, int wheel)
-{
-    if (field==XPAN_HUD_WB && wheel) wheel_wb(sign);
-    else apply(field,sign);
+    apply(field,sign);
     msleep(field==XPAN_HUD_FORMAT || field==XPAN_HUD_MODE ? 300:80);
 }
 
@@ -470,7 +429,7 @@ struct key_log_entry {
     uint8_t target;
     int16_t value;
 };
-#define KEY_LOG_SIZE 512
+#define KEY_LOG_SIZE 1024
 static struct key_log_entry key_log[KEY_LOG_SIZE];
 static volatile unsigned key_log_head;
 static unsigned key_log_written;
@@ -544,58 +503,6 @@ static void button_hook_install(void)
     key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
     sei(old);
 }
-/* GUI category notification to the MPU (FF0D76FC, r0 = category, r1 = 0).
- * It calls the handler stored in gui_main_struct+0x10 (0x3E164). */
-#define GUI_CATEGORY_NOTIFY 0xFF0D76FCu
-#define GUI_CATEGORY_NOTIFY_INSTR 0xE92D4070u
-#define GUI_CATEGORY_HANDLER 0x3E164u
-#define DIAL_FORWARD_CATEGORY 1          /* Canon's category for menus/dialogs */
-static int category_hook_state;           /* 0 not tried, 1 installed, -1 failed */
-static volatile int canon_category=-1;    /* last category Canon asked for */
-static volatile int sent_category=-1;     /* last category the MPU was given */
-static volatile int dial_forward_wanted;
-static void log_category(int canon, int sent)
-{
-    if (!xpan_photo_debug_enabled()) return;
-    struct key_log_entry entry=*key_log_add();
-    entry.type=7; entry.param=canon; entry.arg=sent; entry.fake=0;
-    entry.obj=0; entry.obj0=entry.obj1=entry.obj2=-1; entry.result=1;
-    uint32_t old=cli();
-    key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
-    sei(old);
-}
-static void category_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
-{
-    if (pc!=GUI_CATEGORY_NOTIFY) return;
-    canon_category=(int)regs[0];
-    /* Plain Live View while the HUD owns it: keep the dial forwarded. */
-    if (regs[0]==0 && dial_forward_wanted) regs[0]=DIAL_FORWARD_CATEGORY;
-    sent_category=(int)regs[0];
-    log_category(canon_category,sent_category);
-}
-static void category_send(int category)
-{
-    void (*handler)(int,int)=*(void (**)(int,int))GUI_CATEGORY_HANDLER;
-    if (!handler) return;
-    handler(category,0);
-    sent_category=category;
-    log_category(canon_category,category);
-}
-/* Called from shoot_task: forward the dial only while the HUD owns Live View. */
-static void dial_forward_step(unsigned mask)
-{
-    if (!category_hook_state) {
-        category_hook_state=-1;
-        if (*(volatile uint32_t *)GUI_CATEGORY_NOTIFY==GUI_CATEGORY_NOTIFY_INSTR &&
-            !patch_hook_function(GUI_CATEGORY_NOTIFY,GUI_CATEGORY_NOTIFY_INSTR,category_hook,
-                "XPan dial forwarding")) category_hook_state=1;
-    }
-    if (category_hook_state!=1) return;
-    int want=!mask && canon_category<=0;
-    dial_forward_wanted=want;
-    if (want && sent_category!=DIAL_FORWARD_CATEGORY) category_send(DIAL_FORWARD_CATEGORY);
-    else if (!want && sent_category==DIAL_FORWARD_CATEGORY && canon_category<=0) category_send(0);
-}
 /* Canon's "send to MPU" routine (RAM 0x38C4; the ROM debug command send_mpu
  * calls it as (class, id, data_len, data)). Debug only, log-only: record
  * every message so the one that makes the MPU forward the dial can be found.
@@ -606,6 +513,9 @@ static uint32_t mpu_hook_instr;
 static void mpu_send_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
 {
     if (pc!=MPU_SEND || !xpan_photo_debug_enabled()) return;
+    /* Periodic Live View status (several per second) would bury the keys. */
+    int msg=((regs[0]&0xff)<<8)|(regs[1]&0xff);
+    if (msg==0x0917 || msg==0x033b || msg==0x091a) return;
     struct key_log_entry entry;
     memset(&entry,0,sizeof(entry));
     entry.ms=get_ms_clock(); entry.type=6;
@@ -642,75 +552,127 @@ static void mpu_hook_install(void)
     key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
     sei(old);
 }
-/* Experiment (Debug info only): the MPU learns Canon's GUI state from MPU
- * message class 04 id 00 (PROP_GUI_STATE: 0 Live View, 6 menu, 9 Q). In a
- * non-zero state it forwards the dial with its direction (button 13).
- * Send that one MPU message directly, without changing Canon's property or
- * GUI, once per HUD activation; give up for good if Canon's GUI reacts. */
-#define MPU_GUI_STATE_FORWARD 9
-static int mpu_forward_sent,mpu_forward_ms,mpu_forward_disabled;
-static void mpu_gui_state_send(int state)
+/* Messages from the MPU (buttons, dial, properties), Debug info only.
+ * InitializeIntercom (RAM 0x380C, ROM FFA6CD9C) stores Canon's receive
+ * handler mpu_recv (RAM 0x36A0, ROM FFA6CC30) at 0x4C5BC+0x14; every MPU
+ * message goes through that pointer as buf = [len, class, id, data...].
+ * The pointer is swapped for a logger that calls the original, only while it
+ * still holds Canon's handler, so no Canon code is patched. */
+#define MPU_RECV_CBR 0x4C5D0u
+#define MPU_RECV_ORIGINAL 0x36A0u
+static int mpu_recv_state;             /* 0 not tried, 1 installed, -1 not found */
+static int (*mpu_recv_original)(uint8_t *buf, int a1, int a2, int a3);
+/* Decode the HUD controls from raw MPU input while the HUD owns Live View
+ * (key logs v42-v43). Returns 1 to drop the message before Canon sees it.
+ *   dial : 06 26 01 ("control used"), then within ~1 ms 01 05 xx (shutter)
+ *          or 01 06 xx (aperture) with the value the MPU moved its dial
+ *          target to (+-3 per click). The message is dropped, so Canon's
+ *          exposure never changes; the sign is the direction (clockwise =
+ *          up); shoot_task puts the camera's value back into the MPU.
+ *   LEFT : 06 26 01, 09 0C 01, 05 00 ... 05 0B, 09 0C 00: Canon would turn
+ *          this into a half-press/release. A real half-press always sends
+ *          the half-press switch 09 06 (with 09 18 E8) just before 09 0C 01,
+ *          so 09 0C 01 without it is LEFT, and that press/release is dropped.
+ *   RIGHT: 06 1A 00 (release only), left to Canon (GUI 0x27, see key_inner).
+ *   status: about 10-1000 ms after a dial click the MPU also reports its
+ *          moved value in 0A 08 [mask lo] [mask hi] fields... [1 byte], with
+ *          mask bit 0 = 2 bytes (01 80), bit 1 = 6 bytes (01 xx 98 10 00 Tv),
+ *          bit 2 = 5 bytes (01 03 50 18 Av). Canon and ML's lens code take
+ *          the value from there too, so for 1.5 s after a dropped click the
+ *          Tv/Av bytes are rewritten to the camera's value. Messages with
+ *          other mask bits are left alone.
+ * Canon's mpu_recv only dispatches to its handlers, so a dropped message
+ * leaves no state behind. */
+static int mpu_status_pin(uint8_t *buf, int len)
 {
+    if (len<5 || buf[4]!=0 || (buf[3]&~7)) return 0;
+    int mask=buf[3],off=5,changed=0;
+    if (mask&1) off+=2;
+    if (mask&2) {
+        if (off+6>len) return 0;
+        int tv=lens_info.raw_shutter;
+        if (tv && buf[off+5]!=tv) { buf[off+5]=tv; changed=1; }
+        off+=6;
+    }
+    int av=lens_info.raw_aperture;
+    if ((mask&4) && off+5<=len && av && buf[off+4]!=av) { buf[off+4]=av; changed=1; }
+    return changed;
+}
+static int mpu_input(uint8_t *buf, int len, int now)
+{
+    if (len<3) return 0;
+    int cls=buf[1],id=buf[2],v=len>=4 ? buf[3]:-1;
+    if (cls==0x06 && id==0x26) { mpu_btn38_ms=now; mpu_dial_armed=1; }
+    if (cls==0x09 && id==0x06) mpu_sw1_ms=now;
+    if (left_swallow && now-left_swallow_ms>3000) left_swallow=0;   /* safety */
+    if (left_swallow) {
+        if ((cls==0x05 && (id==0x00 || id==0x0b)) || (cls==0x09 && id==0x0c && v==1)) return 1;
+        if (cls==0x09 && id==0x0c && v==0) { left_swallow=0; return 1; }
+    }
+    if (!hud_owns_lv) return 0;
+    /* 2 = passed on, rewritten (logged as PINNED). */
+    if (cls==0x0a && id==0x08 && mpu_dial_drop_ms && now-mpu_dial_drop_ms<1500 && mpu_status_pin(buf,len)) return 2;
+    int recent=now-mpu_btn38_ms<=20;
+    /* Only the first dial-target message after "control used": the MPU's
+     * echoes of later camera-side changes (XPan's own step) are not clicks. */
+    if (cls==0x01 && (id==0x05 || id==0x06) && v>=0 && recent && mpu_dial_armed) {
+        mpu_dial_armed=0;
+        int cur=id==0x05 ? lens_info.raw_shutter:lens_info.raw_aperture;
+        if (!cur || v==cur) return 0;
+        wheel_clicks=COERCE(wheel_clicks+(v>cur ? 1:-1),-8,8);
+        dial_resync_id=id; dial_resync_value=cur; mpu_dial_drop_ms=now;
+        return 1;
+    }
+    if (cls==0x09 && id==0x0c && v==1 && recent && now-mpu_sw1_ms>30) {
+        left_swallow=1; left_swallow_ms=now; select_request--;
+        return 1;
+    }
+    return 0;
+}
+static int mpu_recv_hook(uint8_t *buf, int a1, int a2, int a3)
+{
+    if (!buf || (((uint32_t)buf)&~0x40000000u)>=0x20000000u) return mpu_recv_original(buf,a1,a2,a3);
+    int len=buf[0],now=get_ms_clock();
+    int drop=mpu_input(buf,len,now);
+    if (xpan_photo_debug_enabled()) {
+        struct key_log_entry entry;
+        memset(&entry,0,sizeof(entry));
+        uint8_t bytes[12]={0};
+        for (int i=0;i<len-1 && i<12;i++) bytes[i]=buf[i+1];
+        entry.ms=now; entry.type=10; entry.arg=len; entry.param=drop;
+        entry.obj0=(bytes[0]<<24)|(bytes[1]<<16)|(bytes[2]<<8)|bytes[3];
+        entry.obj1=(bytes[4]<<24)|(bytes[5]<<16)|(bytes[6]<<8)|bytes[7];
+        entry.obj2=(bytes[8]<<24)|(bytes[9]<<16)|(bytes[10]<<8)|bytes[11];
+        uint32_t old=cli();
+        key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
+        sei(old);
+    }
+    if (drop==1) return 0;
+    return mpu_recv_original(buf,a1,a2,a3);
+}
+/* Put the camera's dial target value back into the MPU after a dropped dial
+ * message, with the message Canon itself sends for it (class 01, 2 bytes). */
+static void dial_resync(void)
+{
+    uint32_t old=cli();
+    int id=dial_resync_id,value=dial_resync_value; dial_resync_id=0;
+    sei(old);
+    if (!id) return;
     static uint8_t data[2];
     int (*send)(int,int,int,const void *)=(int (*)(int,int,int,const void *))MPU_SEND;
-    data[0]=state; data[1]=0;
-    send(0x04,0x00,2,data);
+    data[0]=value; data[1]=0;
+    send(0x01,id,2,data);
 }
-static void mpu_forward_step(unsigned mask)
+/* Installed while the XPan photo UI is active: the HUD controls need it. */
+static void mpu_recv_install(void)
 {
-    if (!xpan_photo_debug_enabled() || mpu_hook_state!=1 || mpu_forward_disabled) return;
-    int now=get_ms_clock();
-    if (!mpu_forward_sent) {
-        static int active_since;
-        if (mask) { active_since=0; return; }
-        if (!active_since) active_since=now;
-        if (now-active_since<3000) return;
-        mpu_gui_state_send(MPU_GUI_STATE_FORWARD);
-        mpu_forward_sent=1; mpu_forward_ms=now;
-        return;
-    }
-    if (mask) {
-        /* Canon's GUI left Live View right after our message: never again. */
-        if (now-mpu_forward_ms<1500) mpu_forward_disabled=1;
-        mpu_forward_sent=0;
-        /* HUD switched off in Live View: tell the MPU we are back in state 0.
-         * Any other exit is a Canon screen, which sends its own state. */
-        if (mask==32u) mpu_gui_state_send(0);
-    }
-}
-static void log_gui_mode(int mode, int note)
-{
-    if (!xpan_photo_debug_enabled()) return;
-    struct key_log_entry entry;
-    memset(&entry,0,sizeof(entry));
-    entry.ms=get_ms_clock(); entry.type=3; entry.param=mode; entry.arg=note;
-    entry.obj=gui_state; entry.field=hud_field;
-    uint32_t old=cli();
-    key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
-    sei(old);
-}
-static void dial_mode_leave(int note)
-{
-    if (!dial_mode_held) return;
-    /* The ML menu shares this Canon mode: hand it over unchanged. */
-    if (CURRENT_GUI_MODE==XPAN_DIAL_GUI_MODE && !gui_menu_shown()) SetGUIRequestMode(0);
-    dial_mode_held=0;
-    log_gui_mode(CURRENT_GUI_MODE,note);
-}
-/* Canon draws its mode-93 screen straight into the shared bitmap layer when
- * the mode changes (and after setting changes). Clear ML's layer and redraw
- * the HUD a few times shortly afterwards so nothing of it stays visible. */
-static int clear_at[4];
-static void dial_mode_schedule_clears(void)
-{
-    int now=get_ms_clock();
-    clear_at[0]=now+150; clear_at[1]=now+600; clear_at[2]=0; clear_at[3]=0;
-}
-static void dial_mode_clears(unsigned mask)
-{
-    int now=get_ms_clock(),due=0;
-    for (int i=0;i<4;i++) if (clear_at[i] && now>=clear_at[i]) { clear_at[i]=0; due=1; }
-    if (due && !mask && lv) { clrscr(); xpan_photo_hud_force_redraw(); log_gui_mode(CURRENT_GUI_MODE,5); }
+    if (mpu_recv_state || !xpan_photo_ui_active()) return;
+    volatile uint32_t *cbr=(volatile uint32_t *)MPU_RECV_CBR;
+    mpu_recv_state=-1;
+    if (*cbr!=MPU_RECV_ORIGINAL) return;
+    mpu_recv_original=(int (*)(uint8_t *,int,int,int))MPU_RECV_ORIGINAL;
+    *cbr=(uint32_t)mpu_recv_hook;
+    mpu_recv_state=1;
 }
 
 /* Diagnostics (Debug info): who erases the HUD, and is the AF frame known?
@@ -741,50 +703,11 @@ static void hud_watch(unsigned mask)
         last_px=px; last_af=af; last_ax=ax;
     }
 }
-static void dial_mode_step(unsigned mask)
-{
-    static int last_mode=-1,left_ms,enter_ms;
-    int mode=CURRENT_GUI_MODE,now=get_ms_clock();
-    if (mode!=last_mode) {
-        log_gui_mode(mode,0); last_mode=mode;
-        if (mode==XPAN_DIAL_GUI_MODE || mode==0) dial_mode_schedule_clears();
-    }
-    dial_mode_clears(mask);
-    if (open_menu_request) {
-        open_menu_request=0;
-        /* ML's menu uses this same Canon mode: open it in place. */
-        if (dial_mode_held) gui_open_menu();
-        return;
-    }
-    int key=dial_mode_replay;
-    if (key) {
-        dial_mode_replay=0;
-        dial_mode_leave(1);
-        msleep(150);
-        fake_simple_button(key);
-        left_ms=now;
-        return;
-    }
-    /* Canon switches modes asynchronously: allow 1 s to reach ours. */
-    int settling=dial_mode_held && now-enter_ms<1000;
-    if (dial_mode_held && mode!=XPAN_DIAL_GUI_MODE && !settling) {
-        /* Canon left our mode by itself (half-press, shot, mode dial...). */
-        dial_mode_held=0; left_ms=now; log_gui_mode(mode,2);
-    }
-    /* While settling, a not-yet-idle GUI state is our own transition. */
-    int want=xpan_photo_debug_enabled() && !(settling ? (mask&~64u) : mask);
-    if (!want) { dial_mode_leave(3); return; }
-    if (dial_mode_held) return;
-    /* Enter from plain Live View only, never during focus/capture. */
-    if (mode!=0 || get_halfshutter_pressed() || lens_info.job_state || now-left_ms<500) return;
-    dial_mode_held=1; enter_ms=now;
-    SetGUIRequestMode(XPAN_DIAL_GUI_MODE);
-    log_gui_mode(XPAN_DIAL_GUI_MODE,4);
-}
 static void key_log_flush(void)
 {
     button_hook_install();
     mpu_hook_install();
+    mpu_recv_install();
     static int last_ms,last_target=-1,last_value;
     if (!xpan_photo_debug_enabled()) { key_log_written=key_log_head; return; }
     /* Canon's dial target value, logged whenever it changes. */
@@ -820,12 +743,12 @@ static void key_log_flush(void)
     }
     for (;key_log_written!=head;key_log_written++) {
         const struct key_log_entry *e=&key_log[key_log_written%KEY_LOG_SIZE];
-        int n=e->type==2
+        int n=e->type==10
+            ? snprintf(line,sizeof(line),"%8d MPU RECV len %d: %08x %08x %08x%s\n",
+                (int)e->ms,e->arg,e->obj0,e->obj1,e->obj2,e->param==1 ? " DROPPED":e->param==2 ? " PINNED":"")
+            : e->type==2
             ? snprintf(line,sizeof(line),"%8d HUDWATCH px %06x af %d (1 rect,2 MF,4 lens) rect %d,%d %dx%d guimode %d\n",
                 (int)e->ms,e->param,e->arg,e->obj,e->obj0,e->obj1,e->obj2,e->field)
-            : e->type==3
-            ? snprintf(line,sizeof(line),"%8d GUI MODE %d gui_state %d note %d (0 seen,1 key,2 canon left,3 hud off,4 enter)\n",
-                (int)e->ms,e->param,e->obj,e->arg)
             : e->type==7
             ? snprintf(line,sizeof(line),"%8d ZOOM stage %d (0 start,1 direct,2 pre,3 retry) req %x now %x gui_state %d guimode %d rec %d\n",
                 (int)e->ms,e->param,e->arg,e->obj,e->obj0,e->obj1,e->obj2)
@@ -837,8 +760,6 @@ static void key_log_flush(void)
             : e->type==6
             ? snprintf(line,sizeof(line),"%8d MPU SEND class %02x id %02x len %d data %08x %08x %08x\n",
                 (int)e->ms,(e->param>>8)&0xff,e->param&0xff,e->arg,e->obj0,e->obj1,e->obj2)
-            : e->type==7
-            ? snprintf(line,sizeof(line),"%8d GUI CATEGORY canon %d sent %d\n",(int)e->ms,e->param,e->arg)
             : e->type==8
             ? snprintf(line,sizeof(line),"%8d BUTTON HOOK state %d error %x\n",(int)e->ms,e->param,e->arg)
             : e->type==9
@@ -855,41 +776,27 @@ static void key_log_flush(void)
     FIO_CloseFile(f);
 }
 
-/* Dial clicks counted by the key handler step the selected HUD field. */
-static void target_restore(unsigned target, int v)
+/* One value step on the selected field: UP/DOWN and the dial (+1 = UP or
+ * clockwise). On WB in Kelvin it adjusts the temperature; otherwise WB steps
+ * the presets. Taps always step the presets, which is how Kelvin is left. */
+static void value_step(int sign)
 {
-    switch (target) {
-        case XPAN_WHEEL_SHUTTER: lens_set_rawshutter(v); break;
-        case XPAN_WHEEL_APERTURE: lens_set_rawaperture(v); break;
-        case XPAN_WHEEL_ISO: lens_set_rawiso(v); break;
-        case XPAN_WHEEL_COMPENSATION: lens_set_ae(v); break;
-    }
+    if (hud_field==XPAN_HUD_WB && lens_info.wb_mode==WB_KELVIN) { kelvin_toggle(0,sign); msleep(80); }
+    else step_field(hud_field,sign);
 }
-/* Dial: next setting per click. Canon's own change to its dial target is
- * put back (the MPU applies the dial before any event reaches the camera). */
+/* Dial clicks decoded from raw MPU input (mpu_input), or forwarded with a
+ * known direction as GUI events 2/3: one value step each on the selected
+ * field (clockwise = up). The MPU's copy of its dial target is put back
+ * first, so a step on that same setting starts from the camera's value. */
 static void handle_dial(int active)
 {
-    static unsigned saved_target; static int saved_value,restore_until,restores;
-    unsigned target=xpan_photo_wheel_targets();
-    int now=get_ms_clock(),v=target_value(target);
+    dial_resync();
     uint32_t old=cli();
     int clicks=wheel_clicks; wheel_clicks=0;
-    int bare=dial_prefix_pending && now-dial_prefix_ms>=40;
-    if (bare) dial_prefix_pending=0;
     sei(old);
-    if (!active || lens_info.job_state || target!=saved_target) {
-        saved_target=target; saved_value=v; restore_until=0; return;
-    }
-    if (bare || clicks) { restore_until=now+700; restores=0; }
-    if (restore_until && now<restore_until) {
-        if (target && v!=saved_value && restores<2) { target_restore(target,saved_value); restores++; }
-    } else {
-        /* Keep the pre-click value while a 0x54 is still unresolved. */
-        restore_until=0;
-        if (!dial_prefix_pending) saved_value=v;
-    }
-    if (bare) { dbg_used++; select_step(1); }
-    if (clicks) { dbg_used++; for (int i=0;i<ABS(clicks);i++) select_step(clicks>0 ? 1:-1); }
+    if (!active || lens_info.job_state || !clicks) return;
+    dbg_used++;
+    for (int i=0;i<ABS(clicks) && i<8;i++) value_step(clicks>0 ? 1:-1);
 }
 
 /* Canon's INFO display modes (changed while XPan was off) must not survive
@@ -977,8 +884,7 @@ void xpan_hud_controls_step(void)
     uint32_t old=cli(); int moves=select_request,infos=info_request; select_request=0; info_request=0; sei(old);
     if (!(mask&~32u) && (infos&1)) xpan_photo_info_toggle();
     if (!(mask&~32u)) keep_manual_mode();
-    /* In the dial mode Canon's Live View overlays are not active: no INFO presses. */
-    if (!dial_mode_held) keep_clean_display(mask&~32u);
+    keep_clean_display(mask&~32u);
     if (!xpan_hud_controls_field_enabled(hud_field)) select_step(1);
     if (!mask) while (moves) { select_step(moves>0 ? 1:-1); moves+=moves>0 ? -1:1; }
     /* Movie: 1:1 crop toggle and long Q/SET. */
@@ -1001,24 +907,13 @@ void xpan_hud_controls_step(void)
      * reaches Canon directly. */
     if (long_set) fake_simple_button(BGMT_Q_SET);
     old=cli(); int taps=wb_taps; wb_taps=0; sei(old);
-    if (!mask) for (int i=0;i<taps;i++) step_field(XPAN_HUD_WB,1,0);
-    /* v41: forcing the GUI category from here made Canon's GUI oscillate and
-     * turned the screen off (the handler switches Canon's GUI, not just the
-     * MPU). Disabled until the MPU-only message is known. */
-    (void)dial_forward_step;
-    (void)mpu_forward_step;
-    (void)dial_mode_step;                 /* GUI mode 93 experiment: off */
+    if (!mask) for (int i=0;i<taps;i++) step_field(XPAN_HUD_WB,1);
     hud_watch(mask);
     old=cli(); int values=value_request; value_request=0; sei(old);
     if (!mask && values)
-        for (int i=0;i<ABS(values) && i<8;i++) {
-            /* UP/DOWN on WB: in Kelvin they adjust the temperature (like the
-             * dial); otherwise they step the presets. Taps always step the
-             * presets, which is how Kelvin is left again. */
-            if (hud_field==XPAN_HUD_WB && lens_info.wb_mode==WB_KELVIN)
-            { kelvin_toggle(0,values>0 ? 1:-1); msleep(80); }
-            else step_field(hud_field,values>0 ? 1:-1,0);
-        }
+        for (int i=0;i<ABS(values) && i<8;i++) value_step(values>0 ? 1:-1);
+    hud_owns_lv=!mask;                    /* mpu_input decodes the controls */
+    mpu_recv_install();
     handle_dial(!mask);
     key_log_flush();
 }

@@ -32,9 +32,14 @@ Photo mode (menu **Shoot > XPan** for framing and HUD, **XPan** tab for look, gr
 * **Photo HUD**: shutter, aperture, ISO, EV, WB, drive, meter, LUT, format,
   battery, time and card space, in four colour themes (Orange, Silver, Red,
   Blue) and with an optional rule-of-thirds grid.
-* **Controls**: the wheel and arrow keys change the selected HUD field; touch
-  only selects fields (tapping the already selected WB field steps the WB
-  presets). With Kelvin WB, UP/DOWN change the temperature.
+* **Controls**: LEFT/RIGHT select the previous/next HUD field; the wheel and
+  UP/DOWN change its value (clockwise = up). Touch only selects fields (tapping
+  the already selected WB field steps the WB presets). With Kelvin WB, the
+  wheel and UP/DOWN change the temperature. In plain Live View the EOS M
+  would apply the wheel to Canon's own setting and turn LEFT into a
+  half-press; XPan reads both from the camera's button controller first, so
+  Canon never acts on them. Real half-presses are not affected. How this
+  works, and how it was found: [README-XPAN-MPU.md](README-XPAN-MPU.md).
   A short press of SET cycles Canon's focus magnification 1x / 5x / 10x.
 * **Custom LUT**: any `.cube` file from `ML/XPAN/LUTS/` (up to 33^3), with
   strength. It is converted into Canon's native colour table, so the look is
@@ -164,7 +169,7 @@ behind `CONFIG_XPAN`. Other cameras are unaffected (`CONFIG_EOSM`).
 | File | Role |
 | --- | --- |
 | `src/cropmarks.c`, `src/xpan-photo-hud.inc`, `src/xpan-mode.h` | XPan menu, framing, HUD drawing, grid, themes |
-| `src/xpan-hud-controls.c` | key / wheel / touch routing for the HUD, SET zoom, WB/Kelvin |
+| `src/xpan-hud-controls.c` | key / wheel / touch routing for the HUD, SET zoom, WB/Kelvin; wheel and LEFT decoded from raw MPU input ([README-XPAN-MPU.md](README-XPAN-MPU.md)) |
 | `src/xpan-native-look.c`, `src/xpan-workflow.inc` | look menu and state machine (LUT, tone base, headroom, movie) |
 | `src/xpan-cube.c`, `src/xpan-lut.c`, `src/xpan-native-cube.c`, `src/xpan-native-table.c` | `.cube` parsing, interpolation and conversion into Canon's native colour table |
 | `src/xpan-live-native.c`, `src/xpan-live-neutral*.inc` | the same table on the Live View / movie path |
