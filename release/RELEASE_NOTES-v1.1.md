@@ -83,4 +83,6 @@ See `README-XPAN.md` for the full manual.
 
 | File | SHA-256 |
 | --- | --- |
-| `XPan-EOSM-202-v1.1.zip` | *(add when the release zip is built)* |
+| `XPan-EOSM-202-v1.1.zip` | `c3cc047e598646645dd355df44b12d06709b33f7300b82880545bce0ddd93ec1` |
+
+Build `9ea47b577` (`xpan-features`), 2026-11-03 19:40 UTC.
