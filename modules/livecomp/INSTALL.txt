@@ -1,4 +1,4 @@
-Live Composite / Live Bulb LCM64 - Canon EOS M firmware 2.0.2
+Live Composite / Live Bulb v0.4 (LCM68) - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite and Live Bulb for the EOS M at full sensor
 resolution (5208x3478): the camera keeps exposing frames of the chosen
@@ -9,7 +9,8 @@ shutter speed, and the LCD shows the result building up after every frame.
  - Live Bulb adds the frames together, exactly like one long bulb exposure
    of (frames x shutter): everything gets brighter as the exposure goes on,
    and you can watch it and stop when it looks right.
-The result is an uncompressed RAW DNG in DCIM/LIVE on the card.
+The result is an uncompressed RAW DNG (or MLV, see File format) in
+DCIM/LIVE on the card.
 
 INSTALL
 Copy ML/modules/livecomp.mo to the same location on your ML card, replacing
@@ -61,7 +62,7 @@ MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
                     With Debug ON the result message shows each save time,
                     e.g. "; DNG 1.9 s; MLV 0.9 s". The LVBR/LVDK extra files
                     are always DNG.
-   Debug            OFF (default): only the DNG is written, no log files.
+   Debug            OFF (default): only the picture is written, no log files.
                     ON: diagnostic LVFRnnnn.LOG and .CSV next to each DNG
                     (and DCIM/LIVE/LVPREVW.LOG for Preview only). Turn it on
                     when reporting a problem.
@@ -94,7 +95,8 @@ RUN
     leave the full-sensor mode ("Ending the current frame: up to n s").
  5. The camera returns to normal view, applies the noise reduction
     ("Applying denoise...") and saves DCIM/LIVE/LVFRnnnn.DNG
-    (Live Bulb: LVBLnnnn.DNG, with ExposureTime = frames x shutter)
+    (Live Bulb: LVBLnnnn.DNG, with ExposureTime = frames x shutter;
+    .MLV instead of or as well as the DNG, see File format)
     (camera WB as DNG white balance, EOS M focus pixels removed;
     the folder is created if needed; Canon's playback does not show it).
     With Debug ON also .LOG and .CSV. Press SET again for another session;
