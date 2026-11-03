@@ -4,6 +4,7 @@ build_tools/*.py text eol=lf
 build_tools/*.sh text eol=lf
 modules/*.py text eol=lf
 extras/XPan_tools/*.py text eol=lf
-data/XPAN/*.CUBE text eol=lf
+data/XPAN/*.cube text eol=lf
+data/XPAN/LUTS/*.cube text eol=lf
 *.cmd text eol=crlf
 *.npy binary

@@ -90,6 +90,53 @@ const struct xpan_lut *xpan_native_cube_table(void) { return cube_valid ? &cube:
 int xpan_native_cube_identity(void) { return cube_valid && cube_identity; }
 unsigned xpan_native_cube_revision(void) { return cube_valid ? cube_revision:0; }
 
+/* Display form of a Cube file name: without .cube / .CUB and without the
+ * "~N" of a FAT32 8.3 alias (KODAK~1.CUB -> KODAK). */
+void xpan_cube_display_name(char *name)
+{
+    unsigned n=strlen(name);
+    if (n>=5 && !strcasecmp(name+n-5,".cube")) n-=5;
+    else if (n>=4 && !strcasecmp(name+n-4,".cub")) n-=4;
+    name[n]=0;
+    unsigned d=n;
+    while (d>0 && name[d-1]>='0' && name[d-1]<='9') d--;
+    if (d<n && d>=2 && name[d-1]=='~') name[d-1]=0;
+}
+/* FAT32 cards: Canon's file system only knows the 8.3 alias of a long name,
+ * and a .cube extension already makes a name long. The alias is usually the
+ * first 6 characters of the name + "~N" + .CUB, but N depends on the other
+ * files in the folder (CINEON~2.CUB) and Windows hashes very short names
+ * (BW.cube -> BW2BCE~1.CUB). So XPan opens dir+name, or else the first .CUB
+ * in dir whose name starts with the name's first 6 characters (3 or more)
+ * and "~". Returns the file size, 0 if none; path holds the name used. */
+static uint32_t cube_resolve(char *path, unsigned size, const char *dir, const char *name)
+{
+    uint32_t bytes=0;
+    snprintf(path,size,"%s%s",dir,name);
+    if (!FIO_GetFileSize(path,&bytes) && bytes) return bytes;
+    unsigned base=0;
+    while (name[base] && name[base]!='.') base++;
+    if (base<3) return 0;
+    if (base>6) base=6;
+    struct fio_file file;
+    struct fio_dirent *d=FIO_FindFirstEx(dir,&file);
+    if (!d || IS_ERROR(d)) return 0;
+    uint32_t found=0;
+    do {
+        unsigned n=strlen(file.name);
+        if ((file.mode&ATTR_DIRECTORY) || n<base+5 || strcasecmp(file.name+n-4,".cub") ||
+            file.name[base]!='~') continue;
+        unsigned i=0;
+        while (i<base && (file.name[i]|0x20)==(name[i]|0x20)) i++;   /* ASCII, any case */
+        if (i<base) continue;
+        snprintf(path,size,"%s%s",dir,file.name);
+        bytes=0;
+        if (!FIO_GetFileSize(path,&bytes) && bytes) { found=bytes; break; }
+    } while (!FIO_FindNextEx(d,&file));
+    FIO_FindClose(d);
+    return found;
+}
+
 int xpan_native_cube_select(struct card_info *card,int delta,int refresh)
 {
     if (!card) {
@@ -98,7 +145,8 @@ int xpan_native_cube_select(struct card_info *card,int delta,int refresh)
     }
     if (!cube_count || refresh) {
         char previous[CUBE_NAME_BYTES],path[FIO_MAX_PATH_LENGTH];
-        snprintf(previous,sizeof(previous),"%s",cube_count ? cube_names[cube_index]:"IDENT.CUBE");
+        snprintf(previous,sizeof(previous),"%s",cube_count ? cube_names[cube_index]:"IDENT.cube");
+        xpan_cube_display_name(previous);
         /* Browsing must not invalidate a table a Canon transfer may be using.
          * cached_name still lets the later loader detect a changed selection. */
         list_state=XPAN_CUBE_LIST_SCANNING;
@@ -115,7 +163,7 @@ int xpan_native_cube_select(struct card_info *card,int delta,int refresh)
             /* Bound both directory work and persistent list storage. */
             if (++visited>256 || cube_count>=MAX_CUBES) break;
             /* .cube, or .CUB: on FAT32 Canon lists only the 8.3 alias of a long
-             * name (Cine Kodak.cube -> CINEKO~1.CUB). The alias opens normally. */
+             * name (KODAK.cube -> KODAK~1.CUB). The alias opens normally. */
             unsigned length=strlen(file.name);
             int cube=length>=6 && !strcasecmp(file.name+length-5,".cube");
             int alias=length>=5 && !strcasecmp(file.name+length-4,".cub");
@@ -136,9 +184,13 @@ int xpan_native_cube_select(struct card_info *card,int delta,int refresh)
                 memcpy(cube_names[i],cube_names[j],sizeof(temp));
                 memcpy(cube_names[j],temp,sizeof(temp));
             }
-        for (unsigned i=0; i<cube_count; i++)
+        for (unsigned i=0; i<cube_count; i++) {
+            char shown[CUBE_NAME_BYTES];
+            snprintf(shown,sizeof(shown),"%s",cube_names[i]);
+            xpan_cube_display_name(shown);
             if ((cube_saved_name && cube_name_hash(cube_names[i])==(unsigned)cube_saved_name) ||
-                (!cube_saved_name && !strcasecmp(previous,cube_names[i]))) cube_index=i;
+                (!cube_saved_name && !strcasecmp(previous,shown))) cube_index=i;
+        }
     } else if (delta) {
         cube_index=(cube_index+cube_count+(delta>0 ? 1:-1))%cube_count;
     }
@@ -259,9 +311,10 @@ static struct base_slot {
 };
 static int base_slot_load(struct base_slot *b,struct card_info *card,volatile int *cancel)
 {
-    char path[FIO_MAX_PATH_LENGTH]; uint32_t bytes=0;
-    snprintf(path,sizeof(path),"%s:/ML/XPAN/%s",card->drive_letter,b->file);
-    if (FIO_GetFileSize(path,&bytes) || !bytes || bytes>MAX_CUBE_FILE_BYTES) {
+    char path[FIO_MAX_PATH_LENGTH],dir[16];
+    snprintf(dir,sizeof(dir),"%s:/ML/XPAN/",card->drive_letter);
+    uint32_t bytes=cube_resolve(path,sizeof(path),dir,b->file);
+    if (!bytes || bytes>MAX_CUBE_FILE_BYTES) {
         b->valid=0; snprintf(b->status,sizeof(b->status),"%s missing",b->file); return 0;
     }
     if (b->valid && b->card==card && b->size==bytes) return 1;

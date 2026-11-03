@@ -53,16 +53,18 @@ $(BUILD_DIR)/xpan-live-native.o: $(SRC_DIR)/xpan-live-neutral.inc $(SRC_DIR)/xpa
 $(addprefix $(BUILD_DIR)/,xpan-native-table.o xpan-cube.o xpan-lut.o): CFLAGS += -O2
 
 # Card data, packaged as ML/XPAN/ in magiclantern.zip:
-#   data/XPAN/*.CUBE   Cineon tone bases (photo +1/+2 EV, Live View)
+#   data/XPAN/*.cube   Cineon tone bases (photo +1/+2 EV, Live View)
 #   data/XPAN/*.BIN    WMARK_1/2.BIN (orange/white logo), WMFONT.BIN (LUT name
 #                      font), GRAIN.BIN (Canon grain texture)
 #   data/XPAN/LUTS/    user looks (*.cube); the folder is created even if empty
+# Shipped .cube names have at most 6 characters before the dot: on FAT32 cards
+# the camera opens them through their 8.3 alias (NAME~1.CUB).
 # Rebuilt on every zip so files removed from the repository leave the card too.
 XPAN_DATA_DIR = $(TOP_DIR)/data/XPAN
 zip_contents:: $(ZIP_DIR) | $(BUILD_DIR)
 	rm -rf $(ZIP_DIR)/ML/XPAN
 	mkdir -p $(ZIP_DIR)/ML/XPAN/LUTS
-	$(CP) $(XPAN_DATA_DIR)/*.CUBE $(XPAN_DATA_DIR)/*.BIN $(ZIP_DIR)/ML/XPAN/
+	$(CP) $(XPAN_DATA_DIR)/*.cube $(XPAN_DATA_DIR)/*.BIN $(ZIP_DIR)/ML/XPAN/
 	find $(XPAN_DATA_DIR)/LUTS -maxdepth 1 -type f -iname '*.cube' -exec $(CP) {} $(ZIP_DIR)/ML/XPAN/LUTS/ \;
 # XPan is incompatible with almost every module, so ship none: ML/modules/
 # keeps only the symbol file. This rule runs after the generic zip_contents

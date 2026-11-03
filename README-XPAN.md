@@ -47,7 +47,7 @@ Photo mode (menu **Shoot > XPan** for framing and HUD, **XPan** tab for look, gr
 * **Tone base / Highlight headroom**: *Canon Neutral*, or *Cineon log* with
   +1 or +2 EV of extra highlight headroom. The Cineon base under-exposes
   Canon's JPEG development by 1 or 2 EV (JPEG_OBWB gain) and maps it back
-  through a calibrated log base (`ML/XPAN/CINEON7*.CUBE`) before the custom
+  through a calibrated log base (`ML/XPAN/CIN1EV.cube`, `CIN2EV.cube`) before the custom
   LUT, so highlights that Canon would clip survive into the LUT.
 * **Film grain** (SET: ON/OFF, PLAY: options): *Film* (soft,
   brightness-dependent, computed on the CPU) or *Canon* (Canon's native
@@ -93,10 +93,12 @@ or any other grading tool that exports `.cube` LUTs.
   `DOMAIN_MIN 0 0 0` / `DOMAIN_MAX 1 1 1` with output values between 0 and 1.
   At most 16 files, with plain ASCII names under 48 characters.
 * **FAT32 cards** (cards of 32 GB or less formatted in the camera): the
-  camera only sees the short 8.3 form of a long file name, so
-  `Cine Kodak.cube` appears as `CINEKO~1`. It still works, but use names of at
-  most 8 characters plus `.CUBE` (e.g. `KODAK.CUBE`) to see readable names in
-  the menu, the HUD and the watermark. exFAT cards show long names.
+  camera only sees the short 8.3 form of a file name, and a `.cube` extension
+  already counts as long. Every `.cube` file still works, but its name is
+  shortened: `KODAK.cube` shows as `KODAK`, `Cine Kodak.cube` as `CINEKO`.
+  Keep names to at most 6 characters before `.cube` to see them in full in the
+  menu, the HUD and the watermark. exFAT cards (larger cards) show full names,
+  spaces included: `Cine Kodak.cube` appears as "Cine Kodak".
 
 Copy the files to `ML/XPAN/LUTS/` and use *Refresh Cube list*, or restart the
 camera.
@@ -107,9 +109,9 @@ The XPan build puts everything in `magiclantern.zip`. Each file comes from
 `data/XPAN/` in the repository:
 
 ```
-ML/XPAN/CINEON7.CUBE       tone base for +1 EV headroom
-ML/XPAN/CINEON7_2EV.CUBE   tone base for +2 EV headroom
-ML/XPAN/CINEONLV.CUBE      Live View tone base, 17^3
+ML/XPAN/CIN1EV.cube        tone base for +1 EV headroom
+ML/XPAN/CIN2EV.cube        tone base for +2 EV headroom
+ML/XPAN/CINLV.cube         Live View tone base, 17^3
 ML/XPAN/WMARK_1.BIN        orange watermark logo (from extras/XPan_tools)
 ML/XPAN/WMARK_2.BIN        white watermark logo
 ML/XPAN/WMFONT.BIN         font for the LUT name next to the logo
@@ -165,8 +167,8 @@ behind `CONFIG_XPAN`. Other cameras are unaffected (`CONFIG_EOSM`).
   the calibration model in `build_tools/*.npy`:
 
   ```
-  python3 xpan_cineon_base_v7.py xpan_cineon_model_v7.npy xpan_cineon_corr_v7.npy CINEON7.CUBE 1 xpan_cineon_stepcomp_v8.npy
-  python3 xpan_cineon_base_v7.py xpan_cineon_model_v7.npy xpan_cineon_corr_v7.npy CINEON7_2EV.CUBE 2 xpan_cineon_stepcomp_v7.npy
+  python3 xpan_cineon_base_v7.py xpan_cineon_model_v7.npy xpan_cineon_corr_v7.npy CIN1EV.cube 1 xpan_cineon_stepcomp_v8.npy
+  python3 xpan_cineon_base_v7.py xpan_cineon_model_v7.npy xpan_cineon_corr_v7.npy CIN2EV.cube 2 xpan_cineon_stepcomp_v7.npy
   ```
 
 ## Source map

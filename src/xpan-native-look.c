@@ -40,13 +40,13 @@ static CONFIG_INT("xpan.lut.lcd",live_preview_enabled,1);
 /* Custom .cube only: lower Canon's JPEG_OBWB gains by 0/1/2 stops so RAW
  * highlights are not clipped inside Canon's render (Test68), and compose the
  * matching Neutral re-expansion base under the Cube in the same shot. */
-/* 0 Canon Neutral (no headroom), 1 Cineon log base (gains -1 EV + CINEON7.CUBE),
+/* 0 Canon Neutral (no headroom), 1 Cineon log base (gains -1 EV + CIN1EV.cube),
  * 2 Calibration (gains -2 EV, Canon render untouched, identity Cube). */
 static CONFIG_INT("xpan.base",headroom_stops,1);
 /* JPEG_OBWB gain reduction: Cineon log uses -1 EV (v8: halves the shadow
  * expansion that posterized LUT output; HTP still keeps RAW white below the
  * table's top, J~249). Calibration keeps the -2 EV used to fit model v7.
- * CINEON7.CUBE must be generated for the same value (xpan_cineon_base_v7.py). */
+ * CIN1EV.cube must be generated for the same value (xpan_cineon_base_v7.py). */
 /* XPan > Highlight headroom (Cineon log only): +1 EV (smoother shadows) or
  * +2 EV (one more stop of RAW highlight colour, coarser deep shadows). */
 static CONFIG_INT("xpan.headroom.ev",headroom_ev,1);
@@ -124,7 +124,7 @@ void xpan_native_look_note_jpeg(void)
     capture_trace_count++;
 }
 
-/* Photo base for the selected Tone base. Headroom render -> CINEON7; if a
+/* Photo base for the selected Tone base. Headroom render -> CIN1EV; if a
  * guard rejects the headroom render for this shot (e.g. unverified ISO), the
  * Neutral -> Cineon base (same as the LCD) keeps the LUT on Cineon input, so
  * the JPEG still matches the preview, only without the extra headroom. */

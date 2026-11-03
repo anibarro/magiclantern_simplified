@@ -21,6 +21,8 @@ enum xpan_cube_list_state xpan_native_cube_list_state(void);
 void xpan_native_cube_invalidate(void);
 const char *xpan_native_cube_filename(void);
 const char *xpan_native_cube_filename_after(int delta);
+/* Display form of a Cube file name: no .cube/.CUB, no FAT32 "~1" suffix. */
+void xpan_cube_display_name(char *name);
 const char *xpan_native_cube_loaded_name(void);
 const char *xpan_native_cube_status(void);
 int xpan_native_cube_load(struct card_info *card,volatile int *cancel);
@@ -32,15 +34,17 @@ int xpan_native_cube_save(struct card_info *card,unsigned number,
     uint32_t hook_us,uint32_t matched,uint32_t flags,uint32_t source_hash,uint32_t output_hash);
 /* Headroom tone base (Cineon log), ML/XPAN/<file>. */
 /* v7: photo base calibrated for the full-HTP render (v6 CINEONH, v5 CINEON). */
-#define XPAN_BASE_FILE "CINEON7.CUBE"          /* JPEG_OBWB -1 EV (highlight headroom +1) */
-#define XPAN_BASE_FILE_2EV "CINEON7_2EV.CUBE"  /* JPEG_OBWB -2 EV (highlight headroom +2) */
+/* Base names of at most 6 characters: on FAT32 they open through their
+ * predictable 8.3 alias (CIN1EV~1.CUB), see cube_resolve(). */
+#define XPAN_BASE_FILE "CIN1EV.cube"           /* JPEG_OBWB -1 EV (highlight headroom +1) */
+#define XPAN_BASE_FILE_2EV "CIN2EV.cube"       /* JPEG_OBWB -2 EV (highlight headroom +2) */
 /* Select the photo base file; a change forces a reload. */
 void xpan_native_base_set_photo_file(const char *file);
 int xpan_native_base_load(struct card_info *card,volatile int *cancel);
 const struct xpan_lut *xpan_native_base_table(void);
 const char *xpan_native_base_status(void);
 /* Live View base (Canon render at normal gains -> same Cineon), 17^3 max. */
-#define XPAN_BASE_LV_FILE "CINEONLV.CUBE"
+#define XPAN_BASE_LV_FILE "CINLV.cube"
 const struct xpan_lut *xpan_native_base_lv_table(void);
 const char *xpan_native_base_lv_status(void);
 #endif
