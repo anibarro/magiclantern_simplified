@@ -824,15 +824,16 @@ static void keep_clean_display(unsigned mask)
     fake_simple_button(BGMT_INFO);
 }
 
-/* XPan needs a predictable exposure: Tv, Av or M. Anything else (P, Auto,
- * scene/creative modes) is switched to M; at most 3 tries per episode, so a
- * physical Auto switch position can never cause a request loop. */
+/* XPan needs a predictable exposure and Canon's look settings unlocked:
+ * Tv, Av or M. Anything else (P, Creative Auto, scene modes) is switched to M
+ * while XPan is ON. Three quick tries, then one every 10 s for as long as the
+ * mode is wrong; the A+ dial position never gets here (XPan is off there). */
 static void keep_manual_mode(void)
 {
     static int tries,last_ms;
     int m=shooting_mode;
     if (m==SHOOTMODE_M || m==SHOOTMODE_AV || m==SHOOTMODE_TV) { tries=0; return; }
-    if (lens_info.job_state || tries>=3 || get_ms_clock()-last_ms<1500) return;
+    if (lens_info.job_state || get_ms_clock()-last_ms<(tries<3 ? 1500:10000)) return;
     tries++; last_ms=get_ms_clock();
     if (m==SHOOTMODE_P) { set_shooting_mode(SHOOTMODE_M); return; }
     int target=SHOOTMODE_M;

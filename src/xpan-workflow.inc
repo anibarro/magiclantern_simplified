@@ -99,7 +99,7 @@ static int workflow_base_matches(void)
 {
     return neutral_payload_valid && alo_payload_valid && lens_info.raw_picstyle==0x84 &&
         !(neutral_payload[0]|neutral_payload[2]|neutral_payload[3]) &&
-        alo_payload[0]==ALO_OFF && alo_payload[1]==ALO_OFF && !get_htp() && canon_colour_space==1;
+        alo_payload[0]==ALO_OFF && !get_htp() && canon_colour_space==1;
 }
 
 static int workflow_force_base(void)
@@ -126,7 +126,10 @@ static int workflow_force_base(void)
         previous_base.neutral_saved=1;
     }
     int ready=neutral_parameters(neutral_payload[1],0,0,0); /* keep user sharpness */
-    if (alo_payload[0]!=ALO_OFF || alo_payload[1]!=ALO_OFF)
+    /* Byte 0 is the ALO mode in effect, byte 1 the menu choice. In M with
+     * "Disable during manual exposure" Canon runs ALO off but keeps the menu
+     * choice; that is enough, and it is not fought over. */
+    if (alo_payload[0]!=ALO_OFF)
     {
         uint8_t off[3]={ALO_OFF,ALO_OFF,alo_payload[2]};
         prop_request_change(PROP_ALO,off,3); ready=0;
@@ -249,6 +252,18 @@ static const char *workflow_look_blocker(void)
     return NULL;
 }
 /* Cube-only settings are greyed out and locked outside Custom .cube. */
+/* Most specific reason the Neutral base still does not match after XPan
+ * asked Canon for it. */
+static const char *workflow_base_blocker(void)
+{
+    const char *blocker=workflow_look_blocker();
+    if (blocker) return blocker;
+    if (canon_colour_space!=1) return "Set Canon Color space to sRGB";
+    if (!neutral_payload_valid || !alo_payload_valid) return "No Canon style data: restart the camera";
+    if (neutral_payload[0]|neutral_payload[2]|neutral_payload[3])
+        return "Set Neutral Contrast, Saturation, Color tone to 0";
+    return "Waiting for Canon Neutral style";
+}
 static int workflow_cube_only(struct menu_entry *entry,struct menu_display_info *info)
 {
     (void)entry;
@@ -650,6 +665,14 @@ static void xpan_workflow_task(void *unused)
             continue;
         }
         if (!card) { automatic_capture_ready=0; look_status="No ML card"; workflow_block(look_status); continue; }
+        if (shooting_mode!=SHOOTMODE_M && shooting_mode!=SHOOTMODE_AV &&
+            shooting_mode!=SHOOTMODE_TV && shooting_mode!=SHOOTMODE_BULB)
+        {
+            /* Canon locks the look settings outside Tv/Av/M; the HUD controls
+             * switch the mode to M (keep_manual_mode). */
+            automatic_capture_ready=0; look_status="Switching to M mode";
+            workflow_block("Set the shooting mode to Tv, Av or M"); continue;
+        }
         /* Small observations are saved by this existing idle worker only. */
         if (get_ms_clock()-idle_since>=1000) xpan_live_color_probe_poll(card);
         if (!aspect_saved && xpan_image_aspect_ratio_valid==1)
@@ -693,10 +716,8 @@ static void xpan_workflow_task(void *unused)
         }
         if (needs_base && !workflow_base_matches())
         {
-            const char *blocker=workflow_look_blocker();
             automatic_capture_ready=0; look_status="Applying Canon Neutral base";
-            workflow_block(blocker ? blocker : canon_colour_space!=1 ?
-                "Set Canon Color space to sRGB" : "Waiting for Canon Neutral style");
+            workflow_block(workflow_base_blocker());
             workflow_save_status(card); continue;
         }
         look_blocked=NULL;

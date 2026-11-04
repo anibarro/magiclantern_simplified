@@ -28,18 +28,14 @@ static CONFIG_INT("crop.playback", cropmarks_play, 0);
 
 /* One persistent mode switch replaces the optional guide/crop switches. */
 static CONFIG_INT("xpan.enabled", xpan_enabled, 1);
-/* XPan needs P, Tv, Av or M. In green Auto, A+, Creative Auto and the scene
- * modes Canon locks Picture Style, ALO, colour space and RAW, so the look
- * could never apply: XPan is off there and cannot be enabled. The stored
- * setting is kept for P/Tv/Av/M. Movie mode has its own switch. */
+/* The A+ (green Auto) position of the mode dial cannot be changed from
+ * software, so XPan is off there and cannot be enabled; the stored setting is
+ * kept for the photo position. Any other photo mode (P, Creative Auto, scene
+ * modes) is switched to M while XPan is ON (keep_manual_mode in
+ * xpan-hud-controls.c), because Canon locks the look settings there. */
 static int xpan_auto_mode(void)
 {
-    switch (shooting_mode)
-    {
-        case SHOOTMODE_P: case SHOOTMODE_TV: case SHOOTMODE_AV:
-        case SHOOTMODE_M: case SHOOTMODE_BULB: return 0;
-    }
-    return !is_movie_mode();
+    return shooting_mode==SHOOTMODE_AUTO || shooting_mode==SHOOTMODE_AP;
 }
 #define XPAN_ACTIVE (xpan_enabled && !xpan_auto_mode())
 static CONFIG_INT("xpan.align", xpan_frame_align, 0);
@@ -590,7 +586,7 @@ static MENU_UPDATE_FUNC(xpan_mode_display)
     MENU_SET_VALUE("%s",XPAN_ACTIVE ? "ON":"OFF");
     MENU_SET_ENABLED(XPAN_ACTIVE);
     if (xpan_auto_mode())
-        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Only in P, Tv, Av and M: Auto, CA and SCN lock Canon's look.");
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Not available in the A+ position of the mode dial.");
 #ifdef CONFIG_XPAN
     const char *status=xpan_native_look_status();
     MENU_SET_HELP("SET toggles XPan. PLAY opens options. %s",status);

@@ -24,9 +24,18 @@ Lantern build.
 ## Features
 
 Photo mode (menu **Shoot > XPan** for framing and HUD, **XPan** tab for look, grain and watermark).
-XPan works in **P, Tv, Av and M** only. In green Auto, A+, Creative Auto and
-the scene modes, Canon locks Picture Style, Auto Lighting Optimizer, colour
-space and RAW, so XPan turns itself off there.
+While XPan is ON it sets everything it needs on Canon's side by itself:
+
+* shooting mode Tv, Av or M (P, Creative Auto and the scene modes are
+  switched to M, because Canon locks the look settings there)
+* Picture Style Neutral, with Contrast, Saturation and Color tone at 0
+  (Sharpness stays yours)
+* Auto Lighting Optimizer and Highlight Tone Priority OFF, colour space sRGB
+* image quality L JPEG or RAW+L, Canon aspect ratio 3:2
+
+Turning XPan OFF puts your Picture Style, its sliders, ALO, HTP and colour
+space back. The A+ position of the mode dial cannot be changed from
+software, so XPan is off there.
 
 * **Aspect ratio** 65:24 or 3:2. In 65:24 the JPEG is cropped by Canon's
   own encoder (full sensor width, 65:24 height). RAW files keep the full
@@ -48,11 +57,10 @@ space and RAW, so XPan turns itself off there.
   strength. It is converted into Canon's native colour table, so the look is
   applied by the camera itself, to the JPEG and to Live View. While a LUT
   loads, a "Loading..." box shows its name in the middle of Live View. If a
-  camera setting stops the LUT from loading for more than a few seconds, the
-  box says **LUT not loaded** and what to change instead: Picture Style
-  Neutral, Highlight Tone Priority OFF, Auto Lighting Optimizer OFF, colour
-  space sRGB, image quality L JPEG or RAW+L, aspect ratio 3:2. "Disable all
-  modules" means another module took the memory or the Canon code XPan needs.
+  camera setting XPan sets (see above) still is not right after a few
+  seconds, because Canon refused the change, the box says **LUT not loaded**
+  and which setting to change by hand. "Disable all modules" means another
+  module took the memory or the Canon code XPan needs.
 * **Tone base / Highlight headroom**: *Canon Neutral*, or *Cineon log* with
   +1 or +2 EV of extra highlight headroom. The Cineon base under-exposes
   Canon's JPEG development by 1 or 2 EV (JPEG_OBWB gain) and maps it back
