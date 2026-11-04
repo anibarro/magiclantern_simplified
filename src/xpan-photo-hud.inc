@@ -56,6 +56,7 @@ static void __attribute__((unused)) xpan_hud_dotted_line(int x, int y, int width
 /* Disabled (no effect in this setup): drawn in grey and not selectable. */
 #define XPAN_HUD_ENABLED(field) xpan_hud_controls_field_enabled(field)
 int xpan_native_look_loading(void);
+const char *xpan_native_look_blocked(void);
 #else
 #define XPAN_HUD_SELECTED(field) 0
 #define XPAN_HUD_ENABLED(field) 1
@@ -379,29 +380,42 @@ static int xpan_loading_erase(void)
     xpan_loading_drawn.w=0;
     return 1;
 }
-/* Picture rows top..bottom (LCD); the box is centred in them. */
+/* The box widens to fit the reason when the look is blocked. */
+static int xpan_loading_width(void)
+{
+    const char *blocked=xpan_native_look_blocked();
+    if (!blocked) return XPAN_LOADING_W;
+    return MIN(700,MAX(XPAN_LOADING_W,bmp_string_width(FONT_MED,blocked)+25));
+}
+/* Picture rows top..bottom (LCD); the box is centred in them. While the LUT
+ * loads it shows "Loading..." and the LUT name; when a Canon setting or a
+ * failed hook blocks the look, "LUT not loaded" and what to change. */
 static void xpan_loading_box(int top, int bottom, int color)
 {
-    int x=360-XPAN_LOADING_W/2, y=(top+bottom)/2-XPAN_LOADING_H/2;
+    const char *blocked=xpan_native_look_blocked();
+    int W=xpan_loading_width();
+    int x=360-W/2, y=(top+bottom)/2-XPAN_LOADING_H/2;
     char name[64],state[24];
     xpan_native_look_hud_label(name,sizeof(name),state,sizeof(state));
+    const char *title=blocked ? "LUT not loaded":"Loading...";
+    const char *line=blocked ? blocked:name;
     int background=xpan_hud_background;
     xpan_hud_background=COLOR_TRANSPARENT_BLACK;   /* dims Live View, keeps it visible */
-    bmp_fill(COLOR_TRANSPARENT_BLACK,x,y,XPAN_LOADING_W,XPAN_LOADING_H);
-    bmp_draw_rect(color,x,y,XPAN_LOADING_W-1,XPAN_LOADING_H-1);
-    int w=bmp_string_width(FONT_LARGE,"Loading...")+1;
-    xpan_hud_text(360-w/2,y+6,w,36,FONT_LARGE,COLOR_WHITE,"Loading...");
-    w=MIN(XPAN_LOADING_W-24,bmp_string_width(FONT_MED,name)+1);
-    xpan_hud_text(360-w/2,y+44,w,26,FONT_MED,color,name);
+    bmp_fill(COLOR_TRANSPARENT_BLACK,x,y,W,XPAN_LOADING_H);
+    bmp_draw_rect(color,x,y,W-1,XPAN_LOADING_H-1);
+    int w=bmp_string_width(FONT_LARGE,title)+1;
+    xpan_hud_text(360-w/2,y+6,w,36,FONT_LARGE,COLOR_WHITE,title);
+    w=MIN(W-24,bmp_string_width(FONT_MED,line)+1);
+    xpan_hud_text(360-w/2,y+44,w,26,FONT_MED,color,line);
     xpan_hud_background=background;
     xpan_loading_drawn.x=x; xpan_loading_drawn.y=y;
-    xpan_loading_drawn.w=XPAN_LOADING_W; xpan_loading_drawn.h=XPAN_LOADING_H;
+    xpan_loading_drawn.w=W; xpan_loading_drawn.h=XPAN_LOADING_H;
 }
 /* Photo: the visible picture is the Live View frame, minus the HUD panel
  * when it overlays the 3:2 view. Returns 0 when nothing is loading. */
 static int xpan_loading_photo_area(int hud_y, int *top, int *bottom)
 {
-    if (!xpan_native_look_loading()) return 0;
+    if (!xpan_native_look_loading() && !xpan_native_look_blocked()) return 0;
     int fx,fy,fw,fh;
     *top=0; *bottom=480;
     if (xpan_photo_get_liveview_frame_rect(&fx,&fy,&fw,&fh)) { *top=os.y0+fy; *bottom=*top+fh; }
@@ -419,8 +433,9 @@ void xpan_movie_loading_draw(void)
 {
     static int last_ms;
     int want=is_movie_mode() && xpan_movie_enabled() && lv && !gui_menu_shown() &&
-        xpan_native_look_loading();
+        (xpan_native_look_loading() || xpan_native_look_blocked());
     if (!want) { xpan_loading_erase(); return; }
+    if (xpan_loading_drawn.w && xpan_loading_drawn.w!=xpan_loading_width()) xpan_loading_erase();
     if (xpan_loading_drawn.w && get_ms_clock()-last_ms<500) return;
     last_ms=get_ms_clock();
     xpan_loading_box(os.y0,os.y0+os.y_ex,xpan_photo_theme_color());
@@ -469,6 +484,7 @@ static void xpan_photo_render_hud(info_elem_t *config)
         }
 #ifdef CONFIG_XPAN
         XPAN_HUD_SIG(xpan_hud_controls_field()); XPAN_HUD_SIG(xpan_native_look_loading());
+        XPAN_HUD_SIG((unsigned)xpan_native_look_blocked());
         XPAN_HUD_SIG(xpan_photo_debug_enabled());
         {
             char name[64],state[24];
@@ -646,7 +662,7 @@ static void xpan_photo_render_hud(info_elem_t *config)
      * frame and grid so they repair what it covered. */
     int loading_top=0,loading_bottom=0;
     int loading=xpan_loading_photo_area(y,&loading_top,&loading_bottom);
-    if (xpan_loading_drawn.w && (!loading ||
+    if (xpan_loading_drawn.w && (!loading || xpan_loading_drawn.w!=xpan_loading_width() ||
         xpan_loading_drawn.y!=(loading_top+loading_bottom)/2-XPAN_LOADING_H/2))
     { xpan_loading_erase(); xpan_grid_drawn.on=0; }
 #endif

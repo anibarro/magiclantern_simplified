@@ -8,6 +8,18 @@ static volatile int cube_file_delta,cube_refresh_requested;
  * the movie LUT gave up on the current selection (file or table error). */
 static volatile unsigned look_settled_request;
 static volatile int movie_lut_failed;
+/* Why the photo look cannot be prepared (a Canon setting the worker cannot
+ * change, or a hook it cannot install), and since when. It replaces
+ * "Loading..." once it has lasted XPAN_BLOCKED_MS: short waits, such as Canon
+ * confirming Neutral after a mode change, are normal. Cleared once the
+ * worker gets past every check. */
+static const char *volatile look_blocked;
+static volatile uint32_t look_blocked_since;
+#define XPAN_BLOCKED_MS 2500
+static void workflow_block(const char *reason)
+{
+    if (look_blocked!=reason) { look_blocked_since=get_ms_clock(); look_blocked=reason; }
+}
 /* Startup/phase feedback is RAM-only: it works even if SD logging blocks.
  * State1 reserves the single worker before task_create can schedule it. */
 static volatile unsigned workflow_worker_state,workflow_task_result;
@@ -294,8 +306,17 @@ void xpan_native_look_step_cube(int delta)
 /* True while a queued Cube/look change has not finished preparing, including
  * the first load after boot, in photo and in movie mode. The short grace
  * covers the gap before the worker picks a HUD request up. */
+const char *xpan_native_look_blocked(void)
+{
+    if (selected_look!=3) return NULL;
+    if (workflow_worker_state==3) return "XPan worker failed: disable all modules";
+    if (is_movie_mode() || !xpan_photo_enabled() || look_settled_request==workflow_request) return NULL;
+    const char *reason=look_blocked;
+    return reason && get_ms_clock()-look_blocked_since>=XPAN_BLOCKED_MS ? reason:NULL;
+}
 int xpan_native_look_loading(void)
 {
+    if (xpan_native_look_blocked()) return 0;
     if (cube_file_delta || cube_refresh_requested || look_busy) return 1;
     if (hud_cube_pending && get_ms_clock()-hud_cube_since<1500) return 1;
     hud_cube_pending=0;
@@ -589,6 +610,7 @@ static void xpan_workflow_task(void *unused)
         if (!workflow_menu_can_change()) {
             idle_since=0;
             look_status="Waiting for camera idle";
+            workflow_block("Waiting for the camera to be idle");
             workflow_set_phase(look_status);
             continue;
         }
@@ -615,7 +637,7 @@ static void xpan_workflow_task(void *unused)
         }
         if (!enabled || is_movie_mode())
         {
-            automatic_capture_ready=0; look_busy=0;
+            automatic_capture_ready=0; look_busy=0; look_blocked=NULL;
             look_status=enabled ? "XPan is photo mode only":"XPan OFF";
             workflow_set_phase("Restoring Canon base");
             workflow_restore_base();
@@ -627,7 +649,7 @@ static void xpan_workflow_task(void *unused)
             }
             continue;
         }
-        if (!card) { automatic_capture_ready=0; look_status="No ML card"; continue; }
+        if (!card) { automatic_capture_ready=0; look_status="No ML card"; workflow_block(look_status); continue; }
         /* Small observations are saved by this existing idle worker only. */
         if (get_ms_clock()-idle_since>=1000) xpan_live_color_probe_poll(card);
         if (!aspect_saved && xpan_image_aspect_ratio_valid==1)
@@ -638,6 +660,7 @@ static void xpan_workflow_task(void *unused)
         {
             /* Do not advertise readiness before Canon accepts JPEG/RAW+JPEG. */
             automatic_capture_ready=0; look_status="Applying supported capture format";
+            workflow_block("Set image quality to L JPEG or RAW+L");
             workflow_save_status(card); continue;
         }
         if (!jpeg_installed_automatic || !hook_installed)
@@ -647,10 +670,12 @@ static void xpan_workflow_task(void *unused)
             hook_retry=get_ms_clock();
             workflow_set_phase("Installing photo hooks");
             if (!workflow_install_hooks(card))
-            { automatic_capture_ready=0; workflow_save_status(card); continue; }
+            { automatic_capture_ready=0; workflow_block("Look hook failed: disable all modules");
+              workflow_save_status(card); continue; }
         }
         if (xpan_image_aspect_ratio_valid!=1 || xpan_image_aspect_ratio!=0)
         { automatic_capture_ready=0; look_status="Applying Canon 3:2 aspect";
+          workflow_block("Set Canon aspect ratio to 3:2");
           workflow_save_status(card); continue; }
         /* Reassert required settings at idle, including changes made in Canon's
          * menu. Crop hooks remain independent of colour-base convergence. */
@@ -667,8 +692,14 @@ static void xpan_workflow_task(void *unused)
             if (!needs_base) workflow_restore_base();
         }
         if (needs_base && !workflow_base_matches())
-        { automatic_capture_ready=0; look_status="Applying Canon Neutral base";
-          workflow_save_status(card); continue; }
+        {
+            const char *blocker=workflow_look_blocker();
+            automatic_capture_ready=0; look_status="Applying Canon Neutral base";
+            workflow_block(blocker ? blocker : canon_colour_space!=1 ?
+                "Set Canon Color space to sRGB" : "Waiting for Canon Neutral style");
+            workflow_save_status(card); continue;
+        }
+        look_blocked=NULL;
         if (selected_look==3 && live_preview_enabled && !prepared_in_lv && xpan_photo_ui_active())
         { workflow_request++; prepared_in_lv=1; }
         if (prepared!=workflow_request || prepared_card!=card)
