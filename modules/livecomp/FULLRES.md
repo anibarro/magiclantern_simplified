@@ -1407,3 +1407,72 @@ instructions or the cache. The MLV stays the fastest save (no swap at all).
 
 Production: the save times on the result message only with Debug ON (the
 LOG keeps the full split).
+
+## LCM69: base frame first, on-screen info
+
+Base frame first (menu, Live Composite only; Olympus-style): the first SET
+takes the base frame, the second starts the composite.
+- The first full frame (after the usual warm-up and the short-frame check)
+  is copied to the accumulator as today, but the next frame is not armed.
+  The preview of the base is always rendered whole (no strips).
+- `base_wait`: the sensor goes back to the 3 fps entry timing (the timing
+  of the warm-up and the exit, so no new timer value), nothing is captured,
+  each vsync's Canon frame is covered with the base preview, and "BASE
+  READY. Press SET to start" is shown. Presses before it are ignored.
+- SET: the chosen shutter is switched in at the next vsync, the first frame
+  is armed 40 ms after it, so its exposure starts after the press. With the
+  late timer latch the first frame after the switch is still a 3 fps one
+  and is skipped (the short-frame check now applies after every switch,
+  `fresh`). The next press stops, as usual.
+- Wait at 3 fps instead of the long shutter: with 20 s frames a press could
+  otherwise wait up to two long frames (one ending, one latched late).
+  Expected start: <= 333 ms + one shutter (+333 ms with the late latch).
+- Battery low, shutdown or a lost mode while waiting: the base alone is
+  saved.
+- LOG: `Base_first_wait_ms_resume_ms_info` (wait, SET to the end of the
+  first composite frame, info bits).
+- Host simulator: a press during the base frame is ignored; no captures
+  while waiting; SET to the first composite frame 2.83 s (late latch 3.16 s)
+  for 2.5 s frames; Live Bulb ignores the option.
+
+On-screen info (menu Show battery / temperature / time / frames, default
+ON): a FONT_MED line under the session text, redrawn once a second while
+waiting for frames and after every session text: battery (PROP_BATTERY_POWER:
+full / half / LOW), temperature (efic_temp with the EOS M EFIC_CELSIUS
+formula), running time hh:mm:ss from the first frame (Base frame first: from
+the second SET). Show frames OFF drops the count from "COMPOSITE n".
+
+To test on the camera: Base frame first ON, 20 s shutter: the delay from
+the second SET to the first update (LOG resume_ms ~20.3-20.7 s), the base on
+the LCD while waiting, the Abort_hook line (does the 3 fps wait bring back
+Canon's RAW abort?), and the info line (temperature plausible, time ticking).
+
+## LCM70: stop text, session screen redrawn every second
+
+LCM69 camera: Base frame first worked. During the first frame (3-4 s,
+after the start-up countdown or after the SET that ends the base wait; with
+and without Base frame first) the LCD showed only Canon's focus box: no
+session text, no info line. The session text was drawn once per frame; the
+countdown before it redraws every second, which hid this until then.
+`session_tick` (every ~10 ms while waiting: base wait, frame wait, dark
+countdown, dark frames) now redraws the whole screen once a second, like
+the Preview only screen: clrscr (removes what Canon drew), the session text
+and the info line; if Canon's front buffer was turned back on, it is turned
+off again. Host simulator: the first-frame text is drawn 3 times during a
+2.5 s frame, never a blank line (a first version copied session_line onto
+itself and drew it empty).
+
+Session text: "COMPOSITE n. Press SET to stop" and "BULB n  45s. Press SET
+to stop" (were "... SET=stop").
+
+## LCM71: Stop on low battery option
+
+LCM70 camera: the screen redraw during the first frame works. LCM71 adds
+the menu option "Stop on low battery" (default ON = the behaviour since the
+battery stop was added): at the last (red) PROP_BATTERY_POWER level the
+session stops like SET and saves. OFF: `battery_low` never fires, in the
+frame loop and in the Base frame first wait alike; meant for external
+power, with the risk that nothing is saved if the camera switches off
+first (menu warning). LOG: `Low_battery_stop`. Host simulator: the same
+battery drop with the option OFF runs to the frame limit (8 frames,
+battery_stop 0).

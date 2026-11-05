@@ -11,6 +11,9 @@
  * Exposure: the shutter is the length of each frame (menu); ISO and aperture
  * are Canon's own Movie M settings and stay fixed for the whole session.
  *
+ * Base frame first (Live Composite option): the first SET takes the base
+ * frame, the second starts the composite (fullres-lv.c base_wait).
+ *
  * While a session runs, SET (or Q) stops it; every other key is held, so
  * Canon never acts on a key in the full-res x5 mode. Settings are changed
  * before a session with the normal Canon and ML controls; "Preview only"
@@ -56,6 +59,16 @@ static CONFIG_INT("livecomp.dark",dark_frame,0);
 static CONFIG_INT("livecomp.orig",save_orig,0);
 /* File format (LCM67): DNG, DNG + MLV, MLV (LC_FORMAT_*). */
 static CONFIG_INT("livecomp.format",file_format,LC_FORMAT_DNG);
+/* Base frame first (LCM69, Live Composite): SET takes the base frame, SET
+ * again starts the composite. */
+static CONFIG_INT("livecomp.base",base_first,0);
+/* On-screen info while running (LCM69): battery, temperature, time, frames. */
+static CONFIG_INT("livecomp.show.battery",show_battery,1);
+static CONFIG_INT("livecomp.show.temp",show_temp,1);
+static CONFIG_INT("livecomp.show.time",show_time,1);
+static CONFIG_INT("livecomp.show.frames",show_frames,1);
+/* Stop on low battery (LCM71): stop and save at the last (red) level. */
+static CONFIG_INT("livecomp.battery.stop",battery_stop,1);
 
 static const unsigned frame_limits[]={0,30,60,120,240};   /* 0 = no limit */
 static unsigned trigger_ms;
@@ -118,7 +131,9 @@ static void run(void *unused)
     worker_alive=1;
     const unsigned limit=frame_limits[frame_limit>=0 && frame_limit<(int)COUNT(frame_limits) ? frame_limit:0];
     struct lc_frlv_options o={(unsigned)shutter,limit,(unsigned)preview_only,(unsigned)debug,
-        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig,(unsigned)file_format};
+        bulb() ? LC_MODE_BULB:LC_MODE_COMPOSITE,(unsigned)dark_frame,(unsigned)save_orig,(unsigned)file_format,
+        (unsigned)base_first,(show_battery ? LC_INFO_BATTERY:0u)|(show_temp ? LC_INFO_TEMP:0u)|
+        (show_time ? LC_INFO_TIME:0u)|(show_frames ? LC_INFO_FRAMES:0u),(unsigned)battery_stop};
     /* Global Draw would draw over the LCD composite: off for the session,
      * then back to the user's setting. */
     /* A message still on screen would call redraw() when it expires and
@@ -206,6 +221,21 @@ static MENU_UPDATE_FUNC(update_format)
         "MLV only: open LVxxnnnn.MLV with MLV App or mlv_dump (one frame).":
         "Both files: the MLV first, then the DNG (save times: Debug ON).");
 }
+static MENU_UPDATE_FUNC(update_base)
+{
+    if (!base_first) return;
+    if (bulb()) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Live Composite only: Live Bulb starts with the first SET.");
+    else if (preview_only) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Not with Preview only.");
+    else MENU_SET_WARNING(MENU_WARN_ADVICE,"SET: base frame. When BASE READY shows, SET starts the composite.");
+}
+static MENU_UPDATE_FUNC(update_battery_stop)
+{
+    if (!battery_stop) MENU_SET_WARNING(MENU_WARN_ADVICE,"OFF: if the battery dies before the save, nothing is saved.");
+}
+static MENU_UPDATE_FUNC(update_show_frames)
+{
+    if (bulb()) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Live Composite only (Live Bulb always shows frames and time).");
+}
 static MENU_UPDATE_FUNC(update_status)
 {
     if (!running && !attempted && !is_movie_mode()) {
@@ -226,6 +256,9 @@ static struct menu_entry lv_children[]={
      .choices=CHOICES("2 s","2.5 s","3 s","4 s","5 s","6 s","8 s","10 s","13 s","15 s",
                       "20 s","25 s","30 s","40 s","50 s","60 s"),
      .help2="ISO and aperture: set them on the camera (Movie M); they stay fixed."},
+    {.name="Base frame first",.priv=&base_first,.max=1,.update=update_base,
+     .help="ON: SET takes the base frame; SET again starts the composite.",
+     .help2="It waits at 3 fps: the composite starts ~1 shutter after SET. Composite only."},
     {.name="Preview only",.priv=&preview_only,.max=1,.update=update_preview,
      .help="ON: SET shows one frame with the current shutter/ISO/aperture.",
      .help2="Nothing is saved. Adjust, then turn it OFF for the composite."},
@@ -243,6 +276,17 @@ static struct menu_entry lv_children[]={
      .choices=CHOICES("DNG","DNG + MLV","MLV"),
      .help="DNG opens anywhere. MLV: no byte swap, written straight from memory.",
      .help2="LVBR/LVDK extra files stay DNG. Debug ON: save times on the message and LOG."},
+    {.name="Stop on low battery",.priv=&battery_stop,.max=1,.update=update_battery_stop,
+     .help="ON: at the last (red) battery level, stop and save while there is power.",
+     .help2="OFF: keep going until SET or the frame limit (use with external power)."},
+    {.name="Show battery",.priv=&show_battery,.max=1,
+     .help="While running: battery level (full / half / LOW) under the status line."},
+    {.name="Show temperature",.priv=&show_temp,.max=1,
+     .help="While running: camera (sensor area) temperature under the status line."},
+    {.name="Show time",.priv=&show_time,.max=1,
+     .help="While running: time since the composite or bulb started (hh:mm:ss)."},
+    {.name="Show frames",.priv=&show_frames,.max=1,.update=update_show_frames,
+     .help="While running: Live Composite frame count on the status line."},
     {.name="Debug",.priv=&debug,.max=1,
      .help="ON: write diagnostic LOG/CSV files next to the DNG (DCIM/LIVE).",
      .help2="OFF: no log files; only the composite DNG is saved."},
@@ -279,4 +323,10 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(dark_frame)
     MODULE_CONFIG(save_orig)
     MODULE_CONFIG(file_format)
+    MODULE_CONFIG(base_first)
+    MODULE_CONFIG(show_battery)
+    MODULE_CONFIG(show_temp)
+    MODULE_CONFIG(show_time)
+    MODULE_CONFIG(show_frames)
+    MODULE_CONFIG(battery_stop)
 MODULE_CONFIGS_END()

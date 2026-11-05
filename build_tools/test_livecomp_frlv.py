@@ -217,6 +217,7 @@ void AbortEDmac(unsigned ch); int get_global_draw_setting(void);
 #define COLOR_BLACK 2
 void bmp_printf(uint32_t font,int x,int y,const char *fmt,...); void clrscr(void);
 void canon_gui_disable_front_buffer(void); void canon_gui_enable_front_buffer(int r); void redraw(void);
+int canon_gui_front_buffer_disabled(void);
 int lens_set_rawiso(int iso); int lens_set_rawaperture(int ap); void NotifyBoxHide(void);
 static inline uint32_t cli(void){ return 0; } static inline void sei(uint32_t x){ (void)x; }
 FILE *FIO_CreateFile(const char *p); int FIO_WriteFile(FILE *f,const void *b,int n);
@@ -237,6 +238,7 @@ struct lc_camera_profile livecomp_camera={0,0x12u,0,0x1d,4,5,{0,0,0},0x54,0x6f,0
 struct raw_info raw_info={15000,0x02010100,{6602,10000,-841,10000,-939,10000,-4472,10000,12458,10000,2247,10000,-975,10000,2039,10000,6148,10000},21,1,1100};
 struct lens_info_t lens_info={72,40,22,0,1,5200,1024,1024,1024,40,27,80,"EF-M22mm f/2 STM"};
 int lv=1,LV_PAUSED,RECORDING,lv_dispsize=1,ml_shutdown_requested,icu_uilock,battery_level_bars=3;
+int efic_temp=200;   /* EOS M formula: (200-95)*40/100-22 = 20 C */
 uint32_t raw_write_chan=0x12;
 static struct card_info card={"B"};
 /* Simulated camera state */
@@ -296,15 +298,22 @@ void powersave_prohibit(void){} void powersave_permit(void){} void gui_uilock(in
 int raw2iso(int r){ return r; }
 static int hud_draws,hud_clears;static char hud_text[128];
 static int cover_seen,ending_seen,skip_dark_press,tactical_seen;static volatile unsigned *press_ptr;
+static int base_seen,info_seen;static unsigned base_ready_us;static char info_text[128];   /* LCM69 */
+static unsigned wake_at_us,woken,redrawn_after_wake,first_frame_draws,blank_lines;   /* LCM70: ML power saving turns Canon's front buffer on */
 void bmp_printf(uint32_t font,int x,int y,const char *fmt,...){ (void)font;(void)x;
   { static char t[128];va_list ap;va_start(ap,fmt);vsnprintf(t,sizeof(t),fmt,ap);va_end(ap);   /* session line (y=20) */
     if (strstr(t,"COVER THE LENS")) { cover_seen++; if (skip_dark_press && press_ptr && cover_seen==3) (*press_ptr)++; }
     if (strstr(t,"Ending the current frame")) ending_seen++;
-    if (strstr(t,"Tactical delay... first frame in")) tactical_seen++; }
+    if (strstr(t,"Tactical delay... first frame in")) tactical_seen++;
+    if (strstr(t,"BASE READY. Press SET to start")) { if (!base_seen++) base_ready_us=now_us; }
+    if (y==64) { info_seen++;snprintf(info_text,sizeof(info_text),"%s",t); }
+    if (y==20 && woken && strstr(t,"first frame in")) redrawn_after_wake++;
+    if (y==20 && strstr(t,"Composite: first frame in")) first_frame_draws++;
+    if (y==20 && !t[0]) blank_lines++; }
   if (y<20) { va_list ap;va_start(ap,fmt);vsnprintf(hud_text,sizeof(hud_text),fmt,ap);va_end(ap);hud_draws++; } }
 void clrscr(void){ hud_clears++; }
 static unsigned gui_offs;
-void canon_gui_disable_front_buffer(void){ gui_off=1;gui_offs++; } void canon_gui_enable_front_buffer(int r){ (void)r; gui_off=0; } void redraw(void){}
+void canon_gui_disable_front_buffer(void){ gui_off=1;gui_offs++; } int canon_gui_front_buffer_disabled(void){ return gui_off; } void canon_gui_enable_front_buffer(int r){ (void)r; gui_off=0; } void redraw(void){}
 int lens_set_rawiso(int iso){ lens_info.raw_iso=iso; return 1; }
 int lens_set_rawaperture(int ap){ lens_info.raw_aperture=ap; lens_info.aperture=ap; return 1; }
 static int aborts,gd_setting,abort_fails;
@@ -351,10 +360,13 @@ static uint32_t exit_timer_b;static unsigned cancel_at_us;
 void set_lv_zoom(int z){ if (z==5) vd_since_zoom=0; if (z==1) exit_timer_b=reg6014; zoom=z; lv_dispsize=z; canon_reconfigure(z); if (z==5) { zoom5_us=now_us;first_frame_us=0; } }
 /* Pointers in this simulation are host addresses; keep the alias bit clear. */
 static unsigned cancel_at,battery_at,lose_mode_at,hold_cancel_vsyncs,hold_vsyncs;static volatile unsigned *cancel_ptr;
+static unsigned press_us[4],press_n;   /* LCM69: SET presses at these times (ascending) */
 static void frame(void)
 {
     if (cancel_at && cancel_ptr && slurp_frames>=(int)cancel_at) *cancel_ptr=1;
     if (cancel_at_us && cancel_ptr && now_us>=cancel_at_us && !*cancel_ptr) *cancel_ptr=1;
+    while (press_n<4 && press_us[press_n] && now_us>=press_us[press_n] && cancel_ptr) { (*cancel_ptr)++;press_n++; }
+    if (wake_at_us && now_us>=wake_at_us && !woken) { gui_off=0;woken=1; }
     /* Preview only: SET some vsyncs after the frame was captured. */
     if (hold_cancel_vsyncs && slurp_frames>=1 && !slurp_armed && zoom==5 && ++hold_vsyncs>=hold_cancel_vsyncs && cancel_ptr) *cancel_ptr=1;
     if (battery_at && slurp_frames>=(int)battery_at) battery_level_bars=0;
@@ -411,12 +423,15 @@ static void reset(void)
     dirs_created=dir_fail=dng_in_live=log_in_live=0;log_files=0;
     cover_seen=ending_seen=skip_dark_press=tactical_seen=0;exit_timer_b=0;cancel_at_us=0;dng_files=0;
     lvbr_n=lvbr_files=lvdk_files=0;lvbr_reads=0;canon_abort_vd=0;canon_aborts=0;warm_slurps=0;
+    memset(press_us,0,sizeof(press_us));press_n=0;base_seen=info_seen=0;base_ready_us=0;info_text[0]=0;
+    wake_at_us=woken=redrawn_after_wake=first_frame_draws=blank_lines=0;gui_offs=0;
 }
 int main(void)
 {
     setvbuf(stdout,0,_IONBF,0);
     volatile unsigned cancel=0;const char *status="";
-    struct lc_frlv_options o={LC_FRR_FPS_DEFAULT,6,0,1,LC_MODE_COMPOSITE,0,0,LC_FORMAT_DNG};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
+    struct lc_frlv_options o={LC_FRR_FPS_DEFAULT,6,0,1,LC_MODE_COMPOSITE,0,0,LC_FORMAT_DNG,0,
+        LC_INFO_BATTERY|LC_INFO_TEMP|LC_INFO_TIME|LC_INFO_FRAMES,1};   /* 2.5 s shutter, stop after 6 frames, Debug ON, composite */
     sim_period_us=2500000;
     /* Happy path: composite of 6 frames, geometry from registers, restore,
      * unhook, DNG + LOG + CSV, every buffer freed. */
@@ -440,6 +455,8 @@ int main(void)
     assert(strstr(last_log,"Timer_switch_after_zoom_ms_exit_switched_short_skipped: "));
     { const char *k=strstr(last_log,"exit_switched_short_skipped: ");unsigned sw,ex,sk;
       assert(sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3 && ex==1 && sw<1500+12*333);   /* LCM62: after the 12-frame warm-up */printf("short frames skipped: %u\n",sk); }
+    /* LCM70: the screen is redrawn once a second during the first 2.5 s frame */
+    printf("first-frame text drawn %d times\n",first_frame_draws);assert(first_frame_draws>=3 && !blank_lines);
     assert(gui_offs==1 && gui_off==0 && !notify_while_hidden);   /* NotifyBox redraws Canon's zoom box */
     /* Start-up: armed right after the transitional frame (no full period
      * lost waiting for the next vsync), i.e. 40-100 ms after a vsync. */
@@ -582,6 +599,50 @@ int main(void)
     assert(!unsafe && strstr(status,"Composite saved: 6 frames; MLV ") && !strstr(status,"DNG") && dng_files==0 && mlv_files==1 && mlv_bytes==4096+bytes);
     assert(strstr(last_log,"Stage_error_unsafe: 8,0,0"));
     o.format=LC_FORMAT_DNG;
+    /* LCM69 on-screen info (all ON here): battery, temperature, running time. */
+    { char *d=strchr(info_text,0x83); if (d) *d='o'; printf("info line: %s (%d draws)\n",info_text,info_seen); if (d) *d=(char)0x83; }   /* 0x83: ML degree sign */
+    assert(info_seen>0 && strstr(info_text,"BAT full") && strstr(info_text,"20\x83" "C") && strstr(info_text,"00:00:"));
+    /* LCM69 Base frame first: a press during the base frame is ignored;
+     * BASE READY; the wait runs at 3 fps with no captures; SET starts and the
+     * first composite frame ends about one shutter later; SET again stops.
+     * Without and with the camera's one-frame-late timer latch. */
+    for (int late=0;late<2;late++) {
+        reset();sim_late_latch=late;o.base_first=1;o.limit=0;cancel=0;cancel_ptr=&cancel;dng_size_ok=2048+bytes;
+        press_us[0]=5000000;press_us[1]=30000000;press_us[2]=42000000;
+        wake_at_us=30100000;   /* the start press wakes ML's power saving: Canon's layer back on */
+        unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+        unsigned bf=0,wm=0,rm=0,inf=0,sw=0,ex=0,sk=0,n=0;
+        const char *k=strstr(last_log,"Base_first_wait_ms_resume_ms_info: ");
+        assert(k && sscanf(k,"Base_first_wait_ms_resume_ms_info: %u,%u,%u,%x",&bf,&wm,&rm,&inf)==4);
+        k=strstr(last_log,"exit_switched_short_skipped: ");
+        assert(k && sscanf(k,"exit_switched_short_skipped: %u,%u,%u",&sw,&ex,&sk)==3);
+        k=strstr(status,"Composite saved: ");assert(k && sscanf(k,"Composite saved: %u frames",&n)==1);
+        printf("base first (late latch %d): %s; BASE READY at %u ms, waited %u ms, SET to first frame %u ms, short skipped %u, captures %d\n",
+            late,status,base_ready_us/1000,wm,rm,sk,slurp_frames);
+        assert(!unsafe && base_seen>=1 && bf==1 && inf==15 && base_ready_us>5000000u && base_ready_us<30000000u);
+        assert(wm+(base_ready_us/1000)>=29000 && wm+(base_ready_us/1000)<=31000);   /* waited until the second press */
+        /* 3 fps while waiting: the switch is adopted within 333 ms (+333 ms
+         * with the late latch) and the first composite frame is one 2.5 s
+         * shutter after that (a long wait timer would add up to 2.5 s). */
+        assert(rm>=2500 && rm<=(late ? 3300u:2950u));
+        assert(n>=4 && n<=7 && (unsigned)slurp_frames<=n+sk+1);   /* nothing captured while waiting */
+        assert(!late || sk>=2);                                    /* the start and the resume */
+        assert(zoom==1 && allocs==frees && unpatched==5);
+        /* LCM70: switched off again and the session text redrawn within ~0.5 s */
+        printf("  front buffer re-disabled: %u calls, session text redrawn %u\n",gui_offs,redrawn_after_wake);
+        assert(woken && gui_offs>=2 && redrawn_after_wake>=1 && gui_off==0);
+    }
+    sim_late_latch=0;o.base_first=0;o.limit=6;cancel=0;cancel_ptr=0;
+    /* Live Bulb ignores Base frame first. */
+    reset();o.mode=LC_MODE_BULB;o.base_first=1;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && strstr(status,"Bulb saved: 6 frames") && base_seen==0 && strstr(last_log,"Base_first_wait_ms_resume_ms_info: 0,"));
+    o.mode=LC_MODE_COMPOSITE;o.base_first=0;
+    /* Show frames OFF: no count on the status line. */
+    reset();o.info=0;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    assert(!unsafe && info_seen==0 && strstr(status,"Composite saved: 6 frames"));
+    o.info=LC_INFO_BATTERY|LC_INFO_TEMP|LC_INFO_TIME|LC_INFO_FRAMES;
     /* Debug OFF: the same session writes the DNG only, no LOG and no CSV. */
     reset();o.debug=0;dng_size_ok=2048+bytes;
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
@@ -700,6 +761,14 @@ int main(void)
     unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
     printf("battery: %s\n",status);
     assert(!unsafe && strstr(status,"Battery low: saved") && strstr(last_log,"battery_start_end_stop: 72,40,3,0,1"));
+    battery_level_bars=3;
+    /* LCM71 Stop on low battery OFF: the same battery drop, the session goes on. */
+    reset();o.limit=8;o.battery_guard=0;battery_at=5;dng_size_ok=2048+bytes;
+    unsafe=livecomp_frlv_run(&card,&o,&cancel,&status);
+    printf("battery stop OFF: %s\n",status);
+    assert(!unsafe && strstr(status,"Composite saved: 8 frames") && strstr(last_log,"Low_battery_stop: 0") &&
+           strstr(last_log,"battery_start_end_stop: 72,40,3,0,0"));
+    o.battery_guard=1;
     battery_at=0;battery_level_bars=3;o.limit=6;
     /* Canon leaves the mode mid-session (LCM43 second run): the in-flight
      * frame is aborted, the composite so far is saved, no reboot needed. */

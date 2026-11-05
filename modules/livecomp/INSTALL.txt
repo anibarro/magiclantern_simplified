@@ -1,4 +1,4 @@
-Live Composite / Live Bulb v0.4 (LCM68) - Canon EOS M firmware 2.0.2
+Live Composite / Live Bulb v0.5 (LCM71) - Canon EOS M firmware 2.0.2
 
 Olympus-style Live Composite and Live Bulb for the EOS M at full sensor
 resolution (5208x3478): the camera keeps exposing frames of the chosen
@@ -37,6 +37,13 @@ MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
                     menu still marks the others (except 10 s) "not yet
                     tested". Shorter shutters are not offered: merging a
                     frame takes ~1.5 s (Live Bulb ~2.0 s).
+   Base frame first OFF (default) / ON, Live Composite only. ON: the first
+                    SET takes the base frame and shows it with "BASE READY.
+                    Press SET to start"; the second SET starts the
+                    composite. While waiting the camera runs at 3 fps and
+                    records nothing, so the composite starts about one
+                    shutter after the second SET (also with 20 s or longer
+                    frames). SET during the base frame is ignored.
    Preview only     OFF (default) / ON. ON: SET takes ONE frame with the
                     current shutter, ISO and aperture and shows it with its
                     settings and the share of clipped highlights. Nothing is
@@ -62,6 +69,20 @@ MENU (Shoot > Live Composite; the entry is called Live Bulb in that mode)
                     With Debug ON the result message shows each save time,
                     e.g. "; DNG 1.9 s; MLV 0.9 s". The LVBR/LVDK extra files
                     are always DNG.
+   Stop on low battery ON (default) / OFF. ON: at the last (red) battery
+                    level the session stops and saves (see BATTERY). OFF:
+                    it keeps going, e.g. on external power; if the battery
+                    dies before the save, nothing is saved.
+   Show battery     ON (default) / OFF: battery level (full / half / LOW)
+                    on the line under the session text while running.
+   Show temperature ON (default) / OFF: camera temperature in C (the same
+                    sensor ML shows elsewhere).
+   Show time        ON (default) / OFF: running time hh:mm:ss since the
+                    composite or bulb started.
+   Show frames      ON (default) / OFF: the Live Composite frame count on
+                    the session line ("COMPOSITE 23. Press SET to stop").
+                    Live Bulb always shows frames and exposure
+                    ("BULB 12  30s. Press SET to stop").
    Debug            OFF (default): only the picture is written, no log files.
                     ON: diagnostic LVFRnnnn.LOG and .CSV next to each DNG
                     (and DCIM/LIVE/LVPREVW.LOG for Preview only). Turn it on
@@ -84,7 +105,11 @@ RUN
     Then the first frame at your shutter starts: it is ready after one
     shutter time and is the base of the composite. Canon's zoom box and
     arrows are hidden while the session runs.
- 3. "COMPOSITE n  SET=stop" (Live Bulb: "BULB n  45s  SET=stop", with the
+ 2b. Base frame first ON: the first frame is the base. "BASE READY. Press
+    SET to start": take your time (light painting: walk into place), then
+    press SET; the composite continues from the base.
+ 3. "COMPOSITE n. Press SET to stop" (Live Bulb: "BULB n  45s. Press SET to
+    stop", with the
     exposure so far): the LCD shows the growing result. Press SET to stop:
     the exposure in progress is completed and merged. Or wait for the frame
     limit.
@@ -124,7 +149,8 @@ NOISE REDUCTION
 BATTERY
 When the battery indicator drops to its last (red) level during a session,
 the session stops like SET and the composite is saved while there is still
-power for the card write ("Battery low: composite saved").
+power for the card write ("Battery low: composite saved"). Menu "Stop on low
+battery" OFF turns this off.
 
 LIVE BULB EXPOSURE
 In Live Bulb the image keeps getting brighter: n frames of t seconds give
