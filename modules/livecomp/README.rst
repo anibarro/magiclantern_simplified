@@ -16,6 +16,7 @@ SET starts, SET stops and saves in DCIM/LIVE (LOG/CSV only with Debug ON).
 Dark frame ON: cover the lens at the end; dark frames are subtracted.
 Save unprocessed ON: also LVBR/LVCR and the dark frames LVDK/LVCK.
 File format: DNG, DNG + MLV or MLV (one frame, for MLV App/mlv_dump).
+Base frame first (Composite): SET takes the base, SET again starts.
 Reboot only if Status says Reboot. See INSTALL.txt for details.
 
 Standalone module

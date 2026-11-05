@@ -58,6 +58,10 @@
 
 extern int raw_lv_is_enabled(void);
 extern int battery_level_bars;   /* PROP_BATTERY_POWER: 0 = last (red) level */
+extern int efic_temp;            /* PROP_EFIC_TEMP, raw (LCM69 on-screen info) */
+#ifndef SYM_DEGREE
+#define SYM_DEGREE "\x83"        /* bmp.h; the host simulator has no ML fonts */
+#endif
 extern uint32_t raw_write_chan;
 
 /* Own RAW slurp (same steps as the core's edmac_raw_slurp) so the EDMAC
@@ -261,6 +265,9 @@ struct frlv_result {
     unsigned orig_saved,dark_saved,orig_read,dark_black,dark_merge_us;
     unsigned end_wait_ms;
     unsigned bulb_partials;               /* Live Bulb: partial frames not added (LCM56) */
+    /* LCM69: base frame first (wait for SET at 3 fps) and the on-screen info */
+    unsigned base_first,info,base_wait_ms,resume_start,resume_ms;
+    unsigned battery_guard;               /* LCM71: menu "Stop on low battery" */
     char dng[FIO_MAX_PATH_LENGTH],log[FIO_MAX_PATH_LENGTH],mlv[FIO_MAX_PATH_LENGTH];
 };
 
@@ -381,6 +388,9 @@ static void write_log(const struct frlv_result *r,const char *status)
         "Save_orig_ms_dark_ms_load_ms: %d,%d,%d\nMLV: %s\n",
         r->format,r->save_ms,r->save_swap_ms,r->save_write_ms,r->save_chunk>>10,r->save_in_place,r->mlv_saved,r->mlv_ms,r->mlv_write_ms,r->mlv_size,
         r->orig_save_ms,r->dark_save_ms,r->load_ms,r->format ? r->mlv:"");
+    ok&=write_text(f,t,n);
+    n=snprintf(t,sizeof(t),"Base_first_wait_ms_resume_ms_info: %d,%d,%d,%x\nLow_battery_stop: %d\n",
+        r->base_first,r->base_wait_ms,r->resume_ms,r->info,r->battery_guard);
     ok&=write_text(f,t,n);
     n=snprintf(t,sizeof(t),"Warmup_vds_slurps_done_ms_aborts: %d,%d,%d,%d,%d\n",FRLV_WARMUP_VDS,r->warmup_slurps,r->warmup_done,r->warmup_ms,r->warmup_aborts);
     ok&=write_text(f,t,n);
@@ -783,21 +793,62 @@ static void write_csv(const struct frlv_result *r)
  * stops only when that keeps happening (more than 2 + limit/4). */
 /* Battery: PROP_BATTERY_POWER reaching 0 (the last, red level) during a
  * session stops it like SET: the exposure in progress completes, then the
- * composite is saved while there is still power for the card write. */
+ * composite is saved while there is still power for the card write.
+ * LCM71: menu "Stop on low battery" OFF keeps going (risk: no file if the
+ * camera switches off before the save). */
 /* Session messages are drawn straight onto the BMP overlay. NotifyBox
  * calls redraw() whenever its text changes or times out, and that redraw
  * makes Canon draw its x5 zoom box and arrows again (LCM50 camera test).
  * Each call also clears the overlay first, so a Canon redraw never stays. */
 static char session_line[48];
+/* LCM69: optional info line under the session text (menu "Show ..."):
+ * battery, sensor temperature and running time, redrawn once a second
+ * (info_tick) and after every session text. Set only while capturing. */
+static const struct frlv_result *info_r;
+static unsigned info_t0,info_drawn;      /* info_t0: the composite started (0: not yet) */
+static void info_line(void)
+{
+    if (!info_r || !(info_r->info&(LC_INFO_BATTERY|LC_INFO_TEMP|LC_INFO_TIME))) return;
+    char t[64];unsigned n=0;
+    if (info_r->info&LC_INFO_BATTERY)
+        n+=snprintf(t+n,sizeof(t)-n,"BAT %s   ",battery_level_bars<=0 ? "LOW":battery_level_bars==1 ? "half":"full");
+    /* EOS M: platform/EOSM.202/consts.h EFIC_CELSIUS */
+    if (info_r->info&LC_INFO_TEMP && n<sizeof(t))
+        n+=snprintf(t+n,sizeof(t)-n,"%d" SYM_DEGREE "C   ",(int)((efic_temp-95)&255)*40/100-22);
+    if (info_r->info&LC_INFO_TIME && n<sizeof(t)) {
+        const unsigned s=info_t0 ? (get_ms_clock()-info_t0)/1000u:0u;
+        n+=snprintf(t+n,sizeof(t)-n,"%02d:%02d:%02d   ",s/3600u,s/60u%60u,s%60u);
+    }
+    bmp_printf(FONT(FONT_MED,COLOR_WHITE,COLOR_BLACK),30,64,"%s",t);
+    info_drawn=get_ms_clock();
+}
+static unsigned screen_drawn;             /* LCM70: last full redraw (session_tick) */
 static void show_text(const char *text)
 {
-    snprintf(session_line,sizeof(session_line),"%s",text);
+    if (text!=session_line) snprintf(session_line,sizeof(session_line),"%s",text);   /* redraw: same buffer */
+    screen_drawn=get_ms_clock();
     clrscr();
     bmp_printf(FONT(FONT_LARGE,COLOR_WHITE,COLOR_BLACK),30,20,"%s",session_line);
+    info_line();
+}
+/* LCM70: called every ~10 ms while a session waits. The session text used
+ * to be drawn once per frame: during the first frame (after the countdown,
+ * or after the SET that ends the base wait) the LCD showed only Canon's
+ * focus box for 3-4 s, no text and no info line (LCM69 camera, with and
+ * without Base frame first). Redraw the whole screen once a second, like
+ * the Preview only screen: clrscr removes whatever Canon drew; if Canon's
+ * front buffer was turned back on (e.g. by ML's power saving), off again. */
+static void session_tick(void)
+{
+    const unsigned now=get_ms_clock();
+    if (now-screen_drawn<1000u) return;
+    screen_drawn=now;
+    if (!canon_gui_front_buffer_disabled()) canon_gui_disable_front_buffer();
+    show_text(session_line);
 }
 static unsigned battery_low(struct frlv_result *r)
 {
-    if (r->battery_stop || !r->battery_start || battery_level_bars>0) return 0;
+    if (!r->battery_guard || r->battery_stop || !r->battery_start || battery_level_bars>0) return 0;
     r->battery_stop=1;show_text("Battery low: saving");
     return 1;
 }
@@ -904,6 +955,7 @@ static void dark_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,const v
         if (vsyncs!=v) { v=vsyncs;preview_show(); }
         const unsigned left=(FRLV_DARK_COUNTDOWN_MS-el+999u)/1000u;
         if (left!=shown) { shown=left;snprintf(line,sizeof(line),"COVER THE LENS: dark frames in %d s  SET=skip",left);show_text(line); }
+        session_tick();
         msleep(50);
     }
     const unsigned covered=get_ms_clock(),readout_ms=150u*((cfg.timer_a+1u)/1388u)+300u;
@@ -946,6 +998,7 @@ static void dark_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,const v
                 r->exit_switched=1;last_switch=1;
             }
             if (!zoom5() || window_lost()) break;
+            session_tick();
             msleep(20);
         }
         if (frames_done==seen || in_flight) {        /* not completed: stop our DMA */
@@ -980,11 +1033,67 @@ static void dark_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,const v
     r->dark_state=r->dark_frames>=N ? DK_DONE:r->dark_frames ? DK_PARTIAL:DK_FAILED;
     show_text(r->dark_frames ? "Dark frames done: lens can be uncovered":"Dark frames failed");
 }
+/* LCM69 Base frame first (Live Composite, menu option; Olympus-style): the
+ * first full frame is the base, shown on the LCD. The session then waits for
+ * SET with the sensor at the 3 fps entry timing and nothing captured, so the
+ * composite starts about one shutter after SET instead of up to two long
+ * frames later. SET switches the chosen shutter in at the next vsync and
+ * arms right after it, so the first composite frame starts exposing after
+ * the press; a frame still short because the camera latched the timers one
+ * frame late is skipped by the caller (fresh). Presses before BASE READY are
+ * ignored. Returns 0 when the session ends without a composite (the base is
+ * saved): shutdown, battery low, mode lost, or the shutter switch failed. */
+static unsigned base_wait(struct frlv_result *r,const volatile unsigned *cancel,unsigned *cancel0,const char **msg)
+{
+    uint32_t irq=cli();pend_a=LC_FRR_ENTRY_A;pend_b=LC_FRR_ENTRY_B;pending_timers=1;sei(irq);
+    const unsigned c=*cancel,t0=get_ms_clock();
+    unsigned v=vsyncs,drawn=0,lost=0;
+    *msg="Base ready";
+    while (*cancel==c) {
+        if (ml_shutdown_requested || battery_low(r)) { r->base_wait_ms=get_ms_clock()-t0;return 0; }
+        lost=(!zoom5() || window_lost()) ? lost+1:0;
+        if (lost>=10) {                                  /* 100 ms, not a transient; no DMA in flight */
+            r->mode_lost=1;r->error|=FE_STATE;*msg="Camera left full-res mode";
+            r->base_wait_ms=get_ms_clock()-t0;return 0;
+        }
+        if (vsyncs!=v) { v=vsyncs;preview_show(); }     /* hide Canon's new frame */
+        if (!drawn || get_ms_clock()-drawn>=2000u) { show_text("BASE READY. Press SET to start");drawn=get_ms_clock(); }
+        session_tick();
+        msleep(10);
+    }
+    const unsigned s0=get_ms_clock();
+    r->base_wait_ms=s0-t0;*cancel0=*cancel;              /* this press starts; the next one stops */
+    {
+        static char t[48];
+        const unsigned ms=r->period_ms+2u*LC_FRR_ENTRY_MS;
+        snprintf(t,sizeof(t),"Composite: first frame in %d.%d s",ms/1000u,ms%1000u/100u);
+        show_text(t);
+    }
+    irq=cli();pend_a=r->target_a;pend_b=r->target_b;pending_timers=1;sei(irq);
+    while (pending_timers && get_ms_clock()-s0<r->period_ms+3u*LC_FRR_ENTRY_MS+2000u) {
+        if (vsyncs!=v) { v=vsyncs;preview_show(); }
+        session_tick();
+        msleep(2);
+    }
+    if (pending_timers) { pending_timers=0;r->error|=FE_STALL;*msg="Shutter switch failed";return 0; }
+    while (((unsigned)get_us_clock()-last_vsync_us)/1000u<40u) msleep(1);   /* never inside the vsync */
+    preview_show();
+    arm_from_task();
+    r->resume_start=s0;info_t0=s0;*msg="Composite: first frame...";
+    return 1;
+}
 static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
     const volatile unsigned *cancel,const char **msg,unsigned *dma_uncertain,unsigned period_ms,
     unsigned preview_only)
 {
     unsigned lost_ticks=0;
+    /* LCM69: holding = the base frame is being taken (base_wait follows);
+     * fresh = the next frame is the first after a shutter switch (a short
+     * one is skipped); presses count from cancel0 on (any press since the
+     * session started, e.g. during the warm-up), none while holding. */
+    unsigned holding=r->base_first,fresh=1,shorts=0,cancel0=0;
+#define FRLV_STOP (!holding && *cancel!=cancel0)
+    info_r=preview_only ? NULL:r;info_t0=0;
     preview_setup();r->preview_ok=preview_yuv!=NULL;
 #ifdef __ARM__
     if (preview_yuv && preview_pitch*preview_h%16u==0) { edmac_memcpy_res_lock();preview_dma_on=1; }
@@ -1009,22 +1118,23 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         msleep(40);
     }
     arm_from_task();
+    if (!holding) info_t0=get_ms_clock();          /* running time from the first frame */
     r->first_arm_after_vsync_ms=((unsigned)get_us_clock()-last_vsync_us)/1000u;
     write_log(r,"capturing");                    /* after arming: not on the critical path */
     {
         static char t[48];
-        snprintf(t,sizeof(t),"%s: first frame in %d.%d s",preview_only ? "Preview":mode_word(r),
-            period_ms/1000,period_ms%1000/100);
-        *msg=preview_only ? "Preview: exposing":is_bulb(r) ? "Bulb: first frame...":"Composite: first frame...";show_text(t);
+        snprintf(t,sizeof(t),"%s in %d.%d s",preview_only ? "Preview: first frame":holding ? "Base frame":
+            is_bulb(r) ? "Bulb: first frame":"Composite: first frame",period_ms/1000,period_ms%1000/100);
+        *msg=preview_only ? "Preview: exposing":holding ? "Composite: base frame...":is_bulb(r) ? "Bulb: first frame...":"Composite: first frame...";show_text(t);
     }
     for (;;) {
-        if (*cancel || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled() || r->merged>=r->limit || battery_low(r)) {
-            if (cont_arm && *cancel) show_text("Stopping after this frame");
+        if (FRLV_STOP || ml_shutdown_requested || !zoom5() || raw_lv_is_enabled() || r->merged>=r->limit || battery_low(r)) {
+            if (cont_arm && FRLV_STOP) show_text("Stopping after this frame");
             cont_arm=0;
         }
         w0=get_ms_clock();
         while (frames_done==seen && in_flight && get_ms_clock()-w0<period_ms+3000) {
-            if (*cancel && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
+            if (FRLV_STOP && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
             if (ml_shutdown_requested || battery_low(r)) cont_arm=0;
             /* Last frame in flight: go back to 3 fps at the vsync where it
              * completes, so leaving x5 does not wait another long frame. */
@@ -1048,6 +1158,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
                 if (raw_dma_abort()) { r->error|=FE_STATE;*msg="Camera left full-res mode";break; }
                 *dma_uncertain=1;r->error|=FE_DMA;*msg="RAW DMA did not stop";break;
             }
+            session_tick();
             msleep(10);
         }
         if (r->mode_lost) break;
@@ -1079,21 +1190,24 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         /* First frame after the timer switch: if the camera latched the new
          * timers one frame late, this frame is still a short 3 fps one -
          * not a full exposure. Measure it at the vsyncs and skip it. */
-        if (!r->merged && frame_interval_ms(done_vsync)*10u<period_ms*9u) {
+        /* LCM69: also the first frame after base_wait's switch (fresh). */
+        if (fresh && frame_interval_ms(done_vsync)*10u<period_ms*9u) {
             r->short_skipped++;
-            if (r->short_skipped>3) { cont_arm=0;r->error|=FE_STALL;*msg="Shutter not applied";break; }
+            if (++shorts>3) { cont_arm=0;r->error|=FE_STALL;*msg="Shutter not applied";break; }
             /* LCM59: SET during the first frame means "stop after it" (a
              * single-frame bulb, LVBL0014), not "no frame": still capture
              * the first full one. */
-            if ((cont_arm || (!r->merged && !ml_shutdown_requested && !battery_low(r))) && !in_flight) arm_from_task();
+            if ((cont_arm || (fresh && !ml_shutdown_requested && !battery_low(r))) && !in_flight) arm_from_task();
             continue;
         }
+        fresh=0;
         /* Next frame: arm now (its readout starts ~period-readout later),
          * never inside the vsync (>= 40 ms after it). preview_show took
          * ~110 ms with memcpy; with the EDMAC copy (LCM64) it is ~6 ms. */
         while (((unsigned)get_us_clock()-last_vsync_us)/1000u<40u) msleep(1);
         /* No extra frame after the last one the limit allows. */
-        if (cont_arm && !in_flight && r->merged+1<r->limit) arm_from_task();
+        /* LCM69: not after the base frame (base_wait arms after SET). */
+        if (cont_arm && !in_flight && r->merged+1<r->limit && !holding) arm_from_task();
         struct frlv_frame *c=r->merged<FRLV_CSV_MAX ? &cont_frames[r->merged]:&cont_overflow;
         memset(c,0,sizeof(*c));                         /* static: reused across sessions */
         c->seq=seen;c->done_ms=done;c->state=pointer==end ? 0:pointer-physical(cap)+1;
@@ -1144,7 +1258,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
             else changed+=merge_max((uint32_t *)(void *)(acc+b0*28),(const uint32_t *)(const void *)(src+b0*28),b1-b0);
             msleep(10);
             /* Acknowledge Q/SET during the ~1.7 s merge too (LCM25). */
-            if (*cancel && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
+            if (FRLV_STOP && cont_arm) { cont_arm=0;show_text("Stopping after this frame"); }
         }
         /* LCM55: in Live Bulb a lost band is not harmless (LCM54 LVBL0003:
          * 26 of 30 frames lost the bottom quarter, which then had ~4 frames
@@ -1159,6 +1273,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         unsigned off=in_flight ? edmac_get_pointer(raw_write_chan)-physical(cap):0;
         c->offset_after=off;
         r->merged++;
+        if (r->resume_start && !r->resume_ms) r->resume_ms=done-r->resume_start;   /* SET to the first composite frame */
         if (off && off<=r->bytes) r->overrun_offset=MAX(r->overrun_offset,off);
         /* The next frame completed while we merged the last band(s): those
          * rows hold a mix of two real exposures, harmless for a maximum
@@ -1174,7 +1289,7 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         unsigned preview_est=r->preview_us ? (r->preview_us+r->preview_copy_us)/1000u+20u:FRLV_PREVIEW_MS;
         const unsigned elapsed=get_ms_clock()-done;
         const unsigned strip_est=(r->preview_us ? r->preview_us/1000u:FRLV_PREVIEW_MS)/FRLV_PREVIEW_PARTS+10u;
-        if (preview_yuv && elapsed+preview_est+FRLV_MARGIN_MS>period_ms) {
+        if (preview_yuv && !holding && elapsed+preview_est+FRLV_MARGIN_MS>period_ms) {   /* the base: always whole */
             /* No time for a full preview (0.5 fps): render one strip of the
              * screen per frame, cycling; the copy that hides Canon's frame at
              * the next vsync puts it on screen (LCM26: 17/18 skipped). */
@@ -1193,6 +1308,11 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         /* Once a stop is requested, keep saying so (LCM24 replaced the
          * "Stopping" box with the frame count, so Q/SET looked ignored). */
         if (preview_only) { *msg="Preview";continue; }
+        if (holding) {
+            if (!base_wait(r,cancel,&cancel0,msg)) break;
+            holding=0;fresh=1;shorts=0;seen=frames_done;
+            continue;
+        }
         if (!cont_arm) {
             if (r->too_slow) snprintf(line,sizeof(line),"Too slow for %d s frames: stopping",r->period_ms/1000u);
             else snprintf(line,sizeof(line),"Stopping: %d frames + last",r->merged);
@@ -1201,10 +1321,11 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         } else {
             if (is_bulb(r)) {
                 const unsigned s=total_exposure_ms(r)/1000u;
-                if (s>=60) snprintf(line,sizeof(line),"BULB %d  %dm%02ds  SET=stop",r->merged,s/60,s%60);
-                else snprintf(line,sizeof(line),"BULB %d  %ds  SET=stop",r->merged,s);
+                if (s>=60) snprintf(line,sizeof(line),"BULB %d  %dm%02ds. Press SET to stop",r->merged,s/60,s%60);
+                else snprintf(line,sizeof(line),"BULB %d  %ds. Press SET to stop",r->merged,s);
             }
-            else snprintf(line,sizeof(line),"COMPOSITE %d  SET=stop",r->merged);
+            else if (r->info&LC_INFO_FRAMES) snprintf(line,sizeof(line),"COMPOSITE %d. Press SET to stop",r->merged);
+            else snprintf(line,sizeof(line),"COMPOSITE. Press SET to stop");
             *msg=line;
             show_text(line);
         }
@@ -1215,6 +1336,8 @@ static void continuous_capture(struct frlv_result *r,uint8_t *cap,uint8_t *acc,
         !ml_shutdown_requested && zoom5() && !window_lost())
         dark_capture(r,cap,acc,cancel,period_ms,dma_uncertain);
     if (preview_only && r->merged && !r->error && !*dma_uncertain) preview_hold(r,acc,cancel);
+    info_r=NULL;
+#undef FRLV_STOP
 #ifdef __ARM__
     if (preview_dma_on) { edmac_memcpy_res_unlock();preview_dma_on=0; }
 #endif
@@ -1271,6 +1394,8 @@ unsigned livecomp_frlv_run(struct card_info *card,const struct lc_frlv_options *
     r.dark_want=o->dark_frame && !o->preview_only;      /* LCM61: composite too */
     r.save_orig=o->save_orig && !o->preview_only;
     r.format=o->format<=LC_FORMAT_MLV ? o->format:LC_FORMAT_DNG;
+    r.base_first=o->base_first && r.mode==LC_MODE_COMPOSITE && !o->preview_only;   /* LCM69 */
+    r.info=o->info;r.battery_guard=o->battery_guard;
     r.wb_mode=lens_info.wb_mode;r.kelvin=lens_info.kelvin;
     lc_wb_neutral_for(lens_info.wb_mode,lens_info.kelvin,lens_info.WBGain_R,lens_info.WBGain_G,lens_info.WBGain_B,r.neutral);
     void *alloc[2]={0};uint8_t *cap=NULL,*acc=NULL;
