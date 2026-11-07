@@ -36,7 +36,7 @@ void xpan_native_look_mode_changed(void);
 /* Called by the existing LCD task; creates at most one checked worker. */
 void xpan_native_look_start_worker(void);
 /* Read-only snapshot from the existing JPEG setup callback; no SD I/O. */
-void xpan_native_look_note_jpeg(void);
+void xpan_native_look_note_jpeg(uint32_t jpeg_job);
 /* Read-only UI snapshot; never opens files or rebuilds a table. */
 void xpan_native_look_hud_label(char *name, unsigned name_size, char *state, unsigned state_size);
 /* Name (without extension) of the LUT Canon applied to the photo being

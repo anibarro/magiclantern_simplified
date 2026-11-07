@@ -18,6 +18,12 @@
 #define MAX_SNAPSHOTS 32
 #define CORE_REGISTERS 14
 static int descriptor_in_ram(uint32_t address);
+int xpan_native_jpeg_is_job(uint32_t address)
+{
+    if (!descriptor_in_ram(address)) return 0;
+    const volatile uint32_t *job=(const volatile uint32_t *)address;
+    return job[0]==0xff90f600 && job[1]==0x26 && job[2]==0xff9125a8;
+}
 
 /* Read the same RAM shadow that Canon's FF2C1730/shamem_read uses. These are
  * addresses identifying shadow slots, never direct reads of device registers.
@@ -52,6 +58,7 @@ static uint32_t failed_stage,guard_address,guard_expected,guard_actual;
 static char jpeg_status[64]="Ready";
 static unsigned crop_mode,crop_applied,crop_rejected,crop_reason;
 static int automatic_mode;
+static volatile unsigned auto_calls,auto_passed,auto_off,auto_r0;   /* Debug info */
 static struct card_info *automatic_card;
 static unsigned automatic_file=0xffffffffu,automatic_folder=0xffffffffu;
 void xpan_native_jpeg_set_automatic(void) { automatic_mode=1; }
@@ -257,7 +264,7 @@ static unsigned profile_words;
 static uint32_t crop_probe_unalias(uint32_t p) { return p&~0x40000000u; }
 /* JPEG_AFTER receives the private R4 descriptor installed by JPEG_BEFORE.
  * Match its owning workspace copy and original Canon descriptor, not the
- * original 0x70298 pointer that the crop hook deliberately replaces. */
+ * original Canon job pointer that the crop hook deliberately replaces. */
 static int mask_probe_xpan_crop_copy(uint32_t address,uint32_t *original)
 {
     if (!crop_workspace || !address) return 0;
@@ -265,7 +272,7 @@ static int mask_probe_xpan_crop_copy(uint32_t address,uint32_t *original)
     for (unsigned i=0;i<crop_applied && i<CROP_COPIES;i++) {
         struct crop_descriptor *copy=&crop_workspace->copies[i];
         if (crop_probe_unalias((uint32_t)copy->words)==target &&
-            crop_probe_unalias(copy->original)==0x70298) {
+            xpan_native_jpeg_is_job(copy->original)) {
             if (original) *original=crop_probe_unalias(copy->original);
             return 1;
         }
@@ -317,7 +324,7 @@ static int prepare_crop_profile(unsigned mode)
 static void redirect_crop_descriptor(uint32_t *regs)
 {
     /* Keep native 3:2 JPEG pixels while leaving Canon's LUT processing installed. */
-    if (!crop_mode || !xpan_photo_is_panoramic() || regs[0]!=0x70298) return;
+    if (!crop_mode || !xpan_photo_is_panoramic() || !xpan_native_jpeg_is_job(regs[0])) return;
     const volatile uint32_t *source=(const volatile uint32_t *)regs[0];
     /* Test20 proves quality8 is the standalone JPEG and quality0 is the CR2
      * preview, reversing the old assumption. Both need the same centered frame.
@@ -376,9 +383,13 @@ static void jpeg_observe_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
     {
         /* Crop Canon's normal photo jobs, including the RAW embedded preview.
          * Do not fill observer/thumbnail buffers or exhaust a one-shot quota. */
-        if (!xpan_photo_enabled() || is_movie_mode() || pc!=JPEG_BEFORE || regs[0]!=0x70298) return;
+        auto_calls++;
+        if (pc==JPEG_BEFORE) auto_r0=regs[0];
+        if (!xpan_photo_enabled() || is_movie_mode()) { auto_off++; return; }
+        if (pc!=JPEG_BEFORE || !xpan_native_jpeg_is_job(regs[0])) return;
         struct card_info *card=get_shooting_card();
         if (!card) return;
+        auto_passed++;
         if (card!=automatic_card || (unsigned)card->file_number!=automatic_file ||
             (unsigned)card->folder_number!=automatic_folder)
         {
@@ -391,7 +402,7 @@ static void jpeg_observe_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
 #ifdef CONFIG_XPAN
         /* Snapshot the color stage through this already installed callback.
          * No extra patch or image buffer is needed for JPEG-only diagnostics. */
-        xpan_native_look_note_jpeg();
+        xpan_native_look_note_jpeg(regs[0]);
 #endif
         redirect_crop_descriptor(regs);
         return;
@@ -453,6 +464,11 @@ static void jpeg_observe_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
 int xpan_native_jpeg_hooks_remain(void) { return installed!=0; }
 const char *xpan_native_jpeg_status(void) { return jpeg_status; }
 unsigned xpan_native_jpeg_crop_count(void) { return crop_applied; }
+void xpan_native_jpeg_diag(unsigned d[11])
+{
+    d[0]=installed; d[1]=active; d[2]=crop_mode; d[3]=auto_calls; d[4]=auto_passed;
+    d[5]=crop_applied; d[6]=crop_rejected; d[7]=crop_reason; d[8]=patch_error; d[9]=auto_off; d[10]=auto_r0;
+}
 
 int xpan_native_jpeg_stop(int idle)
 {
@@ -580,7 +596,7 @@ int xpan_native_jpeg_save(struct card_info *card, unsigned number)
     for (unsigned i=0; i<snapshot_count; i++) {
         if (snapshots[i].descriptor==0x72440) manager_count++;
         if (snapshots[i].descriptor==0x6ffbc) legacy_count++;
-        if (snapshots[i].descriptor==0x70298) main_count++;
+        if (snapshots[i].parameters[0]==0xff90f600 && snapshots[i].parameters[2]==0xff9125a8) main_count++;
         if ((snapshots[i].parameters[0x38/4]>>16)>=1024 &&
             (snapshots[i].parameters[0x3c/4]&65535)>=1024 &&
             snapshots[i].parameters[0x40/4]==0) photo_sized++;

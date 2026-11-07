@@ -532,6 +532,11 @@
 #define PROP_IMAGE_ASPECT_RATIO 0x80040059
 /* EOS M ROM FF1B2D10: four-byte storage value, 1=sRGB, 2=Adobe RGB. */
 #define PROP_XPAN_COLOR_SPACE 0x02060000
+/* Lens aberration correction > Chromatic aberration (Canon's PROP_CHROMATISM,
+ * EOS M 2.0.2 ROM FF7C42B4): 0 = Enable, 1 = Disable (confirmed on camera).
+ * Enable moves stills to a develop path without the colour-table step XPan
+ * grades, so XPan keeps it at Disable. */
+#define PROP_XPAN_CHROMATISM 0x02050024
 #endif
 #define PICQ_RAW                 0x4060000
 #define PICQ_MRAW                0x4060001

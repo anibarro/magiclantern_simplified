@@ -11,6 +11,7 @@
 #include "edmac-memcpy.h"
 #include "xpan-mode.h"
 #include "xpan-film-grain.h"
+#include "xpan-native-jpeg.h"
 #if !defined(CONFIG_EOSM) || defined(CONFIG_QEMU) || !defined(CONFIG_XPAN)
 #error Native saved-JPEG grain requires the physical EOS M2.0.2 build.
 #endif
@@ -575,7 +576,7 @@ static void grain_capture_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
         is_movie_mode() || ml_shutdown_requested || pc!=CAPTURE_SITE) return;
     /* R7 is the completed-YUV JPEG descriptor at this exact semaphore-protected
      * call site. Quality8 is the final JPEG; quality0 is the RAW preview. */
-    if (regs[7]!=0x70298) return;
+    if (!xpan_native_jpeg_is_job(regs[7])) return;
     const volatile uint32_t *source=(const volatile uint32_t *)regs[7];
     if (source[0x44/4]!=8) return;
     /* Excluded RAW-preview jobs must not erase the last JPEG's diagnostics. */
@@ -1014,7 +1015,7 @@ static void wm_capture_hook(uint32_t *regs,uint32_t pc)
     if (!xpan_watermark_enabled() || !wm_ready || !xpan_photo_enabled() ||
         is_movie_mode() || ml_shutdown_requested || pc!=CAPTURE_SITE) return;
     /* Same finished-YUV JPEG descriptor checks as the grain (quality 8 only). */
-    if (regs[7]!=0x70298) return;
+    if (!xpan_native_jpeg_is_job(regs[7])) return;
     const volatile uint32_t *source=(const volatile uint32_t *)regs[7];
     if (source[0x44/4]!=8) return;
     if (source[0]!=0xff90f600 || source[1]!=0x26 || source[2]!=0xff9125a8 ||
@@ -1039,7 +1040,7 @@ static void wm_capture_hook(uint32_t *regs,uint32_t pc)
 static void capture_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
 {
     grain_capture_hook(regs,stack,pc);      /* may already have placed the logo */
-    if (!xpan_watermark_enabled() || !wm_ready || pc!=CAPTURE_SITE || regs[7]!=0x70298) return;
+    if (!xpan_watermark_enabled() || !wm_ready || pc!=CAPTURE_SITE || !xpan_native_jpeg_is_job(regs[7])) return;
     struct card_info *card=get_shooting_card();
     if (!card || (wm_last_card==card && wm_last_file==(unsigned)card->file_number &&
         wm_last_folder==(unsigned)card->folder_number)) return;

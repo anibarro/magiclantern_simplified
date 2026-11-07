@@ -97,8 +97,20 @@ static volatile struct {
     unsigned calls,ready_calls,accepted,matched,preview,reason,flags;
 } capture_trace[4];
 
-void xpan_native_look_note_jpeg(void)
+/* Canon's FOD block (colour-table transfer parameters), R4 at the look
+ * hook: 0x701B8 on this firmware, 0xE0 below the normal-path JPEG job
+ * (0x70298). Recognised by content, never assumed: 0 until seen. */
+static volatile uint32_t look_fod;
+static int fod_in_ram(uint32_t address)
 {
+    uint32_t ram=address&~0x40000000u;
+    return !(address&3) && ram>=0x10000 && ram<=0x08000000-0x40;
+}
+void xpan_native_look_note_jpeg(uint32_t jpeg_job)
+{
+    uint32_t fod=jpeg_job-0xE0;
+    if (fod_in_ram(fod) && *(volatile uint32_t *)fod==0xff92da38) look_fod=fod;
+    fod=look_fod;
     struct card_info *card=get_shooting_card();
     unsigned slot=capture_trace_count%COUNT(capture_trace);
     capture_trace[slot].file=card ? card->file_number:0;
@@ -108,11 +120,13 @@ void xpan_native_look_note_jpeg(void)
     capture_trace[slot].style=lens_info.raw_picstyle;
     /* This is Canon's fixed FOD RAM block already used by the exact guard.
      * Observe it at JPEG setup even when the conditional LUT call never ran. */
-    capture_trace[slot].kind=*(volatile uint32_t *)0x701bc;
-    capture_trace[slot].enable=*(volatile uint16_t *)0x701ec;
-    capture_trace[slot].source=*(volatile uint32_t *)0x701e8;
-    capture_trace[slot].profile=*(volatile uint32_t *)0x701b8;
-    capture_trace[slot].config=*(volatile uint32_t *)0x701c0;
+    if (fod) {
+        capture_trace[slot].kind=*(volatile uint32_t *)(fod+4);
+        capture_trace[slot].enable=*(volatile uint16_t *)(fod+0x34);
+        capture_trace[slot].source=*(volatile uint32_t *)(fod+0x30);
+        capture_trace[slot].profile=*(volatile uint32_t *)fod;
+        capture_trace[slot].config=*(volatile uint32_t *)(fod+8);
+    }
     capture_trace[slot].calls=transfer_calls;
     capture_trace[slot].ready_calls=ready_transfer_calls;
     capture_trace[slot].accepted=accepted_transfer_calls;
@@ -206,8 +220,8 @@ static int native_preview_table(uint32_t source)
             if (armed_look==3 && armed_headroom && !get_htp() && get_alo()==ALO_OFF &&
                 (armed_headroom==2 || xpan_native_base_table()) &&
                 xpan_native_obwb_headroom(preview_obwb,
-                    *(volatile uint32_t *)(0x701b8+0x28),XPAN_HEADROOM_STOPS(armed_headroom))==1 &&
-                xpan_native_angel_shadow(preview_angel,*(volatile uint32_t *)(0x701b8+0x2c))==1)
+                    *(volatile uint32_t *)(look_fod+0x28),XPAN_HEADROOM_STOPS(armed_headroom))==1 &&
+                xpan_native_angel_shadow(preview_angel,*(volatile uint32_t *)(look_fod+0x2c))==1)
                 preview_headroom=armed_headroom;
             if (armed_look==3)
                 prepared=xpan_native_table_prepare_cube(preview_output,preview_actual,
@@ -282,16 +296,20 @@ static void native_table_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
      * full-photo kind17 block, adding its ROM profile/header identities.
      * Only known enable0/1 values are eligible; FFFF and other modes pass on.
      * No bypass is changed until the source table is stable and validated. */
-    uint32_t source=*(volatile uint32_t *)0x701e8;
-    unsigned enable=*(volatile uint16_t *)0x701ec;
+    /* R4 is Canon's FOD block, recognised by its ROM profile/header
+     * identities (full-photo kind 0x17), not by a fixed address. */
+    uint32_t fod=regs[4];
+    if (!fod_in_ram(fod)) { last_guard_mask=4; return; }
+    const volatile uint32_t *block=(const volatile uint32_t *)fod;
+    uint32_t source=block[0x30/4];
+    unsigned enable=*(volatile uint16_t *)(fod+0x34);
     last_guard_mask=(pc!=LOOK_HOOK ? 1:0) | (regs[3]!=enable ? 2:0) |
-        (regs[4]!=0x701b8 ? 4:0) |
         (!source ? 8:0) |
-        (*(volatile uint32_t *)0x701bc!=0x17 ? 16:0) |
+        (block[1]!=0x17 ? 16:0) |
         (enable>1 ? 32:0) | (lens_info.raw_picstyle!=0x84 ? 64:0) |
-        (*(volatile uint32_t *)0x701b8!=0xff92da38 ||
-         *(volatile uint32_t *)0x701c0!=0xff92da94 ? 128:0);
+        (block[0]!=0xff92da38 || block[2]!=0xff92da94 ? 128:0);
     if (last_guard_mask) return;
+    look_fod=fod;
     accepted_transfer_calls++;
     /* An identity Cube/zero strength should preserve the original bypass,
      * including the enable0 case. It is not a request to enable hardware. */
@@ -332,9 +350,9 @@ static void native_table_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
                 else if (armed_headroom==1 && !xpan_native_base_table()) headroom_code=6;
                 else {
                     headroom_obwb_code=xpan_native_obwb_headroom(look_obwb,
-                        *(volatile uint32_t *)(0x701b8+0x28),XPAN_HEADROOM_STOPS(armed_headroom));
+                        *(volatile uint32_t *)(look_fod+0x28),XPAN_HEADROOM_STOPS(armed_headroom));
                     headroom_angel_code=headroom_obwb_code==1 ?
-                        xpan_native_angel_shadow(look_angel,*(volatile uint32_t *)(0x701b8+0x2c)):0;
+                        xpan_native_angel_shadow(look_angel,*(volatile uint32_t *)(look_fod+0x2c)):0;
                     if (headroom_obwb_code!=1) headroom_code=3;
                     else if (headroom_angel_code!=1) headroom_code=7;
                     else { headroom=armed_headroom; headroom_code=0; }
@@ -364,3 +382,18 @@ static void native_table_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
 
 /* Menu and idle workflow share these private capture helpers. */
 #include "xpan-workflow.inc"
+
+/* Debug info: one line on the capture path, logged by the HUD controls when
+ * it changes, so a photo that comes out uncropped or ungraded shows where. */
+void xpan_native_capture_diag(char *buf, int size)
+{
+    unsigned j[11]; xpan_native_jpeg_diag(j);
+    struct card_info *card=get_shooting_card();
+    snprintf(buf,size,"file %d en %d pano %d q %x mode %x | jpeg inst %x act %d mode %d calls %d off %d r0 %x pass %d crop %d rej %d why %d err %x"
+        " | look hook %d jpeg %d ready %d table %d/%d/%d guard %x fod %x look %d/%d | ca ev %d len %d val %x | %s",
+        card ? card->file_number:-1,xpan_photo_enabled(),xpan_photo_is_panoramic(),pic_quality,shooting_mode,
+        j[0],j[1],j[2],j[3],j[9],j[10],j[4],j[5],j[6],j[7],j[8],
+        hook_installed,jpeg_installed_automatic,automatic_capture_ready,
+        transfer_calls,ready_transfer_calls,accepted_transfer_calls,last_guard_mask,look_fod,
+        selected_look,armed_look,chromatism_events,chromatism_len,chromatism_raw[0],look_status);
+}

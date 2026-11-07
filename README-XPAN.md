@@ -32,9 +32,14 @@ While XPan is ON it sets everything it needs on Canon's side by itself:
   (Sharpness stays yours)
 * Auto Lighting Optimizer and Highlight Tone Priority OFF, colour space sRGB
 * image quality L JPEG or RAW+L, Canon aspect ratio 3:2
+* Lens aberration correction > Chromatic aberration: Disable. With it
+  enabled, Canon develops stills on a different path (its Eeko engine)
+  that skips the colour-table step carrying the look, so the JPEG would be
+  cropped but not graded. Peripheral illumination correction is left as you
+  set it.
 
-Turning XPan OFF puts your Picture Style, its sliders, ALO, HTP and colour
-space back. The A+ position of the mode dial cannot be changed from
+Turning XPan OFF puts your Picture Style, its sliders, ALO, HTP, colour
+space and chromatic aberration correction back. The A+ position of the mode dial cannot be changed from
 software, so XPan is off there.
 
 * **Aspect ratio** 65:24 or 3:2. In 65:24 the JPEG is cropped by Canon's

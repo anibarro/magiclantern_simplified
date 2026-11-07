@@ -680,6 +680,7 @@ static void mpu_recv_install(void)
  * the AF-frame inputs. A HUD pixel turning empty also forces a HUD redraw. */
 int xpan_photo_get_hud_y(void);              /* cropmarks.c */
 int get_afframe_rect(int *x, int *y, int *w, int *h, int *W, int *H);
+void xpan_native_capture_diag(char *buf, int size);   /* xpan-native-look.c */
 static void hud_watch(unsigned mask)
 {
     if (!xpan_photo_debug_enabled() || mask || !lv) return;
@@ -731,11 +732,21 @@ static void key_log_flush(void)
         last_dispsize=lv_dispsize;
     }
     unsigned head=key_log_head;
-    if (head==key_log_written || get_ms_clock()-last_ms<1000) return;
+    /* Capture path state (xpan-native-look.c), logged when it changes. */
+    static char last_diag[240];
+    char diag[240];
+    xpan_native_capture_diag(diag,sizeof(diag));
+    int diag_changed=strcmp(diag,last_diag)!=0;
+    if ((head==key_log_written && !diag_changed) || get_ms_clock()-last_ms<1000) return;
     last_ms=get_ms_clock();
     FILE *f=FIO_CreateFileOrAppend("ML/LOGS/XPANKEYS.LOG");
     if (!f) return;
-    char line[160];
+    char line[300];
+    if (diag_changed) {
+        int n=snprintf(line,sizeof(line),"%8d CAPTURE %s\n",(int)get_ms_clock(),diag);
+        if (n>0) FIO_WriteFile(f,line,MIN(n,(int)sizeof(line)-1));
+        memcpy(last_diag,diag,sizeof(last_diag));
+    }
     if (head-key_log_written>KEY_LOG_SIZE) {
         int n=snprintf(line,sizeof(line),"--- %d entries lost\n",(int)(head-key_log_written-KEY_LOG_SIZE));
         FIO_WriteFile(f,line,n);

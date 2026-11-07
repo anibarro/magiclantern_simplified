@@ -68,6 +68,30 @@ PROP_HANDLER(PROP_XPAN_COLOR_SPACE)
 {
     if (len==4) canon_colour_space=buf[0];
 }
+/* Chromatic aberration correction: ON develops stills without the colour
+ * table step that carries the look (FOD), so XPan turns it off while ON. */
+/* The whole payload is kept (its length is Canon's); the first word is the
+ * value, 0 = Enable and 1 = Disable, and a change request rewrites only it. */
+#define CHROMATISM_DISABLE 1u
+static uint32_t chromatism_raw[16];
+static uint32_t chromatism_payload;
+static volatile unsigned chromatism_len,chromatism_events;
+PROP_HANDLER(PROP_XPAN_CHROMATISM)
+{
+    chromatism_events++;
+    if (len>=1 && len<=sizeof(chromatism_raw)) {
+        memset(chromatism_raw,0,sizeof(chromatism_raw)); memcpy(chromatism_raw,buf,len);
+        chromatism_payload=len>=4 ? chromatism_raw[0]:(chromatism_raw[0]&0xff);
+        chromatism_len=len;
+    }
+}
+static void chromatism_request(uint32_t value)
+{
+    uint32_t request[16]; memcpy(request,chromatism_raw,sizeof(request));
+    if (chromatism_len>=4) request[0]=value;
+    else request[0]=(request[0]&~0xffu)|(value&0xff);
+    prop_request_change(PROP_XPAN_CHROMATISM,request,chromatism_len);
+}
 PROP_HANDLER(PROP_PICSTYLE_SETTINGS_NEUTRAL)
 {
     /* EOS M uses the24-byte four-slider layout. Preserve its unused tail. */
@@ -77,7 +101,7 @@ PROP_HANDLER(PROP_PICSTYLE_SETTINGS_NEUTRAL)
 
 static struct {
     int saved,neutral_saved,neutral_restored;
-    uint32_t style,colour;
+    uint32_t style,colour,chromatism;
     uint8_t alo[3];
     int htp,sharpness,contrast,saturation,tone;
 } previous_base;
@@ -99,7 +123,8 @@ static int workflow_base_matches(void)
 {
     return neutral_payload_valid && alo_payload_valid && lens_info.raw_picstyle==0x84 &&
         !(neutral_payload[0]|neutral_payload[2]|neutral_payload[3]) &&
-        alo_payload[0]==ALO_OFF && !get_htp() && canon_colour_space==1;
+        alo_payload[0]==ALO_OFF && !get_htp() && canon_colour_space==1 &&
+        (!chromatism_len || chromatism_payload==CHROMATISM_DISABLE);
 }
 
 static int workflow_force_base(void)
@@ -109,6 +134,7 @@ static int workflow_force_base(void)
     {
         previous_base.style=lens_info.raw_picstyle;
         previous_base.colour=canon_colour_space; previous_base.htp=get_htp();
+        previous_base.chromatism=chromatism_payload;
         memcpy(previous_base.alo,alo_payload,3); previous_base.saved=1;
     }
     previous_base.neutral_restored=0;
@@ -140,6 +166,10 @@ static int workflow_force_base(void)
         uint32_t srgb=1;
         prop_request_change(PROP_XPAN_COLOR_SPACE,&srgb,4); ready=0;
     }
+    if (chromatism_len && chromatism_payload!=CHROMATISM_DISABLE)
+    {
+        chromatism_request(CHROMATISM_DISABLE); ready=0;
+    }
     return ready;
 }
 
@@ -164,6 +194,8 @@ static void workflow_restore_base(void)
     if (get_htp()!=previous_base.htp) { set_htp(previous_base.htp); ready=0; }
     if (canon_colour_space!=previous_base.colour)
     { prop_request_change(PROP_XPAN_COLOR_SPACE,&previous_base.colour,4); ready=0; }
+    if (chromatism_len && chromatism_payload!=previous_base.chromatism)
+    { chromatism_request(previous_base.chromatism); ready=0; }
     if (lens_info.raw_picstyle!=previous_base.style)
     { prop_request_change(PROP_PICTURE_STYLE,&previous_base.style,4); ready=0; }
     if (ready) memset(&previous_base,0,sizeof(previous_base));
@@ -259,6 +291,7 @@ static const char *workflow_base_blocker(void)
     const char *blocker=workflow_look_blocker();
     if (blocker) return blocker;
     if (canon_colour_space!=1) return "Set Canon Color space to sRGB";
+    if (chromatism_len && chromatism_payload!=CHROMATISM_DISABLE) return "Set Chromatic aberration correction to Disable";
     if (!neutral_payload_valid || !alo_payload_valid) return "No Canon style data: restart the camera";
     if (neutral_payload[0]|neutral_payload[2]|neutral_payload[3])
         return "Set Neutral Contrast, Saturation, Color tone to 0";

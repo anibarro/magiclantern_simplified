@@ -331,7 +331,7 @@ static int is_prop_allowed(uint32_t property)
         case PROP_PIC_QUALITY: case PROP_PIC_QUALITY2: case PROP_PIC_QUALITY3:
         case PROP_IMAGE_ASPECT_RATIO: case PROP_PICTURE_STYLE:
         case PROP_PICSTYLE_SETTINGS_NEUTRAL: case PROP_ALO:
-        case PROP_XPAN_COLOR_SPACE:
+        case PROP_XPAN_COLOR_SPACE: case PROP_XPAN_CHROMATISM:
         case PROP_SHUTTER: case PROP_APERTURE: case PROP_ISO: case PROP_AE:
         case PROP_WB_MODE_LV: case PROP_WB_KELVIN_LV:
         case PROP_WB_MODE_PH: case PROP_WB_KELVIN_PH:

@@ -14,6 +14,13 @@ int xpan_native_jpeg_hooks_remain(void);
 /* Keep the actual setup failure visible; reboot is useful only for retained hooks. */
 const char *xpan_native_jpeg_status(void);
 unsigned xpan_native_jpeg_crop_count(void);
+/* Debug info: installed, active, crop mode, hook calls, calls past the gates,
+ * crops applied/rejected, reject reason, patch error. */
+void xpan_native_jpeg_diag(unsigned d[11]);
+/* Canon's photo JPEG job (and the FOD block 0xE0 below it) lives in Canon's
+ * heap: its address moves whenever Magic Lantern allocates differently
+ * (0x70298 on one boot, 0x6FA40 on another). Recognise it by content. */
+int xpan_native_jpeg_is_job(uint32_t address);
 #ifdef CONFIG_XPAN
 /* Manual playback compatibility is separate from per-shot capture hooks. */
 int xpan_native_jpeg_playback_enable(void);
