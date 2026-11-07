@@ -686,7 +686,7 @@ static void hud_watch(unsigned mask)
     uint8_t *real=bmp_vram_real();
     int y=xpan_photo_get_hud_y();
     if (!real || y<0 || y+XPAN_PHOTO_HUD_HEIGHT>480) return;
-    int p0=real[(y+2)*BMPPITCH+360],p1=real[(y+100)*BMPPITCH+700],p2=real[(y+200)*BMPPITCH+20];
+    int p0=real[(xpan_photo_get_hud_top_y()+2)*BMPPITCH+360],p1=real[(y+100)*BMPPITCH+700],p2=real[(y+200)*BMPPITCH+20];
     int px=(p0<<16)|(p1<<8)|p2;
     int ax=0,ay=0,aw=0,ah=0,W=0,H=0;
     int af=get_afframe_rect(&ax,&ay,&aw,&ah,&W,&H)|(is_manual_focus()?2:0)|(lens_info.lens_exists?4:0);

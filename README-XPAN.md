@@ -40,7 +40,11 @@ software, so XPan is off there.
 * **Aspect ratio** 65:24 or 3:2. In 65:24 the JPEG is cropped by Canon's
   own encoder (full sensor width, 65:24 height). RAW files keep the full
   3:2 sensor frame.
-* **Frame alignment** top or bottom, so the free band can hold the HUD.
+* **Frame alignment** (65:24): *Top* or *Bottom* puts the picture against
+  that edge and the HUD in the free band. *Split* puts the HUD's first row
+  (logo, equivalent lens, mode, clock, card space, battery) in a thin 60 px
+  bar above the picture and the rest of the HUD below it. INFO cycles
+  Top / Bottom / Split in Live View.
 * **Photo HUD**: shutter, aperture, ISO, EV, WB, drive, meter, LUT, format,
   battery, time and card space, in four colour themes (Orange, Silver, Red,
   Blue) and with an optional rule-of-thirds grid.

@@ -2,7 +2,17 @@
 static int xpan_hud_background = COLOR_BLACK;
 /* The workflow log reads these counters outside the display task. */
 static volatile unsigned xpan_hud_render_calls, xpan_hud_last_clipped;
-static volatile int xpan_hud_last_y = -1;
+static volatile int xpan_hud_last_y = -1, xpan_hud_last_top_y = -1;
+
+/* Screen rows the HUD occupies: the 214-row panel, or in Split the top bar
+ * plus the panel without its first row. Returns the number of bands. */
+static int xpan_hud_rows(int y, int top_y, int band[2][2])
+{
+    if (top_y==y) { band[0][0]=y; band[0][1]=XPAN_PHOTO_HUD_HEIGHT; return 1; }
+    band[0][0]=top_y; band[0][1]=XPAN_PHOTO_SPLIT_BAR;
+    band[1][0]=y+XPAN_PHOTO_SPLIT_BAR; band[1][1]=XPAN_PHOTO_HUD_HEIGHT-XPAN_PHOTO_SPLIT_BAR;
+    return 2;
+}
 
 void xpan_photo_hud_debug_snapshot(unsigned *draw_calls, int *last_y, unsigned *clipped)
 {
@@ -82,7 +92,10 @@ static void xpan_hud_hit_set(int field, int x, int y, int w, int h)
 int xpan_photo_hud_hit_test(int x, int y)
 {
     if (!xpan_hud_hit_valid || xpan_hud_last_y<0) return -1;
-    if (y<xpan_hud_last_y || y>=xpan_hud_last_y+XPAN_PHOTO_HUD_HEIGHT) return -1;
+    int band[2][2],in=0;
+    for (int b=xpan_hud_rows(xpan_hud_last_y,xpan_hud_last_top_y,band);b--;)
+        if (y>=band[b][0] && y<band[b][0]+band[b][1]) in=1;
+    if (!in) return -1;
     for (int f=0;f<XPAN_HUD_FIELDS;f++)
         if (xpan_hud_hit[f].w && x>=xpan_hud_hit[f].x && x<xpan_hud_hit[f].x+xpan_hud_hit[f].w &&
             y>=xpan_hud_hit[f].y && y<xpan_hud_hit[f].y+xpan_hud_hit[f].h) return f;
@@ -456,11 +469,16 @@ static void xpan_hud_copy_band(int to_front, int y0, int h)
 static void xpan_photo_render_hud(info_elem_t *config)
 {
     (void)config;
-    static int last_hud_y=-1;
+    static int last_hud_y=-1,last_top_y=-1;
     int panoramic=xpan_photo_is_panoramic();
     int y=xpan_photo_get_hud_y(),theme=xpan_photo_theme_color();
+    /* ty: the panel's first row; above the picture in Split, else y. */
+    int ty=xpan_photo_get_hud_top_y();
+    int band[2][2],bands=xpan_hud_rows(y,ty,band);
+    int old_band[2][2],old_bands=last_hud_y>=0 ? xpan_hud_rows(last_hud_y,last_top_y,old_band):0;
+    int moved=last_hud_y>=0 && (last_hud_y!=y || last_top_y!=ty);
     xpan_hud_render_calls++;
-    xpan_hud_last_y=y;
+    xpan_hud_last_y=y; xpan_hud_last_top_y=ty;
     xpan_hud_last_clipped=(y<0 || y+XPAN_PHOTO_HUD_HEIGHT>480);
     if (xpan_hud_last_clipped) return;
     /* Skip identical frames: each draw copies the whole 720x480 bitmap twice.
@@ -469,7 +487,7 @@ static void xpan_photo_render_hud(info_elem_t *config)
     {
         unsigned sig=2166136261u;
         #define XPAN_HUD_SIG(v) (sig=(sig^(unsigned)(v))*16777619u)
-        XPAN_HUD_SIG(y); XPAN_HUD_SIG(theme); XPAN_HUD_SIG(panoramic); XPAN_HUD_SIG(xpan_photo_hud_is_enabled());
+        XPAN_HUD_SIG(y); XPAN_HUD_SIG(ty); XPAN_HUD_SIG(theme); XPAN_HUD_SIG(panoramic); XPAN_HUD_SIG(xpan_photo_hud_is_enabled());
         XPAN_HUD_SIG(xpan_photo_grid_mode()); XPAN_HUD_SIG(lv_dispsize);
         XPAN_HUD_SIG(shooting_mode); XPAN_HUD_SIG(lens_info.raw_iso); XPAN_HUD_SIG(lens_info.iso_auto);
         XPAN_HUD_SIG(lens_info.raw_shutter); XPAN_HUD_SIG(lens_info.raw_aperture); XPAN_HUD_SIG(lens_info.ae);
@@ -505,8 +523,8 @@ static void xpan_photo_render_hud(info_elem_t *config)
     }
     if (!xpan_photo_hud_is_enabled()) bmp_idle_copy(0,0);
     else {
-        xpan_hud_copy_band(0,y,XPAN_PHOTO_HUD_HEIGHT);
-        if (last_hud_y>=0 && last_hud_y!=y) xpan_hud_copy_band(0,last_hud_y,XPAN_PHOTO_HUD_HEIGHT);
+        for (int b=0;b<bands;b++) xpan_hud_copy_band(0,band[b][0],band[b][1]);
+        if (moved) for (int b=0;b<old_bands;b++) xpan_hud_copy_band(0,old_band[b][0],old_band[b][1]);
     }
     bmp_draw_to_idle(1);
     if (!xpan_photo_hud_is_enabled()) {
@@ -523,20 +541,20 @@ static void xpan_photo_render_hud(info_elem_t *config)
 #endif
         bmp_draw_to_idle(0);
         bmp_idle_copy(1,0);
-        last_hud_y=-1;
+        last_hud_y=-1; last_top_y=-1;
         return;
     }
-    if (last_hud_y>=0 && last_hud_y!=y) {
-        /* Erase the old anchor before drawing at the selected top/bottom edge. */
-        bmp_fill(COLOR_EMPTY,0,last_hud_y,720,XPAN_PHOTO_HUD_HEIGHT);
+    if (moved) {
+        /* Erase the old layout before drawing the selected Top/Bottom/Split one. */
+        for (int b=0;b<old_bands;b++) bmp_fill(COLOR_EMPTY,0,old_band[b][0],720,old_band[b][1]);
     }
-    int moved_from=(last_hud_y>=0 && last_hud_y!=y) ? last_hud_y:-1;
-    last_hud_y=y;
+    last_hud_y=y; last_top_y=ty;
     /* Share the panoramic layout; the EOS M transparent-black color softens
      * the panel when it overlays the full-height 3:2 Live View. */
     xpan_hud_background=panoramic ? COLOR_BLACK:COLOR_TRANSPARENT_BLACK;
-    bmp_fill(xpan_hud_background,0,y,720,XPAN_PHOTO_HUD_HEIGHT);
-    xpan_hud_logo(y,theme);
+    for (int b=0;b<bands;b++) bmp_fill(xpan_hud_background,0,band[b][0],720,band[b][1]);
+    /* First row (logo .. battery): drawn at ty, the top bar in Split. */
+    xpan_hud_logo(ty,theme);
 
     char text[96];int focal=0,aperture=0;
     int eq=xpan_photo_get_lens_equivalents(lens_info.lens_exists,lens_info.focal_len,
@@ -547,7 +565,7 @@ static void xpan_photo_render_hud(info_elem_t *config)
     else snprintf(text,sizeof(text),"--mm  f/--");
     /* Bound the equivalents before the mode, then compact the status group.
      * Optional clock/space cells retain their positions when hidden. */
-    int equivalents_width=xpan_hud_text(152,y+13,240,30,FONT_MED_LARGE,theme,text);
+    int equivalents_width=xpan_hud_text(152,ty+13,240,30,FONT_MED_LARGE,theme,text);
     const char *mode=xpan_hud_photo_mode();
     int mode_font=bmp_string_width(FONT_MED_LARGE,mode)+1<=48 ? FONT_MED_LARGE:FONT_MONO_20;
     int mode_width=MIN(56,bmp_string_width(mode_font,mode)+1);
@@ -556,28 +574,28 @@ static void xpan_photo_render_hud(info_elem_t *config)
     int mode_center=(152+equivalents_width+478)/2;
     /* The font's capital ink sits3px above its cell center; align the frame
      * to that ink while retaining the mode's existing text baseline. */
-    bmp_draw_rect(theme,mode_center-33,y+8,66,34);
-    xpan_hud_text(mode_center-mode_width/2,y+13,mode_width,30,mode_font,COLOR_WHITE,mode);
-    if (XPAN_HUD_SELECTED(XPAN_HUD_MODE)) xpan_hud_select_line(mode_center-33,y+44,66,theme);
-    XPAN_HUD_HIT(XPAN_HUD_MODE,mode_center-40,y,80,60);
+    bmp_draw_rect(theme,mode_center-33,ty+8,66,34);
+    xpan_hud_text(mode_center-mode_width/2,ty+13,mode_width,30,mode_font,COLOR_WHITE,mode);
+    if (XPAN_HUD_SELECTED(XPAN_HUD_MODE)) xpan_hud_select_line(mode_center-33,ty+44,66,theme);
+    XPAN_HUD_HIT(XPAN_HUD_MODE,mode_center-40,ty,80,XPAN_PHOTO_SPLIT_BAR);
     if (xpan_photo_status_time_enabled()) {
         struct tm now;LoadCalendarFromRTC(&now);
         snprintf(text,sizeof(text),"%02d:%02d",now.tm_hour,now.tm_min);
-        xpan_hud_text(478,y+15,70,28,FONT_MED,COLOR_WHITE,text);
+        xpan_hud_text(478,ty+15,70,28,FONT_MED,COLOR_WHITE,text);
     }
     if (xpan_photo_status_space_enabled()) {
         int space=get_free_space_32k(get_shooting_card());
         snprintf(text,sizeof(text),"%d.%dGB",space>>15,((space&32767)*10)>>15);
-        xpan_hud_text(560,y+15,95,28,FONT_MED,COLOR_WHITE,text);
+        xpan_hud_text(560,ty+15,95,28,FONT_MED,COLOR_WHITE,text);
     }
-    xpan_hud_battery(666,y+3);
+    xpan_hud_battery(666,ty+3);
 #ifdef CONFIG_XPAN
     /* XPan > Debug info: key/touch diagnostics (off by default). */
     if (xpan_photo_debug_enabled()) {
         xpan_hud_controls_debug(text,sizeof(text));
-        xpan_hud_text(478,y+47,232,14,FONT_SMALL,COLOR_GRAY(70),text);
+        xpan_hud_text(478,ty+46,232,13,FONT_SMALL,COLOR_GRAY(70),text);
         xpan_hud_controls_events(text,sizeof(text));
-        xpan_hud_text(152,y+47,320,14,FONT_SMALL,COLOR_GRAY(70),text);
+        xpan_hud_text(152,ty+46,320,13,FONT_SMALL,COLOR_GRAY(70),text);
     }
 #endif
 
@@ -655,8 +673,8 @@ static void xpan_photo_render_hud(info_elem_t *config)
 #endif
     xpan_hud_exposure_scale(y,theme,selected);
     bmp_draw_to_idle(0);
-    xpan_hud_copy_band(1,y,XPAN_PHOTO_HUD_HEIGHT);
-    if (moved_from>=0) xpan_hud_copy_band(1,moved_from,XPAN_PHOTO_HUD_HEIGHT);
+    for (int b=0;b<bands;b++) xpan_hud_copy_band(1,band[b][0],band[b][1]);
+    if (moved) for (int b=0;b<old_bands;b++) xpan_hud_copy_band(1,old_band[b][0],old_band[b][1]);
 #ifdef CONFIG_XPAN
     /* Erased only when it ends or moves (no flicker), and before the AF
      * frame and grid so they repair what it covered. */

@@ -12,7 +12,13 @@ int xpan_photo_debug_enabled(void);   /* XPan > Debug info */
 int xpan_photo_ensure_capture_quality(void);
 /* The 214-row matte belongs only to the panoramic HUD; 3:2 uses compact overlays. */
 #define XPAN_PHOTO_HUD_HEIGHT 214
+/* Frame alignment Split (65:24 only): the panel's first row (logo, lens,
+ * mode, clock, card, battery) becomes a bar of this height above the
+ * picture; the rest of the panel stays below it. */
+#define XPAN_PHOTO_SPLIT_BAR 60
+/* Rows 0..213 of the panel; in Split, rows 0..59 are drawn at the top-bar y. */
 int xpan_photo_get_hud_y(void);
+int xpan_photo_get_hud_top_y(void);
 /* Idle log snapshot for diagnosing a missing photo HUD without menu input. */
 void xpan_photo_hud_debug_snapshot(unsigned *draw_calls, int *last_y, unsigned *clipped);
 /* Native Canon selection flags, observed without intercepting wheel events. */

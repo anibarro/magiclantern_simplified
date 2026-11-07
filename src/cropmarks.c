@@ -104,10 +104,10 @@ static void xpan_photo_capture_format_select(void *priv, int sign);
 /* HUD wheel control: same rules as the menu item (XPan ON: JPG <-> RAW+JPG). */
 void xpan_photo_capture_format_step(int sign) { xpan_photo_capture_format_select(NULL, sign); }
 
-/* INFO in XPan Live View: 3:2 = layout on/off, 65:24 = layout top/bottom. */
+/* INFO in XPan Live View: 3:2 = layout on/off, 65:24 = Top/Bottom/Split. */
 void xpan_photo_info_toggle(void)
 {
-    if (xpan_photo_is_panoramic()) xpan_frame_align = !xpan_frame_align;
+    if (xpan_photo_is_panoramic()) xpan_frame_align = (xpan_frame_align + 1) % 3;
     else xpan_photo_hud_enabled = !xpan_photo_hud_enabled;
     redraw();
 }
@@ -462,6 +462,15 @@ int xpan_photo_get_preview_rect(int width, int height, int *x, int *y, int *crop
     return 1;
 }
 
+/* Rows above the 65:24 frame in a screen or buffer of this height:
+ * Top = none, Bottom = all the free rows, Split = the top bar (scaled). */
+static int xpan_photo_frame_offset(int height, int crop_height)
+{
+    if (xpan_frame_align == 1) return (height - crop_height) & ~1;
+    if (xpan_frame_align == 2) return MIN((XPAN_PHOTO_SPLIT_BAR * height / 480) & ~1, (height - crop_height) & ~1);
+    return 0;
+}
+
 /* Return the on-screen composition rectangle for HUD layout; this never crops Live View pixels. */
 int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *crop_height)
 {
@@ -473,7 +482,7 @@ int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *cro
 
     /* Alignment applies only to the short panoramic frame, never native 3:2. */
     if (!xpan_photo_is_panoramic()) { *y = 0; return 1; }
-    *y = xpan_frame_align == 0 ? 0 : ((visible_height - *crop_height) & ~1);
+    *y = xpan_photo_frame_offset(visible_height, *crop_height);
     return 1;
 }
 
@@ -485,7 +494,7 @@ int xpan_photo_get_preview_frame_y(int width, int height)
             &crop_x, &crop_y, &crop_width, &crop_height))
         return -1;
     if (!xpan_photo_is_panoramic()) return 0;
-    return xpan_frame_align == 0 ? 0 : ((height - crop_height) & ~1);
+    return xpan_photo_frame_offset(height, crop_height);
 }
 
 /* Anchor the complete panel beside the aligned photograph. */
@@ -493,7 +502,14 @@ int xpan_photo_get_hud_y(void)
 {
     /* Keep one HUD anchor in both ratios; in 3:2 the panel overlays the image. */
     int panoramic_height = ((720 * 24 + 65) / 130) * 2;
-    return xpan_frame_align ? 0 : panoramic_height;
+    return xpan_frame_align == 1 ? 0 : panoramic_height;
+}
+
+/* Where the panel's first row goes: the top edge in Split, else with the panel. */
+int xpan_photo_get_hud_top_y(void)
+{
+    if (xpan_photo_is_panoramic() && xpan_frame_align == 2) return 0;
+    return xpan_photo_get_hud_y();
 }
 
 int xpan_photo_get_monitor_rect(int *x, int *y, int *width, int *height)
@@ -638,7 +654,8 @@ static MENU_UPDATE_FUNC(xpan_photo_manual_lens_display)
 static MENU_UPDATE_FUNC(xpan_photo_alignment_display)
 {
     MENU_SET_SHIDDEN(!xpan_photo_is_panoramic() || is_movie_mode());
-    MENU_SET_VALUE("%s", xpan_frame_align ? "Bottom" : "Top");
+    if (xpan_frame_align < 0 || xpan_frame_align > 2) xpan_frame_align = 0;
+    MENU_SET_VALUE("%s", xpan_frame_align == 2 ? "Split" : xpan_frame_align ? "Bottom" : "Top");
 }
 
 static struct menu_entry xpan_photo_menu[] = {
@@ -668,10 +685,10 @@ static struct menu_entry xpan_photo_menu[] = {
             {
                 .name = "Frame alignment",
                 .priv = &xpan_frame_align,
-                .max = 1,
-                .choices = (const char *[]) {"Top", "Bottom"},
+                .max = 2,
+                .choices = (const char *[]) {"Top", "Bottom", "Split"},
                 .update = xpan_photo_alignment_display,
-                .help = "Place the frame against the top or bottom edge, leaving the opposite area free for monitoring tools.",
+                .help = "Top/Bottom: frame against that edge, HUD in the rest. Split: thin top bar, frame, HUD below.",
             },
             {
                 .name = "Capture format",
