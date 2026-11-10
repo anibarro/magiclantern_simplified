@@ -1967,8 +1967,8 @@ both cores share the memory bus). The user could not feel the difference.
 
 w3-w9: the width in horizontal strips (8 x 672 + 624 = 6000, 4 x 800 + 800 =
 4000); **w10 = rows / 8 - 1** (499 for 4000, 420 for 3368). A 65:24 JPEG
-(6000 x 2216) = w2 by frame alignment (Top 0, Split 500, Bottom 1784),
-w10 = 276. The file header and EXIF sizes come from elsewhere (the 3:2
+(6000 x 2216) = w2 892 (always the middle of the sensor, as on the EOS M;
+Frame alignment only moves the frame on the screen), w10 = 276. The file header and EXIF sizes come from elsewhere (the 3:2
 photos IMG_2680-2693 all have SOF and EXIF 6000x4000). Plan: use Canon's own
 aspect pipeline (16:9 already crops at the encoder and writes a matching
 header, EXIF, thumbnail and RAW crop record) and supply 65:24 values to what
@@ -1990,7 +1990,7 @@ M50's aspect property.
 
 ### 65:24 JPEG via Canon's 3:2 size (2026-11-10, waiting for the camera test)
 
-User choice: centred first. While XPan's 65:24 frame is on (`m50_crop_poll`,
+Always the middle of the sensor (user). While XPan's 65:24 frame is on (`m50_crop_poll`,
 XPan's task, not while half-pressed/busy/recording), XPan changes, through
 ML's patch API (`apply_patches`, old values checked; undone when 65:24 is
 off or on any error):

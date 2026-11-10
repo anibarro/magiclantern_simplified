@@ -7,8 +7,8 @@ sections describe superseded attempts).
 ## Where things stand
 
 - Repo: `F:\OTROS\magiclantern_simplified`, branch **`xpan-m50`** (base
-  `dev`). **Nothing is committed**: about 65 modified/new files, including
-  all of the M50 port. Commit before doing anything risky.
+  `dev`). The M50 port is committed (`0765a15f8`, 65 files, not pushed),
+  plus later doc fixes.
 - Last build on the card: **`8f344d055b96`**, archived in
   `platform/M50.110/xpan_builds/20261110-173755-8f344d055b96/`. All camera
   tests of this build passed.
@@ -33,21 +33,51 @@ sections describe superseded attempts).
 
 ### Open / next
 
-1. **Commit** the branch (ask the user first).
+1. Committed as `0765a15f8` (not pushed).
 2. **EXIF height** of 65:24 JPEGs still says 4000.
 3. **Canon's own UI keeps popping up** over XPan's view (user, last test):
    XPan's dim-and-freeze (`canon_ui_enter`/`canon_ui_leave` in
    `xpan-m50.c`) lets Canon's screen through on Canon events; may need a look.
-4. **Watermark** (same stage as the grain) and the **17-point colour grid**
-   with an M50-calibrated Cineon base.
-5. **JPEG crop alignment**: only centred; Top/Bottom/Split crops later.
-6. Probes still in the build, read only, log to `ML/LOGS/XM50.LOG`: display
+4. **Important (user, 2026-11-10): 17-point colour table.** The M50's
+   Lucky engine has a 17-point grid (the EOS M only 10), so 17-point
+   `.cube` LUTs (what XPan recommends) can be applied without resampling to
+   10. README "The 17-point grid: who could use it" has the plan:
+   - work out the 17-point table layout from Canon's Opera load lists
+     (`E11FD6D8`: five banked passes, `0x39070` = 0..4, pages 4 KB apart) and
+     check it on the camera with a test table;
+   - pass Canon's loader `E011E194` size `0x4CC4` instead of `0x1000`, only for
+     XPan's own table. The colour table hook `E00E73BC` already passes XPan's
+     table, so it can also pass the size;
+   - convert the `.cube` to 17^3 (`xpan-native-table.c` does 10 today);
+   - Live LUT preview stays 10-point (Live View has no 17-point path found).
+5. **Important (user, 2026-11-10): highlight calibration and an earlier LUT.**
+   - Calibrate an M50 Cineon tone base (`CIN1EV`/`CIN2EV`/`CINLV`) the way
+     the EOS M one was made (`build_tools/xpan_cineon_base_v7.py` and the
+     `build_tools/*.npy` model; README-XPAN.md "Tone base / Highlight
+     headroom"). Today the M50 uses the EOS M's files, which are fitted to the
+     EOS M's Neutral render.
+   - Investigate applying the LUT **earlier**: right after debayer, before
+     Canon's white balance/matrix/tone curve, on the ~14-bit linear data,
+     instead of on the 10-bit YCbCr after Canon's tone curve where Lucky sits
+     (highlights already compressed or clipped there). Start from the
+     still-develop pipeline order (ShootDevelop/SusanDevelop, the ELD/Opera
+     stage lists around `E0194B20`/`E11FD6D8`) to find a stage between
+     demosaic and gamma that XPan could use or feed. Another option to look
+     at: give Lucky a flatter input by passing Canon's develop a copy of its
+     tone curve/gamma parameters (same "modified copy" rule as the display
+     blocks), so more highlight range reaches the table.
+6. **Watermark** (same stage as the grain).
+7. ~~JPEG crop alignment~~: not a to-do. The 65:24 JPEG is always the
+   middle of the sensor (rows 892-3108), on the M50 as on the EOS M, in
+   every Frame alignment. Top/Bottom/Split only move the frame and HUD on
+   the screen. Keep it that way (user, 2026-11-10).
+8. Probes still in the build, read only, log to `ML/LOGS/XM50.LOG`: display
    blocks (`disp_record`), the AF converter record (`af_recs`), tap lines,
    Ximr / display layer changes. Keep or trim once stable.
-7. The EOS M (`EOSM.202`) shares `cropmarks.c`, `xpan-photo-hud.inc`,
+9. The EOS M (`EOSM.202`) shares `cropmarks.c`, `xpan-photo-hud.inc`,
    `bmp.c` changes (all M50 parts are `#ifdef CONFIG_M50`); it has not been
    rebuilt since. Build it once before a release.
-8. `README-XPAN-M50.md` "To do (not forgotten)" and "Next phases" near the
+10. `README-XPAN-M50.md` "To do (not forgotten)" and "Next phases" near the
    end are stale (written before these features worked).
 
 ## Working rules (from the user; also in the old account's memory)
