@@ -65,7 +65,37 @@ asm(
     "loaded_as_thumb:\n"        /* you may insert Thumb-specific code here */
 
 /* this does not compile on DIGIC 5 and earlier */
-#if defined(CONFIG_DIGIC_VII) || defined(CONFIG_DIGIC_VIII)  || defined(CONFIG_DIGIC_X)
+#if defined(CONFIG_M50)
+    /* M50: core 1 waits in Canon's bootloader until ML releases it after
+     * DryOS is up (init.c boot_pre_init_task; README-XPAN-M50.md, "Startup
+     * hang: core 1 and its start entry").
+     * The bootloader starts autoexec.bin through E0019738, which also
+     * releases core 1 here. The generic code below sent it straight into
+     * Canon's firmware entry, where core 1 joins DryOS only if its start
+     * entry ([0x56530]) holds the marker 0x20101231 that DryOS writes in
+     * create_init_task (E01A436C -> E0558648). That happens ~100 ms later,
+     * so core 1 read what RAM kept from the last session: 0 while the
+     * camera runs (RAM dump), so the call returned, back into this loader.
+     * After a long battery pull RAM has decayed to a non-zero value and
+     * core 1 joined at once, which is why those starts worked.
+     * Here core 1 takes its release back ([0xBFE01FC4] = 0) and returns to
+     * the bootloader's own wait loop (E0004910: wait for 0x10, clean the
+     * cache, jump to [0xBFE01FC8] + 1). check_m50_rom.py checks the
+     * bootloader and DryOS code this relies on. */
+    "MRC    p15,0,R0,c0,c0,5\n" /* MPIDR: core number in the lowest bits */
+    "ANDS.W R0, R0, #3\n"
+    "BEQ.W  m50_core0\n"
+    "LDR    R1, m50_mbx_go\n"   /* core 1: take the release back */
+    "MOVS   R0, #0\n"
+    "STR    R0, [R1]\n"
+    "DSB    SY\n"
+    "LDR    R0, m50_boot_wait\n"
+    "BX     R0\n"               /* Canon's wait loop; does not come back here */
+    ".align 2\n"
+    "m50_mbx_go:    .word 0xBFE01FC4\n"
+    "m50_boot_wait: .word 0xE0004911\n"
+    "m50_core0:\n"
+#elif defined(CONFIG_DIGIC_VII) || defined(CONFIG_DIGIC_VIII)  || defined(CONFIG_DIGIC_X)
     "MRC    p15,0,R0,c0,c0,5\n" /* refuse to run ML on cores other than #0 */
     "ANDS.W R0, R0, #3\n"       /* read the lowest 2 bits of the MPIDR register */
     "ITTT   NE\n"               /* check if CPU ID is nonzero (i.e. other cores) */
@@ -127,9 +157,26 @@ asm(
     "CMP     R11, #0x00\n"
     
     /* if the checksum was wrong, reset to main firmware */
+#if defined(CONFIG_M50)
+    "BNE     m50_checksum_fail\n"   /* release core 1 as the bootloader does */
+#else
     "BXNE    R10\n"
+#endif
     "B       cstart\n"
-    
+#if defined(CONFIG_M50)
+    "m50_checksum_fail:\n"          /* Canon only: same writes as E00049AE */
+    "LDR     R1, m50_mbx_entry_a\n"
+    "STR     R10, [R1]\n"
+    "DSB     SY\n"
+    "MOV     R0, #0x10\n"
+    "LDR     R1, m50_mbx_go_a\n"
+    "STR     R0, [R1]\n"
+    "DSB     SY\n"
+    "BX      R10\n"
+    "m50_mbx_entry_a: .word 0xBFE01FC8\n"
+    "m50_mbx_go_a:    .word 0xBFE01FC4\n"
+#endif
+
     "checksum_area:"
     ".word   _start\n"
     ".word   autoexec_bin_checksum_end\n"

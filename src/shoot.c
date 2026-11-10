@@ -5056,7 +5056,7 @@ static void display_expsim_status()
 
 void display_shooting_info_lv()
 {
-#if defined(CONFIG_EOSM) && defined(FEATURE_FLEXINFO)
+#if defined(CONFIG_XPAN_BODY) && defined(FEATURE_FLEXINFO)
     if (xpan_photo_ui_active())
     {
         /* The HUD clears stock remnants in its spare bitmap before publishing a complete draw. */
@@ -5422,7 +5422,13 @@ static void misc_shooting_info()
         if (lv && !gui_menu_shown())
         {
             BMP_LOCK (
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+                { static int n; extern void m50_boot_mark(int, int); int log_it = n < 30; if (log_it) m50_boot_mark(25, ++n);
+                  display_shooting_info_lv();
+                  if (log_it) m50_boot_mark(26, n); }
+#else
                 display_shooting_info_lv();
+#endif
             )
             #ifdef CONFIG_MOVIE_AE_WARNING
             #if defined(CONFIG_5D2)
@@ -5528,9 +5534,12 @@ shoot_task( void* unused )
 
         /* allow other tasks to take pictures while we are sleeping */
         ReleaseRecursiveLock(shoot_task_rlock);
-#if defined(CONFIG_EOSM) && !defined(CONFIG_XPAN)
+#if defined(CONFIG_XPAN_BODY) && !defined(CONFIG_XPAN)
         /* Keep Canon at 3:2 during XPan Live View, including while visible menus suppress redraws. */
         xpan_photo_keep_3_2_aspect();
+#endif
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+        { static int n; if (n < 30) { n++; extern void m50_boot_mark(int, int); m50_boot_mark(20, n); } }
 #endif
         int err = msg_queue_receive(shoot_task_mqueue, (struct event**)&msg, delay);        
         AcquireRecursiveLock(shoot_task_rlock, 0);
@@ -5543,8 +5552,14 @@ shoot_task( void* unused )
 #if defined(CONFIG_MODULES)
         module_exec_cbr(CBR_SHOOT_TASK);
 #endif
-#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+#if defined(CONFIG_XPAN_BODY) && defined(CONFIG_XPAN)
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+        { static int n; extern void m50_boot_mark(int, int); int log_it = n < 30; if (log_it) m50_boot_mark(23, ++n);
+          { extern void xpan_hud_controls_step(void); xpan_hud_controls_step(); }
+          if (log_it) m50_boot_mark(24, n); }
+#else
         { extern void xpan_hud_controls_step(void); xpan_hud_controls_step(); }
+#endif
 #endif
 
         #ifdef FEATURE_MLU_HANDHELD_DEBUG

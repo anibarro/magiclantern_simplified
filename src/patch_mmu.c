@@ -24,18 +24,11 @@
 #error "Attempting to build patch_mmu.c but cam not listed as having an MMU - this is probably a mistake"
 #endif
 
-#if !defined(PTR_ALLOC_MEM_START)
-// If AllocMem start is defined, we assume MMU tables should be located there.
-// Otherwise we reserve space in magiclantern.bin:
-// 0x10000 for 1 remapped page, (0x10000 aligned)
-//  0x4900 for the L1 table, (0x4000 aligned)
-//   0x300 padding
-//   0x400 per L2 table (0x400 aligned) // need one per 1MB region containing remaps
-// sizeof(struct mmu_L2_page_info)
-static uint8_t generic_mmu_space[MMU_PAGE_SIZE + MMU_L1_TABLE_SIZE
-                                 + 0x300 + MMU_L2_TABLE_SIZE
-                                 + sizeof(struct mmu_L2_page_info)]
-               __attribute__((aligned(0x10000)));
+#if !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+// If ML lives in the AllocMem pool, MMU tables are located there.
+// Otherwise the space is reserved in magiclantern.bin, in its own
+// object file (patch_mmu_space.c, GENERIC_MMU_SPACE_SIZE in patch_mmu.h).
+extern uint8_t generic_mmu_space[GENERIC_MMU_SPACE_SIZE];
 #endif
 
 #include "platform/mmu_patches.h"
@@ -46,6 +39,28 @@ extern uint32_t is_cpu1_ready; // set via task_create_ex() on cpu1, cpu1_ready()
 extern int send_software_interrupt(uint32_t interrupt, uint32_t shifted_cpu_id);
 extern void *memcpy_dryos(void *dst, const void *src, uint32_t count);
 //extern void early_printf(char *fmt, ...);
+
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+// Heap-backed page copies (README-XPAN-M50.md "4 KB pages"): reserved all at
+// once by apply_normal_patches(), in task context with interrupts on, before
+// any apply_patches() (which disables interrupts itself) runs; also for the
+// pages runtime patches use later. Inside the critical section
+// assign_64k_to_L2_table() only takes the next one (NULL: the patch fails
+// cleanly). 4 kB aligned (small pages), never freed.
+static uint8_t *heap_pages[CONFIG_MMU_REMAP_PAGES];
+static uint32_t heap_pages_reserved = 0;
+static void reserve_heap_pages(void)
+{
+    if (heap_pages_reserved)
+        return;
+    heap_pages_reserved = 1;
+    for (uint32_t i = 0; i < CONFIG_MMU_REMAP_PAGES; i++)
+    {
+        void *mem = malloc(MMU_PAGE_SIZE + 0x1000);
+        heap_pages[i] = mem ? (uint8_t *)(((uint32_t)mem + 0xfff) & ~0xfffu) : NULL;
+    }
+}
+#endif
 
 static int assign_64k_to_L2_table(struct patch *patch,
                                   struct mmu_L2_page_info *L2_page)
@@ -71,7 +86,16 @@ static int assign_64k_to_L2_table(struct patch *patch,
         if (backing_page_index >= global_mmu_conf.max_64k_pages_remapped)
             return -1;
 
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+        // Heap-backed copy reserved before the critical section (no malloc
+        // here: interrupts are off and cpu1 is parked). Normal patches only:
+        // a camera with this option must have no early patches (build check).
+        if (heap_pages[backing_page_index] == NULL)
+            return -1;
+        pages[i] = heap_pages[backing_page_index];
+#else
         pages[i] = global_mmu_conf.phys_mem_pages + MMU_PAGE_SIZE * backing_page_index;
+#endif
         qprintf("Rom->Ram copy: 0x%08x, 0x%08x\n", (uint32_t)patch->addr & 0xffff0000, pages[i]);
         memcpy_dryos(pages[i],
                      (uint8_t *)((uint32_t)patch->addr & 0xffff0000),
@@ -175,6 +199,20 @@ static int apply_data_patch(struct mmu_config *mmu_conf,
     // determine flags for our L2 page to give it RAM cache attributes
     uint32_t flags_new = flags_rom & ~L2_LARGEPAGE_MEMTYPE_MASK;
     flags_new |= (flags_ram & L2_LARGEPAGE_MEMTYPE_MASK);
+#ifdef CONFIG_MMU_REMAP_SMALL_PAGES
+    // The new L2 table covers the whole 1 MB section, but only the remapped
+    // 64 kB page is RAM: every other page keeps the section's own original
+    // attributes. With flags_new for all of them, the untouched ROM pages lost
+    // their outer (L2) cacheability (ROM TEX 5 -> RAM TEX 4 on the M50), which
+    // slowed Canon's code and data in every hooked section (Live View
+    // stutter, README-XPAN-M50.md "ROM attributes in hooked sections").
+    uint32_t flags_section = get_l2_largepage_flags_from_l1_section((uint32_t)patch->addr, CANON_ORIG_MMU_TABLE_ADDR);
+    if (flags_section == 0xffffffff)
+        flags_section = flags_rom;
+    flags_new = (flags_section & ~L2_LARGEPAGE_MEMTYPE_MASK) | (flags_ram & L2_LARGEPAGE_MEMTYPE_MASK);
+#else
+    uint32_t flags_section = flags_new;
+#endif
 
     qprintf("\npatch->addr: 0x%08x\n", (uint32_t)(patch->addr));
 
@@ -212,7 +250,7 @@ static int apply_data_patch(struct mmu_config *mmu_conf,
         replace_section_with_l2_table((uint32_t)patch->addr,
                                       (uint32_t)mmu_conf->L1_table,
                                       (uint32_t)target_page->L2_table,
-                                      flags_new);
+                                      flags_section);
         target_page->in_use = 1;
     }
 
@@ -362,7 +400,7 @@ static int calc_mmu_globals(uint32_t start_addr, uint32_t size)
             // pad to align on 0x400 for L2 tables
             L2_tables = (uint8_t *)ROUND_UP(L1_table_end, MMU_L2_TABLE_SIZE);
             uint32_t L2_tables_end = (uint32_t)L2_tables
-                                        + sizeof(MMU_L2_TABLE_SIZE) * num_64k_pages;
+                                        + MMU_L2_TABLE_SIZE * num_64k_pages;
 
             // need space for L2 info structs.  These are small
             // and may fit in the padding gap
@@ -457,6 +495,38 @@ static int calc_mmu_globals(uint32_t start_addr, uint32_t size)
     return 0;
 }
 
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+// Small-page layout in generic_mmu_space (GENERIC_MMU_SPACE_SIZE, patch_mmu.h):
+// L1 table at the 0x4000-aligned start, CONFIG_MMU_REMAP_PAGES L2 tables
+// (0x400 aligned) and their metadata. The 64 kB page copies come from the
+// heap when a page is first patched (assign_64k_to_L2_table), 4 kB aligned:
+// remapped pages are mapped with 4 kB small pages (mmu_utils.c).
+static int calc_mmu_globals_small(uint32_t start_addr, uint32_t size)
+{
+    const uint32_t n = CONFIG_MMU_REMAP_PAGES;
+    if (start_addr & (MMU_L1_TABLE_ALIGN - 1))
+        return -1;
+    uint32_t L2_tables = ROUND_UP(start_addr + MMU_L1_TABLE_SIZE, MMU_L2_TABLE_SIZE);
+    uint32_t L2_info = L2_tables + MMU_L2_TABLE_SIZE * n;
+    if (L2_info + sizeof(struct mmu_L2_page_info) * n > start_addr + size)
+        return -2;
+    global_mmu_conf.L1_table = (uint8_t *)start_addr;
+    global_mmu_conf.max_L2_tables = n;
+    global_mmu_conf.L2_tables = (struct mmu_L2_page_info *)L2_info;
+    global_mmu_conf.max_64k_pages_remapped = n;
+    global_mmu_conf.phys_mem_pages = NULL;   /* pages come from the heap */
+    for (uint32_t i = 0; i < n; i++)
+    {
+        for (uint8_t j = 0; j < 16; j++)
+            global_mmu_conf.L2_tables[i].phys_mem[j] = NULL;
+        global_mmu_conf.L2_tables[i].L2_table = (uint8_t *)(L2_tables + i * MMU_L2_TABLE_SIZE);
+        global_mmu_conf.L2_tables[i].virt_page_mapped = 0x0;
+        global_mmu_conf.L2_tables[i].in_use = 0x0;
+    }
+    return 0;
+}
+#endif
+
 // wraps DryOS change_mmu_tables(),
 // along with correct cli()/sei(), cache syncs
 void change_mmu_tables_wrapper(void)
@@ -494,8 +564,13 @@ static void init_mmu_globals(void)
 
 #else
     // use space within magiclantern.bin
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES)
+    int res = calc_mmu_globals_small((uint32_t)generic_mmu_space,
+                                     sizeof(generic_mmu_space));
+#else
     int res = calc_mmu_globals((uint32_t)generic_mmu_space,
                                sizeof(generic_mmu_space));
+#endif
 #endif
     if (res != 0)
     {
@@ -613,6 +688,9 @@ static int apply_early_patches(void)
 // that we can use malloc and RPC, allowing us to patch on both cores.
 int apply_normal_patches(void)
 {
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+    reserve_heap_pages();   // malloc here: task context, interrupts on, before any apply_patches()
+#endif
     int i = 0;
     for (; i < 5; i++)
     {

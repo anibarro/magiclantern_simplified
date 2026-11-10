@@ -87,3 +87,9 @@ platform/*/*.log
 !data/XPAN/*.BIN
 extras/XPan_tools/*_preview.png
 data/XPAN/*_preview.png
+
+# Canon ROM/RAM dumps and Canon-format update files: never commit
+extras/M50/ROMS/
+extras/M50/*.FIR
+# Verified XPan packages archived by build_tools/build_xpan.sh
+platform/*/xpan_builds/

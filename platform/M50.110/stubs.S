@@ -38,6 +38,9 @@ THUMB_FN(0xE0143CFC,  create_init_task)                     /* low-level DryOS i
 THUMB_FN(0xE05777D0,  dcache_clean)                         /* loop with MCR p15 c7,c10,1; DSB */
 THUMB_FN(0xe00ea6f4,  dcache_clean_multicore)               /* loop writing to c11007b0, called after dcache_clean by copy_mmu_tables() */
 THUMB_FN(0xE05778A4,  icache_invalidate)                    /* loop with MCR p15 c7,c5,1; c7,c1,6; c7,c1,0; ISB */
+THUMB_FN(0xE0577768,  dcache_invalidate)                    /* loop with MCR p15 c7,c6,1; DSB (L1, by address) */
+THUMB_FN(0xE0577834,  dcache_clean_invalidate)              /* loop with MCR p15 c7,c14,1; DSB (L1 clean+invalidate, by address) */
+THUMB_FN(0xE00EA712,  dcache_invalidate_multicore)          /* loop writing to c1100770 (L2 invalidate by PA); Canon calls it before dcache_invalidate (E0200678) */
 THUMB_FN(0xE0040224,  init_task)                            /* USER_MEM size checking, dmSetup, termDriverInit, stdlibSetup etc */
 
 /** Tasks **/

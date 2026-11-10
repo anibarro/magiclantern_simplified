@@ -4,7 +4,7 @@
 #include <bmp.h>
 #include <lvinfo.h>
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 extern int xpan_photo_ui_active(void);
 extern int xpan_photo_enabled(void);
 #endif
@@ -574,7 +574,7 @@ void lvinfo_align_and_display(struct lvinfo_item * items[], int count, int bar_x
 EXCLUDES(lvinfo_sem)
 void lvinfo_display(int top, int bottom)
 {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* Playback/quick review must show Canon's image without the stock ML
      * status strips. Do not paint black rectangles here: zoomed photos may
      * occupy those rows, and Canon owns its playback information display. */

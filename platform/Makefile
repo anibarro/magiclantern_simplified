@@ -317,6 +317,7 @@ ML_SRC_OBJS_00 = \
     cpu.o \
     mmu_utils.o \
     patch_mmu.o \
+    patch_mmu_space.o \
     patch_cache.o \
     patch_d6.o \
     $(ML_BOOT_OBJ) \

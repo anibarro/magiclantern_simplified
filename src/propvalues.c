@@ -83,7 +83,7 @@ volatile PROP_INT(PROP_LV_DISPSIZE, lv_dispsize);
 volatile PROP_INT(PROP_LIVE_VIEW_VIEWTYPE, _expsim);
 volatile PROP_INT(PROP_EFIC_TEMP, efic_temp);
 volatile PROP_INT(PROP_GUI_STATE, gui_state);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* Do not infer JPEG/RAW from zero-initialized storage before Canon reports quality. */
 volatile uint32_t pic_quality;
 /* A nonzero initialized sentinel distinguishes this state from uncleared camera memory. */
@@ -112,7 +112,7 @@ void REQUIRES(PropMgrTask) _prop_handler_xpan_pic_quality(
 #else
     volatile PROP_INT(PROP_PIC_QUALITY, pic_quality);
 #endif
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* The EOS M ROM exposes all three image-quality aliases; register each so ML can validate and write it safely. */
 static void _prop_handler_xpan_pic_quality2();
 REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY2, _prop_handler_xpan_pic_quality2, sizeof(uint32_t));

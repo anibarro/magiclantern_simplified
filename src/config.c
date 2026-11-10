@@ -964,6 +964,32 @@ void config_save()
 #endif
 }
 
+#ifdef CONFIG_M50
+/* M50: ML saves nothing at power-off (tasks.c ml_shutdown), so settings
+ * changed outside the ML menu (XPan's INFO layouts, HUD) are saved as they
+ * change: the XPan M50 task calls this every 2 s. It compares a checksum of
+ * every config variable with the one at the last save or load. */
+static uint32_t config_values_sum(void)
+{
+    uint32_t sum = 0;
+    for (struct config_var *var = _config_vars_start; var < _config_vars_end; var++)
+        sum = (sum * 31) + (uint32_t)*(var->value);
+    return sum;
+}
+static uint32_t config_saved_sum;
+static int config_saved_sum_ok;
+int config_save_if_changed(void)
+{
+    if (!config_ok || !config_autosave) return 0;
+    uint32_t sum = config_values_sum();
+    if (!config_saved_sum_ok) { config_saved_sum = sum; config_saved_sum_ok = 1; return 0; }
+    if (sum == config_saved_sum) return 0;
+    config_save();
+    config_saved_sum = sum;
+    return 1;
+}
+#endif
+
 void config_save_at_shutdown()
 {
 #ifdef CONFIG_CONFIG_FILE

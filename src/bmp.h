@@ -36,6 +36,7 @@
 extern int bmp_enabled;
 
 extern uint32_t ml_refresh_display_needed;
+extern volatile int ml_refresh_frozen;   /* RGBA bodies: pause ML -> Canon layer copies */
 
 /** Returns a pointer to the real BMP vram (or to idle BMP vram) */
 uint8_t * bmp_vram(void);

@@ -296,7 +296,12 @@ int module_get_number(const char *name);
 const char* module_get_name(int mod_number);
 
 /* execute all callback routines of given type. maybe it will get extended to support varargs */
+#ifdef CONFIG_MODULES
 int module_exec_cbr(unsigned int type);
+#else
+/* No module loader (M50 XPan build): no module callbacks to run. */
+static inline int module_exec_cbr(unsigned int type) { (void)type; return 0; }
+#endif
 
 int module_set_config_cbr(unsigned int (*load_func)(char *, module_entry_t *), unsigned int (save_func)(char *, module_entry_t *));
 int module_unset_config_cbr();

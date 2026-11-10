@@ -492,6 +492,7 @@ select_normal_vectors( void )
 #define MOV_R1_0xC60000_INSTR 0xE3A018C6
 #define MOV_R1_0xC70000_INSTR 0xE3A018C7
 #define MOV_R0_0x4E0000_INSTR 0xE3A0084E
+#define MOV_R0_0x500000_INSTR 0xE3A00605
 
 #define MOV_RD_IMM_INSTR(rd,imm)\
     ( 0xE3A00000 \

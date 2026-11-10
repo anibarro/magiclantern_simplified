@@ -2,7 +2,9 @@
 static int xpan_hud_background = COLOR_BLACK;
 /* The workflow log reads these counters outside the display task. */
 static volatile unsigned xpan_hud_render_calls, xpan_hud_last_clipped;
-static volatile int xpan_hud_last_y = -1, xpan_hud_last_top_y = -1;
+/* XPAN_HUD_NONE: nothing drawn (M50 EVF panels start at negative rows). */
+#define XPAN_HUD_NONE (-1000)
+static volatile int xpan_hud_last_y = XPAN_HUD_NONE, xpan_hud_last_top_y = XPAN_HUD_NONE;
 
 /* Screen rows the HUD occupies: the 214-row panel, or in Split the top bar
  * plus the panel without its first row. Returns the number of bands. */
@@ -91,7 +93,7 @@ static void xpan_hud_hit_set(int field, int x, int y, int w, int h)
 /* Field under an LCD point, -2 inside the HUD band but on no field, -1 outside. */
 int xpan_photo_hud_hit_test(int x, int y)
 {
-    if (!xpan_hud_hit_valid || xpan_hud_last_y<0) return -1;
+    if (!xpan_hud_hit_valid || xpan_hud_last_y==XPAN_HUD_NONE) return -1;
     int band[2][2],in=0;
     for (int b=xpan_hud_rows(xpan_hud_last_y,xpan_hud_last_top_y,band);b--;)
         if (y>=band[b][0] && y<band[b][0]+band[b][1]) in=1;
@@ -243,7 +245,14 @@ static void xpan_hud_exposure_scale(int y, int color, unsigned selected)
 {
     /* Show compensation, not an inferred spot-meter measurement. Keep its
      * number signed and move the marker to the edge for values beyond3EV. */
+#ifdef CONFIG_M50
+    /* PROP_AE keeps the compensation in byte 1, in thirds (lens_info.ae
+     * reads byte 0, always 0): xpan-m50.c. */
+    extern int m50_ev_thirds(void);
+    int thirds=m50_ev_thirds(), ec=thirds, tenths=(ABS(thirds)*10+1)/3;
+#else
     int ec=lens_info.ae, tenths=(ABS(ec)*10+4)/8;
+#endif
     char value[24];
     snprintf(value,sizeof(value),"%s%d.%d EV",ec<0 ? "-":ec>0 ? "+":"",tenths/10,tenths%10);
     /* Center the white value on the zero tick, including the bold stroke. */
@@ -265,7 +274,11 @@ static void xpan_hud_exposure_scale(int y, int color, unsigned selected)
             xpan_hud_text(x-width/2,y+173,width,12,FONT_SMALL,step==0?color:COLOR_GRAY(65),tick);
         }
     }
+#ifdef CONFIG_M50
+    int marker=596+COERCE(thirds,-9,9)*12;     /* one tick per third */
+#else
     int marker=596+COERCE(ec,-24,24)*108/24;
+#endif
     /* A larger upward triangle sits below the ticks, with a clear gap. */
     for (int row=0;row<10;row++) bmp_fill(color,marker-row,y+198+row,row*2+1,1);
 }
@@ -278,6 +291,7 @@ static void xpan_hud_exposure_scale(int y, int color, unsigned selected)
 extern int lv_dispsize;   /* propvalues.h: 1, 5 or 10 (magnified Live View) */
 int xpan_photo_get_preview_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
 int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *crop_height);
+int xpan_photo_canon_layout(void);   /* cropmarks.c */
 static struct { short x,y,w,h; } xpan_af_drawn;
 static int xpan_af_rect(int *x, int *y, int *w, int *h, int hud_y)
 {
@@ -291,7 +305,8 @@ static int xpan_af_rect(int *x, int *y, int *w, int *h, int hud_y)
         int sx,sy,sw,sh,fx,fy,fw,fh;
         if (!xpan_photo_get_preview_rect(os.x_ex,os.y_ex,&sx,&sy,&sw,&sh) ||
             !xpan_photo_get_liveview_frame_rect(&fx,&fy,&fw,&fh)) return 0;
-        ly+=fy-sy; top=fy; bottom=fy+fh;          /* same shift as the pixels */
+        /* same shift as the pixels (M50: the display moves them, LCD and EVF) */
+        ly+=fy-sy; top=fy; bottom=fy+fh;
     } else if (xpan_photo_hud_is_enabled()) {
         /* 3:2: keep the frame off the HUD panel. */
         if (hud_y<=0) top=XPAN_PHOTO_HUD_HEIGHT; else bottom=hud_y;
@@ -458,8 +473,24 @@ void xpan_movie_loading_draw(void)
 /* Copy only the HUD rows between the live bitmap and the idle buffer, so
  * whatever else is on screen (Canon remnants, ML overlays) is never captured
  * into the idle buffer and written back. */
+/* DIGIC 8 (FEATURE_VRAM_RGBA, M50): ML draws into its own indexed buffer,
+ * which redraw_task converts into Canon's RGBA layer, so that conversion is
+ * the double buffer. There is no idle bitmap: bmp_vram_real() is Canon's
+ * 32-bit layer and bmp_vram_idle() is not a buffer at all. bmp_vram()
+ * ignores bmp_draw_to_idle() there, so the HUD draws straight to the
+ * indexed buffer and every idle copy is skipped. */
+#ifdef FEATURE_VRAM_RGBA
+#define XPAN_HUD_IDLE_COPY(direction) ((void)0)
+#else
+#define XPAN_HUD_IDLE_COPY(direction) bmp_idle_copy(direction,0)
+#endif
+
 static void xpan_hud_copy_band(int to_front, int y0, int h)
 {
+#ifdef FEATURE_VRAM_RGBA
+    (void)to_front; (void)y0; (void)h;
+    return;
+#endif
     uint8_t *real=bmp_vram_real(),*idle=bmp_vram_idle();
     if (!real || !idle) return;
     for (int y=MAX(y0,0);y<MIN(y0+h,480);y++)
@@ -469,17 +500,17 @@ static void xpan_hud_copy_band(int to_front, int y0, int h)
 static void xpan_photo_render_hud(info_elem_t *config)
 {
     (void)config;
-    static int last_hud_y=-1,last_top_y=-1;
+    static int last_hud_y=XPAN_HUD_NONE,last_top_y=XPAN_HUD_NONE;
     int panoramic=xpan_photo_is_panoramic();
     int y=xpan_photo_get_hud_y(),theme=xpan_photo_theme_color();
     /* ty: the panel's first row; above the picture in Split, else y. */
     int ty=xpan_photo_get_hud_top_y();
     int band[2][2],bands=xpan_hud_rows(y,ty,band);
-    int old_band[2][2],old_bands=last_hud_y>=0 ? xpan_hud_rows(last_hud_y,last_top_y,old_band):0;
-    int moved=last_hud_y>=0 && (last_hud_y!=y || last_top_y!=ty);
+    int old_band[2][2],old_bands=last_hud_y!=XPAN_HUD_NONE ? xpan_hud_rows(last_hud_y,last_top_y,old_band):0;
+    int moved=last_hud_y!=XPAN_HUD_NONE && (last_hud_y!=y || last_top_y!=ty);
     xpan_hud_render_calls++;
     xpan_hud_last_y=y; xpan_hud_last_top_y=ty;
-    xpan_hud_last_clipped=(y<0 || y+XPAN_PHOTO_HUD_HEIGHT>480);
+    xpan_hud_last_clipped=(y<BMP_H_MINUS || y+XPAN_PHOTO_HUD_HEIGHT>480);
     if (xpan_hud_last_clipped) return;
     /* Skip identical frames: each draw copies the whole 720x480 bitmap twice.
      * Anything the controls change is in the signature; a full refresh every
@@ -493,6 +524,9 @@ static void xpan_photo_render_hud(info_elem_t *config)
         XPAN_HUD_SIG(lens_info.raw_shutter); XPAN_HUD_SIG(lens_info.raw_aperture); XPAN_HUD_SIG(lens_info.ae);
         XPAN_HUD_SIG(lens_info.wb_mode); XPAN_HUD_SIG(lens_info.kelvin); XPAN_HUD_SIG(lens_info.lens_exists);
         XPAN_HUD_SIG(lens_info.focal_len); XPAN_HUD_SIG(af_mode); XPAN_HUD_SIG(drive_mode); XPAN_HUD_SIG(metering_mode);
+#ifdef CONFIG_M50
+        { extern int m50_iso_known; XPAN_HUD_SIG(m50_iso_known); }
+#endif
         XPAN_HUD_SIG(pic_quality); XPAN_HUD_SIG(xpan_pic_quality_valid);
         {   /* AF frame position and focus confirmation */
             int ax=0,ay=0,aw=0,ah=0,W=0,H=0;
@@ -521,7 +555,7 @@ static void xpan_photo_render_hud(info_elem_t *config)
         if (sig==last_sig && now-last_ms<600 && !xpan_photo_debug_enabled()) return;
         last_sig=sig; last_ms=now;
     }
-    if (!xpan_photo_hud_is_enabled()) bmp_idle_copy(0,0);
+    if (!xpan_photo_hud_is_enabled()) XPAN_HUD_IDLE_COPY(0);
     else {
         for (int b=0;b<bands;b++) xpan_hud_copy_band(0,band[b][0],band[b][1]);
         if (moved) for (int b=0;b<old_bands;b++) xpan_hud_copy_band(0,old_band[b][0],old_band[b][1]);
@@ -529,8 +563,25 @@ static void xpan_photo_render_hud(info_elem_t *config)
     bmp_draw_to_idle(1);
     if (!xpan_photo_hud_is_enabled()) {
         /* Clear with true empty pixels; transparent black dims the EOS M image. */
+#ifdef CONFIG_M50
+        /* Also the EVF's 30 rows above ML's 480, where the Split top bar sits. */
+        bmp_fill(COLOR_EMPTY,0,BMP_H_MINUS,720,480-BMP_H_MINUS);
+#else
         bmp_fill(COLOR_EMPTY,0,0,720,480);
+#endif
         xpan_af_drawn.w=0;
+#ifdef CONFIG_M50
+        /* Canon layout: only for changing settings, so XPan draws nothing
+         * (no AF frame, grid or band lines). The empty layer is pushed once
+         * and then frozen (xpan-m50.c). */
+        if (xpan_photo_canon_layout()) {
+            xpan_grid_drawn.on=0;
+            bmp_draw_to_idle(0);
+            XPAN_HUD_IDLE_COPY(1);
+            last_hud_y=XPAN_HUD_NONE; last_top_y=XPAN_HUD_NONE;
+            return;
+        }
+#endif
         xpan_af_draw(y);
         xpan_grid_drawn.on=0;       /* the whole screen was just cleared */
         xpan_grid_draw(y);
@@ -540,8 +591,8 @@ static void xpan_photo_render_hud(info_elem_t *config)
         if (xpan_loading_photo_area(y,&top,&bottom)) xpan_loading_box(top,bottom,theme);
 #endif
         bmp_draw_to_idle(0);
-        bmp_idle_copy(1,0);
-        last_hud_y=-1; last_top_y=-1;
+        XPAN_HUD_IDLE_COPY(1);
+        last_hud_y=XPAN_HUD_NONE; last_top_y=XPAN_HUD_NONE;
         return;
     }
     if (moved) {
@@ -612,8 +663,18 @@ static void xpan_photo_render_hud(info_elem_t *config)
         info_get_string(text,sizeof(text),types[i]);
         if (i==0) {
             unsigned iso=lens_info.iso ? lens_info.iso:lens_info.iso_auto;
+#ifdef CONFIG_M50
+            /* Exact third-stop label from Canon's value (ML's table stops at 6400). */
+            { extern int m50_iso_value(void); if (m50_iso_value()) iso=m50_iso_value(); }
+#endif
             if (iso) snprintf(text,sizeof(text),"%s%d",lens_info.raw_iso ? "":"A",iso);
+#ifdef CONFIG_M50
+            /* PROP_ISO comes from XPan's own reader (xpan-m50.c), started a few
+             * seconds after boot: until it reports, ISO is unknown, not auto. */
+            else { extern int m50_iso_known; snprintf(text,sizeof(text),m50_iso_known ? "AUTO":"--"); }
+#else
             else snprintf(text,sizeof(text),"AUTO");
+#endif
         }
         /* Automatic value (aperture in Tv, shutter in Av): Canon publishes it
          * only while metering (half-press), so show a greyed "-". */
@@ -640,10 +701,15 @@ static void xpan_photo_render_hud(info_elem_t *config)
     if (XPAN_HUD_SELECTED(XPAN_HUD_METER)) xpan_hud_select_line(208,y+164,field_width,theme);
     XPAN_HUD_HIT(XPAN_HUD_METER,156,y+136,172,36);
     xpan_hud_text(334,y+144,24,17,FONT_SMALL,theme,"FMT");
+#ifdef CONFIG_M50
+    /* The M50 lays PICQ out differently (xpan-m50.c, M50_PICQ_KIND). */
+    { extern const char *m50_format_label(void); snprintf(text,sizeof(text),"%s",m50_format_label()); }
+#else
     if (xpan_pic_quality_valid!=1) snprintf(text,sizeof(text),"WAIT");
     else if ((pic_quality&0x60000)==0x60000)
         snprintf(text,sizeof(text),"%s",(pic_quality>>24)==4 ? "RAW":"RAW+JPG F");
     else snprintf(text,sizeof(text),"JPG L %s",(pic_quality>>24)==2 ? "N":"F");
+#endif
     field_width=xpan_hud_text(364,y+141,180,23,FONT_MONO_20,COLOR_WHITE,text);
     if (XPAN_HUD_SELECTED(XPAN_HUD_FORMAT)) xpan_hud_select_line(364,y+164,field_width,theme);
     XPAN_HUD_HIT(XPAN_HUD_FORMAT,328,y+136,152,36);

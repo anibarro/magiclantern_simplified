@@ -56,6 +56,9 @@ int32_t create_l2_table(uint32_t addr, uint32_t l2tableaddr, uint32_t flags);
 // does nothing and returns nonzero in case of inappropriate addresses
 int32_t replace_large_page_in_l2_table(uint32_t addr, uint32_t replacement, uint32_t l2tableaddr, uint32_t flags);
 
+// same, with 16 small (4kB) pages: the RAM copy needs only 4kB alignment
+int32_t replace_large_page_with_small_pages_in_l2_table(uint32_t addr, uint32_t replacement, uint32_t l2tableaddr, uint32_t flags);
+
 // replace a 64kB large ROM page with its RAM copy
 // romaddr: start of ROM page (64kB aligned), has to fall within the range of L2 table
 // ramaddr: suitable 64kB aligned RAM address, caller is responsible for the

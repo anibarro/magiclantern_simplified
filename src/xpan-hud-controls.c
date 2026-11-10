@@ -33,7 +33,16 @@
  *          Q screen as before (sent as a fake Q_SET).
  *   REC  : unused.
  * UP (Canon's drive dialog) is blocked. DOWN stays with ML (long press = menu).
- * Canon's GUI layer is kept off the screen while the HUD owns Live View. */
+ * Canon's GUI layer is kept off the screen while the HUD owns Live View.
+ *
+ * 6D 1.1.6: buttons and both dials reach ML as ordinary GUI events before
+ * Canon acts on them, so no MPU decoding is needed and there is no touch:
+ *   top dial  (WHEEL_LEFT/RIGHT): selected value down / up.
+ *   rear dial (WHEEL_UP/DOWN)   : previous / next field.
+ *   multi-controller: LEFT/RIGHT previous / next field, UP/DOWN value up/down.
+ *   SET  : short press cycles the magnification 1x -> 5x -> 10x -> 1x.
+ *   INFO : as above. Q, MENU, PLAY and the trash button (ML menu) stay Canon's.
+ *   Mode : the mode dial is physical; outside Tv/Av/M/B XPan only says so. */
 #include "dryos.h"
 #include "lens.h"
 #include "property.h"
@@ -50,6 +59,10 @@
 #include "patch.h"
 #include "crop-mode-hack.h"
 int xpan_movie_enabled(void);   /* cropmarks.c: XPan ON/OFF in movie mode */
+#ifndef LV_OVERLAYS_MODE
+/* No Canon overlay-mode address on this body: ML's LV display mode instead. */
+#define LV_OVERLAYS_MODE lv_disp_mode
+#endif
 
 /* Provided by XPan (cropmarks.c / xpan-workflow.inc). */
 void xpan_photo_capture_format_step(int sign);
@@ -91,6 +104,7 @@ int xpan_photo_touch_af(int x, int y);        /* xpan-photo-hud.inc */
  * build (eosm_touch_get_xy): event->obj word 1 is a low-RAM pointer
  * (0x900000..0x9FFFFF) whose word 1 packs Y<<16 | X. Only aligned, valid-
  * looking addresses are dereferenced. Fallback: TOUCH_XY_RAW1 (consts.h). */
+#ifdef CONFIG_EOSM
 static int touch_valid(uint32_t v, int *x, int *y)
 {
     int cx=v&0xffff,cy=(v>>16)&0xffff;
@@ -107,12 +121,31 @@ static int touch_point(struct event *event, int *x, int *y)
     if (touch_valid(packed,x,y)) return 1;
     return touch_valid((uint32_t)dbg_touch_raw,x,y);
 }
+#endif
+
+/* SET press: the EOS M sends Q/SET (BGMT_Q_SET) for its combined button. */
+#ifdef CONFIG_EOSM
+#define SET_PRESS_EVENT(p) ((p)==BGMT_Q_SET || (p)==BGMT_PRESS_SET)
+#elif defined(CONFIG_M50)
+/* M50: Q and SET are one button (BGMT_PRESS_SET) and ML cannot write
+ * properties there yet, so the 1x/5x/10x step could not work. XPan leaves
+ * the button to Canon, which opens its Q screen. */
+#define SET_PRESS_EVENT(p) ((void)(p),0)
+#else
+#define SET_PRESS_EVENT(p) ((p)==BGMT_PRESS_SET)
+#endif
 
 /* Diagnostics for XPan > Debug info (HUD test line; no file logging). */
 static volatile int dbg_events,dbg_last,dbg_mask=-1,dbg_used,dbg_task_mask=-1,dbg_task_loops;
 static volatile int dbg_ring[9],dbg_ring_pos;
 
+#ifdef CONFIG_M50
+/* Selection lives in xpan-m50.c (touch ISO; only ISO is writable so far). */
+int xpan_m50_hud_field(void);
+int xpan_hud_controls_field(void) { return xpan_m50_hud_field(); }
+#else
 int xpan_hud_controls_field(void) { return hud_field; }
+#endif
 
 static unsigned controls_block_mask(void)
 {
@@ -185,7 +218,7 @@ static int key_inner(struct event *event)
      * = Canon's Q screen. Same press/release handling as the photo zoom. */
     if (is_movie_mode() && xpan_movie_enabled() && lv && !RECORDING && !gui_menu_shown() &&
         !PLAY_OR_QR_MODE && gui_state==GUISTATE_IDLE && !IS_FAKE(event)) {
-        if (event->param==BGMT_Q_SET || event->param==BGMT_PRESS_SET) {
+        if (SET_PRESS_EVENT(event->param)) {
             if (!movie_set_ms) movie_set_ms=get_ms_clock();
             return 0;
         }
@@ -200,7 +233,7 @@ static int key_inner(struct event *event)
      * misses a release that is swallowed, which opened the Q screen on every
      * press. XPan therefore takes the real press itself (livecomp pattern)
      * and always lets the release through. Works with the HUD hidden too. */
-    if ((event->param==BGMT_Q_SET || event->param==BGMT_PRESS_SET) &&
+    if (SET_PRESS_EVENT(event->param) &&
         !IS_FAKE(event) && !(mask&~32u)) {
         if (!set_down_ms) set_down_ms=get_ms_clock();
         dbg_set_press++;
@@ -214,6 +247,33 @@ static int key_inner(struct event *event)
     }
     if (mask) return 1;
     if (IS_FAKE(event)) return 1;
+#ifdef CONFIG_M50
+    /* M50 phase 1: ML cannot write Canon settings on this body yet, so the
+     * HUD could not change a value. The dial, the arrows and Q/SET stay
+     * Canon's; the HUD shows what Canon sets. XPan only takes INFO (above). */
+    return 1;
+#elif !defined(CONFIG_EOSM)
+    switch (event->param) {
+        case BGMT_WHEEL_LEFT:
+        case BGMT_WHEEL_RIGHT: {
+            /* Top dial: value, clockwise = up. */
+            int sign=event->param==BGMT_WHEEL_RIGHT ? 1:-1;
+            uint32_t old=cli(); wheel_clicks=COERCE(wheel_clicks+sign,-8,8); sei(old);
+            dbg_wheel_seen++;
+            break;
+        }
+        case BGMT_WHEEL_UP: select_request--; break;   /* rear dial: field */
+        case BGMT_WHEEL_DOWN: select_request++; break;
+        case BGMT_PRESS_UP: value_request++; break;
+        case BGMT_PRESS_DOWN: value_request--; break;
+        case BGMT_PRESS_LEFT: select_request--; break;
+        case BGMT_PRESS_RIGHT: select_request++; break;
+        default:
+            return 1;
+    }
+    dbg_ring[slot]|=0x20000;
+    return 0;
+#else
     /* Short DOWN: timed here, both events still go on to ML's long-press code. */
     static int down_ms;
     if (event->param==BGMT_PRESS_DOWN) { down_ms=get_ms_clock(); return 1; }
@@ -279,15 +339,40 @@ static int key_inner(struct event *event)
     }
     dbg_ring[slot]|=0x20000;
     return 0;
+#endif
 }
 
 /* Debug info: the last Canon UI states seen (gui_state/GUI mode/overlay
  * mode), recorded on every change by the step function. */
 static volatile int dbg_state_ring[6],dbg_state_pos,dbg_state_last=-1;
+static void ui_state_log(int v, uint32_t handler, int count, uint32_t task, uint32_t priv);
+/* Canon's GUI task list: which controller is on top, and how many there
+ * are. Only the first three words of a gui_task (handler, priv, next) are
+ * read; they are the same on every body, while the struct length is not
+ * (0x18 on the R). Pointers are checked before they are followed: on DIGIC 8
+ * a bad one is a fault, not a garbage read. */
+static int ui_ram_ptr(uint32_t p) { return p>=0x1000 && p<0x40000000 && !(p&3); }
+static void ui_top_controller(uint32_t *task, uint32_t *handler, uint32_t *priv, int *count)
+{
+    *task=*handler=*priv=0; *count=0;
+    uint32_t t=(uint32_t)gui_task_list.current;
+    if (!ui_ram_ptr(t)) return;
+    *task=t; *handler=MEM(t); *priv=MEM(t+4);
+    for (int n=0; n<16 && ui_ram_ptr(t); n++) { (*count)++; t=MEM(t+8); }
+}
 static void record_ui_state(void)
 {
     if (!xpan_photo_debug_enabled()) return;
     int v=((gui_state&0xff)<<16)|((CURRENT_GUI_MODE&0xff)<<8)|(LV_OVERLAYS_MODE&0xff);
+    uint32_t task,handler,priv; int count;
+    ui_top_controller(&task,&handler,&priv,&count);
+    static uint32_t last_handler; static int last_count=-1;
+    if (v==dbg_state_last && handler==last_handler && count==last_count) return;
+    /* Every change goes to XPANKEYS.LOG too (UISTATE lines): gui_state,
+     * GUI mode, overlay mode and Canon's top controller, to find the signal
+     * for each Canon UI element (Q screen, picture style, exposure bars). */
+    ui_state_log(v,handler,count,task,priv);
+    last_handler=handler; last_count=count;
     if (v==dbg_state_last) return;
     dbg_state_last=v; dbg_state_ring[dbg_state_pos++%6]=v|0x1000000;
 }
@@ -307,12 +392,18 @@ void xpan_hud_controls_debug(char *buf, int size)
         dbg_wheel_raw,dbg_wheel_seen,dbg_touch_hit);
 }
 
-/* Exposure compensation in Canon's 1/3-stop raw steps, +-3 EV on EOS M. */
+/* Exposure compensation in Canon's 1/3-stop raw steps: +-3 EV on EOS M,
+ * +-5 EV on the 6D. */
+#ifdef CONFIG_6D
+#define EV_RAW_MAX 40
+#else
+#define EV_RAW_MAX 24
+#endif
 static void step_ev(int sign)
 {
     int ae=lens_info.ae;
     for (int k=1;k<=8;k++) {
-        int next=round_expo_comp(COERCE(ae+sign*k,-24,24));
+        int next=round_expo_comp(COERCE(ae+sign*k,-EV_RAW_MAX,EV_RAW_MAX));
         if (next!=ae) { lens_set_ae(next); return; }
     }
 }
@@ -348,6 +439,12 @@ static void step_cycle(unsigned property,int current,const int *values,int count
 
 static void apply(int field,int sign)
 {
+#ifdef CONFIG_M50
+    /* Not reached (the M50 HUD takes no value keys), and Canon's exposure
+     * setters are not built for this body. */
+    (void)field; (void)sign; (void)step_ev; (void)step_wb; (void)step_cycle;
+    return;
+#else
     switch (field) {
         case XPAN_HUD_ISO: iso_toggle(0,sign); break;
         case XPAN_HUD_APERTURE: aperture_toggle(0,sign); break;
@@ -377,6 +474,7 @@ static void apply(int field,int sign)
             break;
         }
     }
+#endif /* !CONFIG_M50 */
 }
 
 /* While the XPan HUD owns Live View, stop Canon's GUI from reaching the
@@ -429,7 +527,18 @@ struct key_log_entry {
     uint8_t target;
     int16_t value;
 };
+#if defined(CONFIG_M50)
+/* M50: the controls are done and MMU remap (colour-table hook) needs the
+ * memory (2026-11-09): a short log is enough for key checks. */
+#define KEY_LOG_SIZE 32
+#elif defined(CONFIG_6D)
+/* 6D: ML's memory is tighter (boot-d45-am.c). M50: ML may only take what
+ * leaves Canon 512 KB of user memory (boot-d678.c MINIMUM_USER_MEM_LEFT);
+ * the 2026-11-08 RAM dump showed only 18 KB of margin with 1024 entries. */
+#define KEY_LOG_SIZE 256
+#else
 #define KEY_LOG_SIZE 1024
+#endif
 static struct key_log_entry key_log[KEY_LOG_SIZE];
 static volatile unsigned key_log_head;
 static unsigned key_log_written;
@@ -441,21 +550,62 @@ static struct key_log_entry *key_log_add(void)
     e->target=target; e->value=target_value(target);
     return e;
 }
+/* M50: a Canon UI event seen by XPan's UI event filter (xpan-m50.c). */
+void xpan_hud_key_log_ui(int id, int flag, int field, int passed)
+{
+    if (!xpan_photo_debug_enabled()) return;
+    struct key_log_entry entry;
+    memset(&entry,0,sizeof(entry));
+    entry.ms=get_ms_clock(); entry.type=12; entry.param=id; entry.arg=flag;
+    entry.field=field; entry.result=passed;
+    uint32_t old=cli();
+    key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
+    sei(old);
+}
 int xpan_hud_controls_key(struct event *event)
 {
+    int m50_consumed=0;
+#ifdef CONFIG_M50
+    /* Nothing before ML has started (gui.c passes those events to Canon on
+     * the M50 anyway): a hang in Canon's init_task, 2026-11-08. */
+    { extern int ml_started; if (!ml_started) return 1; }
+    /* Dim-and-freeze (xpan-m50.c): runs before Canon handles the event, so
+     * the dimmed layer is pushed before Canon draws its UI over it. */
+    {
+        extern void xpan_m50_canon_ui_event(struct event *event, int obj0);
+        if (event->type==0)
+            xpan_m50_canon_ui_event(event, event->param==0x79 ? event_obj_word(event,0) : -1);
+        /* Touch only where Canon's UI is visible (Canon layout, dialogs). */
+        /* Dial and UP/DOWN step the selected HUD field (ISO, shutter, aperture). */
+        extern int xpan_m50_touch_blocked(struct event *event);
+        extern int xpan_m50_hud_key(struct event *event);
+        if (xpan_m50_touch_blocked(event)) m50_consumed=1;
+        else if (xpan_m50_hud_key(event)) m50_consumed=1;
+    }
+#endif
     /* Canon's frequent status refresh (0x69) would flood the log. */
-    if (!xpan_photo_debug_enabled() || event->param==GMT_OLC_INFO_CHANGED) return key_inner(event);
+    /* M50: touch and HUD keys XPan took are logged too (result 0). */
+    if (!xpan_photo_debug_enabled() || event->param==GMT_OLC_INFO_CHANGED) return m50_consumed ? 0 : key_inner(event);
     /* The entry records the state before the handler and its decision. */
     struct key_log_entry entry,*e=&entry;
     entry=*key_log_add();
     e->type=event->type; e->param=event->param; e->arg=event->arg; e->fake=IS_FAKE(event) ? 1:0;
     e->obj=(int)event->obj; e->obj0=event_obj_word(event,0);
     e->obj1=event_obj_word(event,1); e->obj2=event_obj_word(event,2);
-    e->result=key_inner(event);
+    e->result=m50_consumed ? 0 : key_inner(event);
     uint32_t old=cli();
     key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
     sei(old);
     return entry.result;
+}
+static void ui_state_log(int v, uint32_t handler, int count, uint32_t task, uint32_t priv)
+{
+    uint32_t old=cli();
+    struct key_log_entry *e=key_log_add();
+    e->type=11; e->param=v; e->arg=(int)handler; e->obj=count;
+    e->obj0=(int)task; e->obj1=(int)priv; e->obj2=lv; e->fake=0; e->result=0;
+    key_log_head++;
+    sei(old);
 }
 /* Non-button GUI events (type != 0), logged only; Canon always gets them.
  * Canon's frequent LV refresh (type 2, 0x36) is left out. */
@@ -471,11 +621,16 @@ void xpan_hud_controls_log_other(struct event *event)
     key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
     sei(old);
 }
-/* Canon's physical-button dispatcher (EOS M 2.0.2 ROM, FF0CC564): r0 = MPU
- * button id, r1 = value (signed byte for dials). It turns buttons into the
- * GUI events ML sees (dial id 13: 2/3, id 38: 0x54...). Debug only: log
- * every call as "BTN id value" to see what the Live View dial sends. */
+/* Canon's physical-button dispatcher (EOS M 2.0.2 ROM, FF0CC564; the same
+ * routine is at FF0CC1A8 in 6D 1.1.6): r0 = MPU button id, r1 = value
+ * (signed byte for dials). It turns buttons into the GUI events ML sees
+ * (dial id 13: 2/3, id 38: 0x54...). Debug only: log every call as
+ * "BTN id value" to see what the Live View dial sends. */
+#ifdef CONFIG_6D
+#define BUTTON_DISPATCH 0xFF0CC1A8u
+#else
 #define BUTTON_DISPATCH 0xFF0CC564u
+#endif
 #define BUTTON_DISPATCH_INSTR 0xE92D47FCu
 static int button_hook_state;          /* 0 not tried, 1 installed, -1 failed */
 static void button_dispatch_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
@@ -492,10 +647,17 @@ static void button_hook_install(void)
 {
     if (button_hook_state || !xpan_photo_debug_enabled()) return;
     button_hook_state=-1;
+#ifdef CONFIG_M50
+    /* DIGIC 8: no runtime ROM hooks, and the dispatcher is not located.
+     * The M50's buttons arrive as normal GUI events (logged anyway). */
+    (void)button_dispatch_hook;
+    int error=-1;
+#else
     if (*(volatile uint32_t *)BUTTON_DISPATCH!=BUTTON_DISPATCH_INSTR) return;
     int error=patch_hook_function(BUTTON_DISPATCH,BUTTON_DISPATCH_INSTR,button_dispatch_hook,
             "XPan button dispatch log");
     if (!error) button_hook_state=1;
+#endif
     struct key_log_entry entry=*key_log_add();
     entry.type=8; entry.param=button_hook_state; entry.arg=error; entry.fake=0;
     entry.obj=0; entry.obj0=entry.obj1=entry.obj2=-1; entry.result=1;
@@ -503,6 +665,7 @@ static void button_hook_install(void)
     key_log[key_log_head%KEY_LOG_SIZE]=entry; key_log_head++;
     sei(old);
 }
+#ifdef CONFIG_EOSM
 /* Canon's "send to MPU" routine (RAM 0x38C4; the ROM debug command send_mpu
  * calls it as (class, id, data_len, data)). Debug only, log-only: record
  * every message so the one that makes the MPU forward the dial can be found.
@@ -674,6 +837,12 @@ static void mpu_recv_install(void)
     *cbr=(uint32_t)mpu_recv_hook;
     mpu_recv_state=1;
 }
+#else
+/* 6D: the dial and LEFT arrive as GUI events; nothing to decode or resync. */
+static void mpu_hook_install(void) {}
+static void mpu_recv_install(void) {}
+static void dial_resync(void) {}
+#endif
 
 /* Diagnostics (Debug info): who erases the HUD, and is the AF frame known?
  * Sample three HUD-band pixels on screen; log each change of them and of
@@ -684,9 +853,13 @@ void xpan_native_capture_diag(char *buf, int size);   /* xpan-native-look.c */
 static void hud_watch(unsigned mask)
 {
     if (!xpan_photo_debug_enabled() || mask || !lv) return;
+#ifdef FEATURE_VRAM_RGBA
+    uint8_t *real=bmp_vram();   /* ML's indexed buffer; bmp_vram_real() is Canon's RGBA layer */
+#else
     uint8_t *real=bmp_vram_real();
+#endif
     int y=xpan_photo_get_hud_y();
-    if (!real || y<0 || y+XPAN_PHOTO_HUD_HEIGHT>480) return;
+    if (!real || y<BMP_H_MINUS || y+XPAN_PHOTO_HUD_HEIGHT>480) return;
     int p0=real[(xpan_photo_get_hud_top_y()+2)*BMPPITCH+360],p1=real[(y+100)*BMPPITCH+700],p2=real[(y+200)*BMPPITCH+20];
     int px=(p0<<16)|(p1<<8)|p2;
     int ax=0,ay=0,aw=0,ah=0,W=0,H=0;
@@ -711,6 +884,13 @@ static void key_log_flush(void)
     mpu_recv_install();
     static int last_ms,last_target=-1,last_value;
     if (!xpan_photo_debug_enabled()) { key_log_written=key_log_head; return; }
+    /* No card writes once Canon is powering off (M50: the camera stayed dead
+     * after every power-off while this log was appended to every second). */
+    if (ml_shutdown_requested) return;
+#ifdef CONFIG_M50
+    extern int xpan_m50_card_ok(void);
+    if (!xpan_m50_card_ok()) return;
+#endif
     /* Canon's dial target value, logged whenever it changes. */
     unsigned target=xpan_photo_wheel_targets();
     int value=target_value(target);
@@ -776,6 +956,13 @@ static void key_log_flush(void)
             : e->type==9
             ? snprintf(line,sizeof(line),"%8d BTN id %d value %d (0x%x) field %d target %x value %d\n",
                 (int)e->ms,e->param,(int)(signed char)e->arg,e->arg,e->field,e->target,e->value)
+            : e->type==12
+            ? snprintf(line,sizeof(line),"%8d UIEVENT id %x flag %d field %d -> %s\n",
+                (int)e->ms,e->param,e->arg,e->field,e->result ? "Canon":"XPAN (dial)")
+            : e->type==11
+            ? snprintf(line,sizeof(line),"%8d UISTATE gui_state %d guimode %d (0x%x) overlays %d | top controller handler %x priv %x task %x, %d controllers | lv %d mask %x\n",
+                (int)e->ms,(e->param>>16)&0xff,(e->param>>8)&0xff,(e->param>>8)&0xff,e->param&0xff,
+                (unsigned)e->arg,(unsigned)e->obj1,(unsigned)e->obj0,e->obj,e->obj2,e->mask)
             : e->param==-1
             ? snprintf(line,sizeof(line),"%8d TARGET %x value %d field %d mask %x\n",
                 (int)e->ms,e->target,e->value,e->field,e->mask)
@@ -792,7 +979,11 @@ static void key_log_flush(void)
  * the presets. Taps always step the presets, which is how Kelvin is left. */
 static void value_step(int sign)
 {
+#ifdef CONFIG_M50
+    if (0) {}   /* M50: no value keys reach here (key_inner) */
+#else
     if (hud_field==XPAN_HUD_WB && lens_info.wb_mode==WB_KELVIN) { kelvin_toggle(0,sign); msleep(80); }
+#endif
     else step_field(hud_field,sign);
 }
 /* Dial clicks decoded from raw MPU input (mpu_input), or forwarded with a
@@ -828,11 +1019,13 @@ static void keep_clean_display(unsigned mask)
         }
         last_mode=mode;
     }
+#ifdef CONFIG_EOSM
     static int tries,last_ms;
     if (!lv || mask || LV_OVERLAYS_MODE==3) { if (LV_OVERLAYS_MODE==3 || !lv) tries=0; return; }
     if (tries>=6 || get_halfshutter_pressed() || lens_info.job_state || get_ms_clock()-last_ms<500) return;
     tries++; last_ms=get_ms_clock();
     fake_simple_button(BGMT_INFO);
+#endif
 }
 
 /* XPan needs a predictable exposure and Canon's look settings unlocked:
@@ -841,6 +1034,14 @@ static void keep_clean_display(unsigned mask)
  * mode is wrong; the A+ dial position never gets here (XPan is off there). */
 static void keep_manual_mode(void)
 {
+#if defined(CONFIG_M50)
+/* M50: the controls are done and MMU remap (colour-table hook) needs the
+ * memory (2026-11-09): a short log is enough for key checks. */
+#define KEY_LOG_SIZE 32
+#elif defined(CONFIG_6D)
+    /* Physical mode dial: XPan does not fight it (the worker reports it). */
+    return;
+#endif
     static int tries,last_ms;
     int m=shooting_mode;
     if (m==SHOOTMODE_M || m==SHOOTMODE_AV || m==SHOOTMODE_TV) { tries=0; return; }
@@ -889,6 +1090,9 @@ static void xpan_zoom_step(void)
 void xpan_hud_controls_step(void)
 {
     record_ui_state();
+#ifdef CONFIG_M50
+    { extern void xpan_m50_canon_ui_step(void); xpan_m50_canon_ui_step(); }
+#endif
     clear_hud_on_exit();
     unsigned mask=controls_block_mask();
     /* Canon's GUI stays hidden in XPan Live View even with the layout off. */
@@ -904,11 +1108,17 @@ void xpan_hud_controls_step(void)
     int movie_long=movie_set_ms>0 && get_ms_clock()-movie_set_ms>=500;
     if (movie_long) movie_set_ms=-1;
     sei(old);
+#ifdef CONFIG_EOSM
     if (movie_long) fake_simple_button(BGMT_Q_SET);
+#endif
     if (crop_toggle && is_movie_mode() && !RECORDING) {
+#ifdef FEATURE_CROP_MODE_HACK
         if (!is_crop_hack_supported()) NotifyBox(2000,"1:1 crop: 1080p only, not while recording");
         else if (video_mode_crop) { movie_crop_hack_disable(); NotifyBox(1500,"1:1 crop OFF"); }
         else { movie_crop_hack_enable(); NotifyBox(1500,"1:1 crop ON (1920x1080)"); }
+#else
+        NotifyBox(2000,"1:1 crop is not available on this camera");
+#endif
     }
     old=cli(); int zoom=zoom_request; zoom_request=0;
     int long_set=set_down_ms>0 && get_ms_clock()-set_down_ms>=500;
@@ -917,7 +1127,9 @@ void xpan_hud_controls_step(void)
     if (zoom && !(mask&~32u)) xpan_zoom_step();
     /* Held Q/SET: Canon's Q screen. menu.c ignores fake events, so this
      * reaches Canon directly. */
+#ifdef CONFIG_EOSM
     if (long_set) fake_simple_button(BGMT_Q_SET);
+#endif
     old=cli(); int taps=wb_taps; wb_taps=0; sei(old);
     if (!mask) for (int i=0;i<taps;i++) step_field(XPAN_HUD_WB,1);
     hud_watch(mask);

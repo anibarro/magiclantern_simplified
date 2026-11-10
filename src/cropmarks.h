@@ -15,11 +15,12 @@ void set_movie_cropmarks(int x, int y, int w, int h);
  */
 void reset_movie_cropmarks();
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* XPan overlay state and separately configured photo-capture crop helpers. */
 enum xpan_photo_aspect { XPAN_ASPECT_65_24 = 0, XPAN_ASPECT_3_2 = 1 };
 int xpan_photo_aspect_ratio(void);
 int xpan_photo_is_panoramic(void);
+int xpan_photo_canon_layout(void);   /* M50: Canon layout (INFO); 0 elsewhere */
 /* Compute 65:24 rectangle geometry; this helper does not modify pixels or image metadata. */
 int xpan_photo_get_65_24_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
 /* Centered full-width preview source rectangle; height approximates 65:24 to even rows. */

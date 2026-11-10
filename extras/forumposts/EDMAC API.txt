@@ -1,0 +1,57 @@
+The old EDMAC API:
+```
+char * edmac_format_size(struct edmac_info * info);
+int edmac_fix_off1(int32_t off);
+int edmac_fix_off2(int32_t off);
+struct edmac_info edmac_get_info(uint32_t channel);
+uint32_t edmac_bytes_per_transfer(uint32_t flags);
+uint32_t edmac_channel_to_index(uint32_t channel);
+uint32_t edmac_find_divider(size_t length, size_t transfer_size);
+uint32_t edmac_get_address(uint32_t channel);   /* start address */
+uint32_t edmac_get_base(uint32_t channel);      /* base register */
+uint32_t edmac_get_channel(uint32_t reg);       /* channel from register */
+uint32_t edmac_get_connection(uint32_t channel, uint32_t direction);
+uint32_t edmac_get_dir(uint32_t channel);
+uint32_t edmac_get_flags(uint32_t channel);
+uint32_t edmac_get_length(uint32_t channel);    /* yb,xb (hi,lo) */
+uint32_t edmac_get_pointer(uint32_t channel);   /* current address (from hardware) */
+uint32_t edmac_get_state(uint32_t channel);     /* 0=idle, 1=running (from hardware) */
+uint32_t edmac_get_total_size(struct edmac_info * info, int include_offsets);
+uint32_t edmac_index_to_channel(uint32_t index, uint32_t direction);
+void edmac_copy_rectangle_adv_cleanup();
+void* edmac_copy_rectangle_adv_start(void* dst, void* src, int src_width, int src_x, int src_y, int dst_width, int dst_x, int dst_y, int w, int h);
+void* edmac_copy_rectangle_adv(void* dst, void* src, int src_width, int src_x, int src_y, int dst_width, int dst_x, int dst_y, int w, int h);
+void* edmac_copy_rectangle_cbr_start(void* dst, void* src, int src_width, int src_x, int src_y, int dst_width, int dst_x, int dst_y, int w, int h, void (*cbr_r)(void*), void (*cbr_w)(void*), void *cbr_ctx);
+void edmac_copy_rectangle_finish();
+
+void* edmac_copy_rectangle_start(void* dst, void* src, int src_width, int x, int y, int w, int h);
+void* edmac_copy_rectangle(void* dst, void* src, int src_width, int x, int y, int w, int h);
+void edmac_memcpy_finish();
+void edmac_memcpy_res_lock();
+void edmac_memcpy_res_unlock();
+void* edmac_memcpy_start(void* dst, void* src, size_t length);
+void* edmac_memcpy(void* dst, void* src, size_t length);
+void edmac_raw_slurp(void* dst, int w, int h);
+```
+
+The new API:
+```
+uint32_t edmac_channel_to_index(uint32_t channel);
+uint32_t edmac_get_base(uint32_t channel);      /* base register */
+uint32_t edmac_get_length(uint32_t channel);    /* yb,xb (hi,lo) */
+void copy_rectangle_non_blocking_cleanup(void);
+void* copy_rectangle_non_blocking(void* dst, int dst_width, int dst_x, int dst_y, 
+                                  void* src, int src_width, int src_x, int src_y,
+                                  int sub_w, int sub_h,
+                                  void (*cbr_r)(void*), void (*cbr_w)(void*), void *cbr_ctx)
+void* copy_rectangle(void* dst, int dst_width, int dst_x, int dst_y,
+                     void* src, int src_width, int src_x, int src_y,
+                     int sub_w, int sub_h)
+void edmac_memcpy_res_lock(void);
+void edmac_memcpy_res_unlock(void);
+void* edmac_memcpy(void* dst, void* src, size_t length);
+void edmac_raw_slurp(void* dst, int w, int h);
+```
+
+This will probably be reduced further, I expect I can replace all uses of non blocking copies with blocking
+It never made sense to have a non-blocking variant, since the hw EDMAC system can only have one operation of the same kind in flight at a time!

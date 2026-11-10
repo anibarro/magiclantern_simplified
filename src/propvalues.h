@@ -51,7 +51,7 @@ extern int efic_temp;
 extern int gui_state;
 extern int auto_iso_range;
 extern int pic_quality;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 extern volatile uint32_t xpan_image_aspect_ratio;
 extern volatile int xpan_image_aspect_ratio_valid;
 extern volatile int xpan_pic_quality_valid;

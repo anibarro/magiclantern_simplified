@@ -408,10 +408,37 @@ static void led_fade(int arg1, void * on)
 /* This runs ML initialization routines and starts user tasks.
  * Unlike init_task, from here we can do file I/O and others.
  */
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+/* Boot log (src/xpan-m50.c, ML/LOGS/XBOOT.LOG): startup stages. */
+void m50_boot_mark(int id, int value);
+void m50_boot_log_start(void);
+#define M50_BOOT_MARK(id) m50_boot_mark(id, 0)
+/* Canon asked to shut down (xpan-m50.c): stop starting ML, no card access. */
+extern volatile int m50_shutdown_seen;
+extern volatile int m50_check_start;    /* Canon's check command (gui.c) */
+#define M50_SHUTDOWN_SEEN() (m50_shutdown_seen || m50_check_start)
+#else
+#define M50_BOOT_MARK(id) do {} while (0)
+#define M50_SHUTDOWN_SEEN() 0
+#endif
+
 static void my_big_init_task()
 {
     _mem_init();
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+    /* Canon's short start after the card/battery door closes: stay off the
+     * card until it is clear this is a real start (xpan-m50.c). */
+    extern int m50_wait_for_real_start(void);
+    if (m50_wait_for_real_start())
+    {
+        return;
+    }
+#endif
     _find_ml_card();
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+    m50_boot_log_start();
+#endif
+    M50_BOOT_MARK(1);
 
     /* should we require SET for loading ML, or not? */
     extern int _set_at_startup;
@@ -448,9 +475,16 @@ static void my_big_init_task()
     int err = apply_normal_patches();
     if (err < 0)
         qprintf("Error from apply_normal_patches: %d\n", err);
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+    /* Boot log: patch result, and the first word of Canon's E00E73BC as
+     * seen now (0x41fce92d = not patched; xpan-m50.c colour-table hook). */
+    m50_boot_mark(61, err);
+    m50_boot_mark(62, (int)*(volatile uint32_t *)0xE00E73BC);
+#endif
 #endif
 
     _load_fonts();
+    M50_BOOT_MARK(2);
 
     // SJE not sure on best place to do this.  Before HELLO_WORLD is nice
     // if possible, needs to be after DryOS inits task scheduler.  I assume
@@ -478,9 +512,17 @@ static void my_big_init_task()
     call("DisablePowerSave");
     _ml_cbr_init();
     menu_init();
+    M50_BOOT_MARK(3);
     debug_init();
     call_init_funcs(); // among other things, this initialises modules
+    M50_BOOT_MARK(4);
     msleep(200); // leave some time for property handlers to run
+    if (M50_SHUTDOWN_SEEN())
+    {
+        /* Canon's short start after the card/battery door closes ends here
+         * on its own: do not read the config or start ML's tasks. */
+        return;
+    }
 
 #ifdef CONFIG_XF605
     uart_printf("hello from ML, after early tasks");
@@ -494,6 +536,7 @@ static void my_big_init_task()
 
     /* Read ML config. if feature disabled, nothing happens */
     config_load();
+    M50_BOOT_MARK(5);
     
     debug_init_stuff();
 
@@ -532,6 +575,10 @@ static void my_big_init_task()
 #endif
 
     ml_started = 1;
+    M50_BOOT_MARK(6);
+#ifdef CONFIG_M50
+    _card_led_off();   /* LED stage markers: a normal start ends dark */
+#endif
 }
 
 /** Blocks execution until config is read */
@@ -615,9 +662,47 @@ static void cpu1_ready(void)
 }
 #endif
 
+#ifdef CONFIG_M50
+/* GUI wait limit in my_init_task (battery-door check-mode start). */
+/* 3 s: on a normal start the GUI is up in under 1 s (XBOOT.LOG: ML finds the
+ * card at ~990 ms, after this wait). Bilal's M50 build, which waits with no
+ * limit, hung on every battery-door close (2026-11-08). */
+const int m50_gui_wait_timeout_ms = 3000;
+#endif
+
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+/* Core 1 start (README-XPAN-M50.md, "Startup hang: core 1 and its start
+ * entry"). reboot.c parks core 1 in Canon's bootloader wait loop
+ * (E0004910). Release it here, with the bootloader's own two writes
+ * ([0xBFE01FC8] = firmware entry, then [0xBFE01FC4] = 0x10, as at E00049AE),
+ * once DryOS is running: create_init_task has run E01A436C -> E0558648,
+ * which writes the marker 0x20101231 into both cores' start entries
+ * (table 0x56520, 16 bytes per core). In Canon's firmware entry core 1 then
+ * finds the marker and joins DryOS (E00403B8 -> E0558D9E). It never takes
+ * the return path, where it would rerun the bootloader's main code, which
+ * copies itself over 0x100000-0x112694, inside ML. Without the marker it
+ * stays parked and the value is logged (should not happen: this runs inside
+ * the init task, after create_init_task). */
+volatile uint32_t m50_core1_entry, m50_core1_released;
+static void m50_release_core1(void)
+{
+    m50_core1_entry = MEM(0x56530);
+    if (m50_core1_entry != 0x20101231) return;
+    asm volatile("dsb sy" ::: "memory");
+    MEM(0xBFE01FC8) = 0xE0040000;
+    asm volatile("dsb sy" ::: "memory");
+    MEM(0xBFE01FC4) = 0x10;
+    asm volatile("dsb sy" ::: "memory");
+    m50_core1_released = 1;
+}
+#endif
+
 /* called before Canon's init_task */
 void boot_pre_init_task()
 {
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+    m50_release_core1();
+#endif
 #if defined(CONFIG_HELLO_WORLD) || defined(CONFIG_DUMPER_BOOTFLAG)
     // don't hook
 #else
@@ -692,6 +777,48 @@ void boot_post_init_task(void)
     task_create_ex(NULL, 0x10, 0x200, cpu1_ready, NULL, 1);
 #endif
 
+#ifdef CONFIG_M50
+    /* M50: closing the battery door starts the firmware in a check mode
+     * (GMT_GUICMD_START_AS_CHECK) without its GUI, and autoexec.bin runs.
+     * This code runs inside Canon's init_task, so waiting for a GUI that
+     * never comes kept init_task from returning: LED on, camera dead until
+     * a battery pull (README-XPAN-M50.md, boot log). Give up after 3 s and
+     * do not load ML; a normal start has the display up in a second or two. */
+    /* 20 ms steps, and Canon's check command (gui.c, m50_check_start)
+     * ends the wait at once: during the check start this code holds
+     * Canon's init task, and the camera stayed dead after every
+     * battery-door close (2026-11-08). */
+    int gui_wait = 0;
+    #if defined(CONFIG_XPAN)
+    #define M50_CHECK_CMD() (m50_check_start)
+    #else
+    #define M50_CHECK_CMD() 0
+    #endif
+    #ifdef FEATURE_VRAM_RGBA
+    while (!rgb_vram_preinit() && !M50_CHECK_CMD() && gui_wait < m50_gui_wait_timeout_ms / 20)
+    {
+        msleep(20);
+        gui_wait++;
+    }
+    #endif
+    while (!bmp_vram_raw() && !M50_CHECK_CMD() && gui_wait < m50_gui_wait_timeout_ms / 20)
+    {
+        msleep(20);
+        gui_wait++;
+    }
+    if (M50_CHECK_CMD())
+    {
+        return;
+    }
+    /* build_tools/build_xpan.sh checks for this symbol (qprint is empty
+     * outside QEMU builds, so its text is not in the camera binary). */
+    if (gui_wait >= m50_gui_wait_timeout_ms / 20)
+    {
+        qprint("[BOOT] no Canon GUI after 3 s (check-mode start?), not loading ML\n");
+        _card_led_off();
+        return;
+    }
+#else
     #ifdef FEATURE_VRAM_RGBA
     while (!rgb_vram_preinit())
         msleep(100);
@@ -700,6 +827,7 @@ void boot_post_init_task(void)
     // wait for firmware to initialize
     while (!bmp_vram_raw())
         msleep(100);
+#endif
     
     // wait for overriden gui_main_task (but use a timeout so it doesn't break if you disable that for debugging)
     for (int i = 0; i < 50; i++)

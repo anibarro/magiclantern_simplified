@@ -250,11 +250,28 @@ static void my_create_init_task(struct dryos_init_info *dryos, uint32_t init_tas
         goto fail;
     }
 
+#if defined(CONFIG_M50) && defined(CARD_LED_ADDRESS) && defined(LEDOFF)
+    /* reboot.c lit the LED when autoexec.bin loaded; dark from here on
+     * (a lit LED with a dead camera then means a hang before this point). */
+    MEM(CARD_LED_ADDRESS) = LEDOFF;
+#endif
     create_init_task(dryos, init_task, c);
 
     return;
 
 fail:
+#if defined(CONFIG_M50) && defined(CARD_LED_ADDRESS) && defined(LEDON) && defined(LEDOFF)
+    /* M50: blink fast instead of a silent hang with the LED lit, so a failed
+     * memory/layout check can be told apart from a hang later in startup
+     * (README-XPAN-M50.md, boot log). Remove the battery to stop. */
+    while(1)
+    {
+        MEM(CARD_LED_ADDRESS) = LEDON;
+        for (volatile int i = 0; i < 2000000; i++);
+        MEM(CARD_LED_ADDRESS) = LEDOFF;
+        for (volatile int i = 0; i < 2000000; i++);
+    }
+#endif
     while(1); // SJE FIXME kitor wants to do cool stuff here
 }
 

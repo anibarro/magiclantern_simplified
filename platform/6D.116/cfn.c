@@ -4,6 +4,12 @@
 
 GENERIC_GET_ALO
 GENERIC_GET_HTP
+/* HTP is a plain property here (as on the 5D3); XPan turns it off for its base. */
+void set_htp(int value)
+{
+    value = COERCE(value, 0, 1);
+    prop_request_change(PROP_HTP, &value, 0);
+}
 GENERIC_GET_MLU
 GENERIC_SET_MLU
 

@@ -1121,7 +1121,7 @@ int raw_update_params_work_internal(int allow_xpan_raw_jpeg, int force_photo_cap
 #ifdef CONFIG_RAW_PHOTO
 
         int raw_available = can_use_raw_overlays_photo();
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         if (!raw_available && allow_xpan_raw_jpeg && xpan_photo_capture_has_raw() == 1)
             raw_available = 1;
 #endif
@@ -1571,7 +1571,7 @@ int raw_update_params()
     return ans;
 }
 
-#if defined(CONFIG_EOSM) && defined(CONFIG_QEMU)
+#if defined(CONFIG_XPAN_BODY) && defined(CONFIG_QEMU)
 /* Exclude the unverified RAW file worker from camera boot images until its poll is explicitly enabled. */
 extern int xpan_photo_patch_cr2_file(const char *filename);
 extern int xpan_photo_patch_jpeg_file(const char *filename);

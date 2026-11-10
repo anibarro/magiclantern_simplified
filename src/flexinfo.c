@@ -11,12 +11,12 @@
 #include <battery.h>
 #include <fps.h>
 #include <focus.h>
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 #include <propvalues.h>
 #include <raw.h>
 #include <lvinfo.h>
 #include "xpan-mode.h"
-#if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+#if defined(CONFIG_XPAN_BODY) && defined(CONFIG_XPAN)
 #include "xpan-hud-controls.h"
 #endif
 #endif
@@ -34,7 +34,7 @@
 
 #define BUF_SIZE 128
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 extern int xpan_photo_get_65_24_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
 extern int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *crop_height);
 extern int xpan_photo_theme_color(void);
@@ -116,7 +116,7 @@ info_elem_t info_config_liveview[] =
 {
     { .config = { { INFO_TYPE_CONFIG } } },
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     { .string = { { INFO_TYPE_STRING, { 15, 14, 2, .name = "XPan equivalent" }}, INFO_STRING_XPAN_EQ, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
     { .text   = { { INFO_TYPE_TEXT,   {  15, 38, 2, .name = "Photo ISO label" }}, "ISO",     COLOR_WHITE, INFO_COL_BG, INFO_FONT_SMALL } },
     { .string = { { INFO_TYPE_STRING, {  15, 53, 2, .name = "Photo ISO" }}, INFO_STRING_ISO, COLOR_WHITE, INFO_COL_BG, INFO_FONT_LARGE } },
@@ -1312,10 +1312,7 @@ char *info_get_cardlabel(char drv)
 /* ********************************************************************************** */
 
 
-#ifdef CONFIG_EOSM
-#define EOSM_XPAN_SENSOR_WIDTH 5184
-#define EOSM_XPAN_RAW_ACTIVE_WIDTH 5184
-#define EOSM_XPAN_RAW_ACTIVE_HEIGHT 3456
+#ifdef CONFIG_XPAN_BODY
 
 /* Convert electronic lens values or manual-lens fallbacks to the XPan crop's scale. */
 static int xpan_photo_get_lens_equivalents(
@@ -1331,8 +1328,10 @@ static int xpan_photo_get_lens_equivalents(
     *aperture_equivalent = 0;
     /* XPan's 65mm or 36mm frame width sets the horizontal equivalent scale. */
     int64_t reference_width = xpan_photo_is_panoramic() ? 650 : 360;
-    int64_t factor_num = reference_width * EOSM_XPAN_SENSOR_WIDTH;
-    int64_t factor_den = (int64_t)223 * EOSM_XPAN_RAW_ACTIVE_WIDTH;
+    /* Every column of the sensor is kept, so the scale is frame width over
+     * sensor width (EOS M 22.3 mm, 6D 35.8 mm). */
+    int64_t factor_num = reference_width;
+    int64_t factor_den = XPAN_SENSOR_WIDTH_MM10;
     if (focal)
         *focal_equivalent = (int)(((int64_t)focal * factor_num + factor_den / 2) / factor_den);
     if (aperture)
@@ -1730,7 +1729,7 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
         }
         case INFO_STRING_FOCUSMODE:
         {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
             /* Do not label an unchipped lens as AF when its focus state is unknowable. */
             int manual_lens = !lens_info.lens_exists &&
                 (xpan_photo_manual_focal_mm() || xpan_photo_manual_aperture_x10());
@@ -1753,7 +1752,7 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
         case INFO_STRING_APERTURE:
         {
             int aperture = lens_info.aperture;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
             /* Show the user's ring setting for unchipped lenses; it does not control exposure. */
             if (!aperture && xpan_photo_ui_active() && !lens_info.lens_exists)
                 aperture = xpan_photo_manual_aperture_x10();
@@ -1769,7 +1768,7 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
                     snprintf(buffer, maxsize, SYM_F_SLASH"%d", aperture / 10);
                 }
             }
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
             else if (xpan_photo_ui_active()) snprintf(buffer, maxsize, "--");
 #endif
             break;
@@ -1786,7 +1785,7 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
         }
         case INFO_STRING_XPAN_EQ:
         {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
             /* Compare the actual active RAW crop width with the XPan's 65 mm frame. */
             int focal_eq = 0, aperture_eq = 0;
             int equivalents = xpan_photo_get_lens_equivalents(
@@ -1860,7 +1859,7 @@ uint32_t info_get_string(char *buffer, uint32_t maxsize, uint32_t string_type)
             if (is_bulb_mode()) snprintf(buffer, maxsize, "BULB");
             else if (lens_info.raw_shutter == 0)
             {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
                 /* Make an unavailable still-photo reading explicit in the XPan control card. */
                 snprintf(buffer, maxsize, xpan_photo_ui_active() ? "--" : "");
 #else
@@ -2306,7 +2305,7 @@ uint32_t info_print_battery_perf(info_elem_t *config, info_elem_battery_perf_t *
 
 uint32_t info_print_battery_icon(info_elem_t *config, info_elem_battery_icon_t *element, uint32_t run_type)
 {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     element->hdr.pos.w = 22;
     element->hdr.pos.h = 14;
 #else
@@ -2323,7 +2322,7 @@ uint32_t info_print_battery_icon(info_elem_t *config, info_elem_battery_icon_t *
         return 1;
     }
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     int level = COERCE(battery_level_bars, 0, 2);
     int color = level == 0 ? COLOR_RED : level == 1 ? COLOR_YELLOW : xpan_photo_theme_color();
     if (run_type == INFO_PRINT)
@@ -2438,7 +2437,7 @@ uint32_t info_print_element(info_elem_t *config, info_elem_t *element, uint32_t 
     return 1;
 }
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* Give the five photo controls a restrained card background in the XPan matte. */
 static void xpan_photo_draw_control_cards(info_elem_t *config)
 {
@@ -2569,7 +2568,7 @@ uint32_t info_print_config(info_elem_t *config)
         pos++;
     }
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* Paint card backgrounds after positions resolve but before the text is drawn. */
     if (config == info_config_liveview && xpan_photo_ui_active())
         xpan_photo_draw_control_cards(config);
@@ -2684,7 +2683,7 @@ uint32_t info_print_config(info_elem_t *config)
     return 0;
 }
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* Draft-based HUD shares this file's value formatting and staged bitmap lock. */
 #include "xpan-photo-hud.inc"
 #endif
@@ -2699,7 +2698,7 @@ uint32_t info_print_screen()
     if(lv)
     {
         info_config = info_config_liveview;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         int theme_color = xpan_photo_theme_color();
         info_config_liveview[1].string.fgcolor = theme_color;
         /* Keep the equivalent-lens readout clear of the first control row in the matte. */
@@ -2741,9 +2740,15 @@ uint32_t info_print_screen()
 
     BMP_LOCK
     (
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         if (xpan_photo_ui_active())
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+            { static int n; extern void m50_boot_mark(int, int); int log_it = n < 30; if (log_it) m50_boot_mark(21, ++n);
+              xpan_photo_render_hud(info_config);
+              if (log_it) m50_boot_mark(22, n); }
+#else
             xpan_photo_render_hud(info_config);
+#endif
         else
 #endif
         {

@@ -1,4 +1,6 @@
 #include "all_features.h"
+/* XPan panoramic photo mode (README-XPAN.md): shared code for supported bodies. */
+#define CONFIG_XPAN_BODY
 /* Permit only XPan's explicitly allowlisted aspect-ratio and image-quality property writes. */
 #define CONFIG_EOSM_XPAN_PROPERTY_CHANGE
 /* Can't Be Implemented */

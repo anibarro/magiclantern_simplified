@@ -20,7 +20,7 @@ static CONFIG_INT( "crop.enable", crop_enabled, 0);  // index of crop file
 static CONFIG_INT( "crop.index", crop_index, 0); // index of crop file
 static CONFIG_INT( "crop.movieonly", cropmark_movieonly, 0);
 static CONFIG_INT("crop.playback", cropmarks_play, 0);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 #if !defined(CONFIG_QEMU)
 /* Keep diagnostic camera menus honest while the hardware capture hook is disabled. */
 #define XPAN_CAMERA_RAW_PROCESSING_DISABLED
@@ -53,6 +53,23 @@ static CONFIG_INT("xpan.status.time", xpan_photo_show_time, 1);
 static CONFIG_INT("xpan.status.space", xpan_photo_show_space, 1);
 /* The user can hide the XPan bitmap HUD without changing the saved framing. */
 static CONFIG_INT("xpan.hud", xpan_photo_hud_enabled, 1);
+#ifdef CONFIG_M50
+/* M50: INFO in 65:24 cycles Top, Bottom, Split, Canon. Canon = XPan hides its
+ * matte and HUD and stops drawing over Canon's layer (xpan-m50.c), so
+ * Canon's own Live View screen and touch controls show; only thin lines mark
+ * the band of the current frame alignment. */
+static CONFIG_INT("xpan.canon_layout", xpan_canon_layout, 0);
+int xpan_m50_screen_extra_top(void);   /* xpan-m50.c: 30 in the EVF, 0 on the LCD */
+#endif
+int xpan_photo_canon_layout(void)
+{
+#ifdef CONFIG_M50
+    /* 3:2: INFO turns the HUD off, which is the same thing. */
+    return xpan_photo_is_panoramic() ? xpan_canon_layout : !xpan_photo_hud_enabled;
+#else
+    return 0;
+#endif
+}
 /* XPan > Debug info: on-screen key/touch diagnostics only (no file logging). */
 static CONFIG_INT("xpan.debug", xpan_photo_debug, 0);
 int xpan_photo_debug_enabled(void) { return xpan_photo_debug; }
@@ -87,27 +104,55 @@ int xpan_photo_ui_active(void)
 
 unsigned xpan_photo_wheel_state(void)
 {
-    /* EOS M2.0.2's live OLC display-state cache. Confirm the ROM getters before
+    /* Canon's live OLC display-state cache. Confirm the ROM getters before
      * reading fixed RAM; these addresses are never written by XPan. Canon's
-     * FF6AB6E4 focus-frame renderer and FF53A158 dial handler use state3. */
+     * focus-frame renderer (EOS M FF6AB6E4) and dial handler use state3.
+     * The 6D 1.1.6 getters are the same code with the block at 0x7F5A4.
+     * The M50 (DIGIC 8) block is not located yet: no dial target, so the
+     * HUD's wheel follows its own selected field only. */
+#if defined(CONFIG_M50)
+    return 0;
+#elif defined(CONFIG_6D)
+    #define OLC_STATE 0x7f5a4
+    static const uint32_t olc_guard[][2]={
+        {0xff36c2d8,OLC_STATE},{0xff36cf8c,0xe5d00042},{0xff36cfd4,0xe5d00048},
+        {0xff36d010,0xe5d0004d},{0xff36d0b8,0xe5d0005b},{0xff6c843c,0x03560003}};
+#else
+    #define OLC_STATE 0x517a0
+    static const uint32_t olc_guard[][2]={
+        {0xff388988,OLC_STATE},{0xff38963c,0xe5d00042},{0xff389684,0xe5d00048},
+        {0xff3896c0,0xe5d0004d},{0xff389768,0xe5d0005b},{0xff6ab718,0x03560003}};
+#endif
+#if !defined(CONFIG_M50)
     static int recognized=-1;
-    if (recognized<0) recognized=
-        MEM(0xff388988)==0x517a0 && MEM(0xff38963c)==0xe5d00042 &&
-        MEM(0xff389684)==0xe5d00048 && MEM(0xff3896c0)==0xe5d0004d &&
-        MEM(0xff389768)==0xe5d0005b && MEM(0xff6ab718)==0x03560003;
+    if (recognized<0) {
+        recognized=1;
+        for (unsigned i=0; i<COUNT(olc_guard); i++)
+            if (MEM(olc_guard[i][0])!=olc_guard[i][1]) recognized=0;
+    }
     if (!recognized || !xpan_photo_ui_active() || PLAY_OR_QR_MODE || gui_menu_shown()) return 0;
-    const volatile uint8_t *state=(const volatile uint8_t *)0x517a0;
+    const volatile uint8_t *state=(const volatile uint8_t *)OLC_STATE;
     return state[0x42] | (state[0x48]<<8) | (state[0x4d]<<16) | ((unsigned)state[0x5b]<<24);
+#endif /* !CONFIG_M50 */
 }
 
 static void xpan_photo_capture_format_select(void *priv, int sign);
 /* HUD wheel control: same rules as the menu item (XPan ON: JPG <-> RAW+JPG). */
 void xpan_photo_capture_format_step(int sign) { xpan_photo_capture_format_select(NULL, sign); }
 
-/* INFO in XPan Live View: 3:2 = layout on/off, 65:24 = Top/Bottom/Split. */
+/* INFO in XPan Live View: 3:2 = layout on/off, 65:24 = Top/Bottom/Split (M50: then Canon). */
 void xpan_photo_info_toggle(void)
 {
+#ifdef CONFIG_M50
+    if (xpan_photo_is_panoramic())
+    {
+        if (xpan_canon_layout) { xpan_canon_layout = 0; xpan_frame_align = 0; }
+        else if (xpan_frame_align >= 2) xpan_canon_layout = 1;
+        else xpan_frame_align++;
+    }
+#else
     if (xpan_photo_is_panoramic()) xpan_frame_align = (xpan_frame_align + 1) % 3;
+#endif
     else xpan_photo_hud_enabled = !xpan_photo_hud_enabled;
     redraw();
 }
@@ -159,6 +204,7 @@ int xpan_photo_status_space_enabled(void)
 
 int xpan_photo_hud_is_enabled(void)
 {
+    if (xpan_photo_canon_layout()) return 0;
     return xpan_photo_hud_enabled;
 }
 
@@ -285,7 +331,7 @@ static void xpan_photo_capture_format_select(void *priv, int sign)
 {
     (void)priv;
     if (is_movie_mode()) return;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* Wait for Canon's first property event; zero-initialized state is not a format. */
     if (xpan_pic_quality_valid != 1 || !xpan_picq_is_known()) return;
 #endif
@@ -305,7 +351,7 @@ static void xpan_photo_capture_format_select(void *priv, int sign)
 static MENU_UPDATE_FUNC(xpan_photo_capture_format_display)
 {
     xpan_photo_check_pic_quality_request();
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (xpan_pic_quality_valid != 1)
     {
         MENU_SET_VALUE("Waiting for Canon");
@@ -353,7 +399,7 @@ static MENU_UPDATE_FUNC(xpan_photo_capture_format_display)
 static void xpan_photo_jpeg_quality_select(void *priv, int sign)
 {
     (void)priv;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (xpan_pic_quality_valid != 1 || !xpan_picq_is_known()) return;
 #endif
     if (is_movie_mode() || xpan_picq_has_raw() || !xpan_picq_has_jpeg()) return;
@@ -366,7 +412,7 @@ static void xpan_photo_jpeg_quality_select(void *priv, int sign)
 static MENU_UPDATE_FUNC(xpan_photo_jpeg_quality_display)
 {
     xpan_photo_check_pic_quality_request();
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (xpan_pic_quality_valid != 1)
     {
         MENU_SET_VALUE("Waiting for Canon");
@@ -481,8 +527,12 @@ int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *cro
         return 0;
 
     /* Alignment applies only to the short panoramic frame, never native 3:2. */
-    if (!xpan_photo_is_panoramic()) { *y = 0; return 1; }
-    *y = xpan_photo_frame_offset(visible_height, *crop_height);
+    if (!xpan_photo_is_panoramic()) *y = 0;
+    else *y = xpan_photo_frame_offset(visible_height, *crop_height);
+#ifdef CONFIG_M50
+    /* EVF: the whole layout 30 rows up (xpan_m50_screen_extra_top). */
+    *y -= xpan_m50_screen_extra_top();
+#endif
     return 1;
 }
 
@@ -502,12 +552,23 @@ int xpan_photo_get_hud_y(void)
 {
     /* Keep one HUD anchor in both ratios; in 3:2 the panel overlays the image. */
     int panoramic_height = ((720 * 24 + 65) / 130) * 2;
+#ifdef CONFIG_M50
+    /* EVF (README "EVF screen"): Canon shows its 3:2 picture in the top 480
+     * of the EVF's 540 rows (display log: 1024x682 from row 0 of 1024x768),
+     * which is ML's rows -30..450. The whole layout (panel, bar, frame) moves
+     * up 30 rows to sit on it. 0 on the LCD. */
+    return (xpan_frame_align == 1 ? 0 : panoramic_height) - xpan_m50_screen_extra_top();
+#endif
     return xpan_frame_align == 1 ? 0 : panoramic_height;
 }
 
 /* Where the panel's first row goes: the top edge in Split, else with the panel. */
 int xpan_photo_get_hud_top_y(void)
 {
+#ifdef CONFIG_M50
+    /* EVF: with the whole layout (see xpan_photo_get_hud_y). */
+    if (xpan_photo_is_panoramic() && xpan_frame_align == 2) return -xpan_m50_screen_extra_top();
+#endif
     if (xpan_photo_is_panoramic() && xpan_frame_align == 2) return 0;
     return xpan_photo_get_hud_y();
 }
@@ -656,6 +717,9 @@ static MENU_UPDATE_FUNC(xpan_photo_alignment_display)
     MENU_SET_SHIDDEN(!xpan_photo_is_panoramic() || is_movie_mode());
     if (xpan_frame_align < 0 || xpan_frame_align > 2) xpan_frame_align = 0;
     MENU_SET_VALUE("%s", xpan_frame_align == 2 ? "Split" : xpan_frame_align ? "Bottom" : "Top");
+#ifdef CONFIG_M50
+    if (xpan_canon_layout) MENU_SET_VALUE("%s + Canon UI", xpan_frame_align == 2 ? "Split" : xpan_frame_align ? "Bottom" : "Top");
+#endif
 }
 
 static struct menu_entry xpan_photo_menu[] = {
@@ -1129,7 +1193,7 @@ cropmark_draw()
         }
         else
             bmp_draw_scaled_ex(cropmarks, os.x0, os.y0, os.x_ex, os.y_ex, bvram_mirror);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         /* Keep the XPan matte visible over a user cropmark bitmap. */
         if (!is_movie_mode() && XPAN_ACTIVE && !PLAY_MODE)
             default_movie_cropmarks();
@@ -1165,7 +1229,7 @@ static int cropmark_cache_get_signature()
         )
         + (hdmi_code + EXT_MONITOR_RCA) * 315 +                     /* force redraw when changing display type (LCD, HDMI, SD) */
         os.x0*811 + os.y0*467 + os.x_ex*571 + os.y_ex*487 +         /* force redraw when bitmap parameters changed */
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         (XPAN_ACTIVE * 73 + xpan_frame_align * 151) +        /* XPan photo guide settings */
 #endif
         (is_movie_mode() ? 113 : 0) + video_mode_resolution * 8765; /* force redraw when video resolution changed, or when switching between video and photo mode */
@@ -1251,7 +1315,7 @@ static void FAST default_movie_cropmarks()
 {
     if (!get_global_draw()) return;
     if (!lv) return;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     int photo_xpan = !is_movie_mode() && XPAN_ACTIVE && !PLAY_MODE && lv_dispsize == 1;
 #else
     if (!is_movie_mode())
@@ -1273,7 +1337,7 @@ static void FAST default_movie_cropmarks()
     int crop_x = cropmarks_x;
     int crop_y = cropmarks_y;
     
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (photo_xpan)
     {
         /* Draw a preview-only guide using the same geometry; saved image data is handled elsewhere. */
@@ -1293,7 +1357,7 @@ static void FAST default_movie_cropmarks()
         }
     }
 #endif
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (!photo_xpan && !is_movie_mode())
     {
         /* no photo mask (or playback): use full image to clear old XPan bars */
@@ -1320,7 +1384,7 @@ static void FAST default_movie_cropmarks()
     /*
         doesn't work with HDMI, please fix that, I don't have it
     */
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* Extend the XPan top matte to the screen edge so the Canon Live View seam is covered last. */
     int first_y = photo_xpan ? 0 : os.y0;
 #else
@@ -1344,7 +1408,7 @@ static void FAST default_movie_cropmarks()
                 /* default cropmarks are black */
                 /* border pixels should be brighter, to be visible in dark */
                 int border = (x > x1-2 && x < x2+2 && y > y1-2 && y < y2+2);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
                 /* Keep the XPan frame edge flush; its old grey guide line is not part of the photo UI. */
                 if (photo_xpan) border = 0;
 #endif
@@ -1393,7 +1457,7 @@ void reset_movie_cropmarks()
 
 static void cropmark_step()
 {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     static int last_xpan_state = -1;
     int xpan_state = XPAN_ACTIVE * 4 + xpan_frame_align * 2 + xpan_photo_aspect_ratio() +
         (lv_dispsize == 1) * 64;

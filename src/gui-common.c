@@ -38,8 +38,23 @@ static int bottom_bar_hack = 0;
 extern int cf_card_workaround;
 #endif
 
+#if defined(CONFIG_6D) && defined(CONFIG_XPAN)
+/* XPan 6D capture probe (xpan-6d.c): this replacement receives every Canon
+ * debug message, so the probe records them here. */
+void xpan_6d_debugmsg(int class, int level, const char *fmt, va_list ap);
+#endif
+
 static void hacked_DebugMsg(int class, int level, char* fmt, ...)
 {
+    #if defined(CONFIG_6D) && defined(CONFIG_XPAN)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        xpan_6d_debugmsg(class, level, fmt, ap);
+        va_end(ap);
+    }
+    #endif
+
     #if defined(CONFIG_LVAPP_HACK_DEBUGMSG)
     if (bottom_bar_hack && class == 131 && level == 1)
     {
@@ -98,7 +113,7 @@ int handle_other_events(struct event * event)
 {
     extern int ml_started;
     if (!ml_started) return 1;
-    #if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+    #if defined(CONFIG_XPAN_BODY) && defined(CONFIG_XPAN)
     /* XPan > Debug info: non-button GUI events go to the key log too. */
     extern void xpan_hud_controls_log_other(struct event * event);
     xpan_hud_controls_log_other(event);
@@ -108,7 +123,7 @@ int handle_other_events(struct event * event)
 
     unsigned short int lv_refreshing = lv && event->type == 2 && event->param == GMT_LOCAL_DIALOG_REFRESH_LV;
     unsigned short int should_hide = lv_disp_mode == 0 && get_global_draw_setting() && liveview_display_idle() && lv_dispsize == 1;
-    #ifdef CONFIG_EOSM
+    #ifdef CONFIG_XPAN_BODY
     /* The XPan HUD replaces Canon's info bars even when ML global draw is off. */
     extern int xpan_photo_ui_active(void); extern int xpan_photo_hud_is_enabled(void);
     if (!should_hide && lv_disp_mode == 0 && lv_dispsize == 1 && xpan_photo_ui_active() &&
@@ -177,6 +192,17 @@ int handle_common_events_startup(struct event * event)
     if (handle_tricky_canon_calls(event) == 0) return 0;
 
     extern int ml_started;
+#ifdef CONFIG_M50
+    /* M50 (PowerShot-style firmware): the startup shortcuts below swallow
+     * type-0 events 0x04 (SET), 0x06 (MENU), 0x08 (INFO) and 0x0C (PLAY)
+     * until ML has started. Nobody has checked that Canon's own startup
+     * never sends internal type-0 events with those codes on this body, and
+     * the M50 hangs at random inside Canon's init_task (README-XPAN-M50.md,
+     * boot log 13). Until the boot log shows what arrives that early, pass
+     * every startup event on: "hold SET to skip ML" and "hold a key to pick
+     * a config" are off on the M50. */
+    return 1;
+#endif
     if (!ml_started)    {
 #if defined(BGMT_Q_SET) // combined Q/SET button?
         if (event->param == BGMT_Q_SET) { _disable_ml_startup(); return 0;} // don't load ML
@@ -503,7 +529,7 @@ int handle_common_events_by_feature(struct event * event)
     /* convert Q replacement events into BGMT_Q */
     if (handle_Q_button_equiv(event) == 0) return 0;
 
-    #if defined(CONFIG_EOSM) && defined(CONFIG_XPAN)
+    #if defined(CONFIG_XPAN_BODY) && defined(CONFIG_XPAN)
     /* XPan Live View HUD owns INFO/REC, the d-pad and the wheel while shown. */
     extern int xpan_hud_controls_key(struct event * event);
     if (xpan_hud_controls_key(event) == 0) return 0;

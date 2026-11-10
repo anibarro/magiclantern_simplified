@@ -104,7 +104,7 @@ int raw_get_pixel(int x, int y);
 int raw_get_pixel_from_buffer(void *buffer, int pitch, int x, int y);
 void raw_set_pixel(int x, int y, int value);
 
-#if defined(CONFIG_EOSM) && defined(CONFIG_QEMU)
+#if defined(CONFIG_XPAN_BODY) && defined(CONFIG_QEMU)
 /* Declare the RAW worker only in builds that include its polling path. */
 void xpan_photo_process_raw_capture(void);
 #endif
@@ -347,7 +347,7 @@ struct raw_capture_info {
 
 extern struct raw_capture_info raw_capture_info;
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* Report expected EOS M file types from Canon's acknowledged image-quality setting. */
 int xpan_photo_capture_has_raw(void);
 int xpan_photo_capture_has_jpeg(void);
@@ -355,7 +355,7 @@ int xpan_photo_capture_has_jpeg(void);
 
 /* save a DNG file; all parameters are taken from raw_info */
 int save_dng(char* filename, struct raw_info * raw_info);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* Save the optional XPan sidecar with physically cropped RAW pixels. */
 int save_dng_xpan(char* filename, struct raw_info * raw_info);
 #endif

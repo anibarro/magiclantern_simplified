@@ -39,7 +39,7 @@
 
 static int32_t get_tick_count() { return get_ms_clock(); }
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 static struct semaphore *dng_writer_sem;
 
 static void dng_writer_init(void *unused)
@@ -81,7 +81,7 @@ INIT_FUNC("dng_writer", dng_writer_init);
 #include "raw.h"
 #include "chdk-dng.h"
 #include "xpan-mode.h"
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 #include "fio-ml.h"
 #endif
 
@@ -341,7 +341,7 @@ static char *thumbnail_buf;
 /* Keep crop-tag values as rationals so fractional sensor-row crops stay exact. */
 static int32_t dng_crop_origin[4];
 static int32_t dng_crop_size[4];
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* DNG 1.4 stores the user-selected framing separately from the full active image area. */
 static int32_t dng_user_crop[8];
 #endif
@@ -470,7 +470,7 @@ static void create_dng_header(struct raw_info * raw_info){
         {0x8298, T_ASCII|T_PTR,64, (intptr_t)dng_copyright},                // Copyright
         {0x8769, T_LONG,       1,  0},                                 // EXIF_IFD offset
         {0x9216, T_BYTE,       4,  0x00000001},                        // TIFF/EPStandardID: 1.0.0.0
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         {0xC612, T_BYTE,       4,  0x00000401},                        // DNG 1.4 adds the user-crop tag used by EOS M.
 #else
         {0xC612, T_BYTE,       4,  0x00000301},                        // DNGVersion: 1.3.0.0
@@ -512,7 +512,7 @@ static void create_dng_header(struct raw_info * raw_info){
         {0xC620, T_RATIONAL,   2,  (intptr_t)dng_crop_size},
         {0xC68D, T_LONG,       4,  (intptr_t)&camera_sensor.dng_active_area},
         {0xC740, T_UNDEFINED|T_PTR, sizeof(badpixel_opcode),  (intptr_t)&badpixel_opcode},
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         {0xC7B5, T_RATIONAL,   4,  (intptr_t)dng_user_crop},
 #endif
     };
@@ -550,7 +550,7 @@ static void create_dng_header(struct raw_info * raw_info){
         {exif_ifd,  DIR_SIZE(exif_ifd), DIR_SIZE(exif_ifd)}, 
     };
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     ifd0[DNG_VERSION_INDEX].offset = BE(0x01040000);
 #else
     ifd0[DNG_VERSION_INDEX].offset = BE(0x01030000);
@@ -918,7 +918,7 @@ PROP_HANDLER(PROP_CAM_MODEL)
 }
 #endif
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 extern int xpan_photo_get_65_24_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
 
 static uint16_t cr2_u16(const uint8_t *p, int little_endian)
@@ -1022,23 +1022,23 @@ int xpan_photo_patch_cr2_file(const char *filename)
     uint32_t old_left = cr2_u32(aspect + 12, little_endian);
     uint32_t old_top = cr2_u32(aspect + 16, little_endian);
     /* Accept only the exact full-resolution Canon crops seen in untouched EOS M samples. */
-    int known_3_2 = old_ratio == 0 && old_width == 5184 && old_height == 3456 && old_left == 0 && old_top == 0;
-    int known_16_9 = old_ratio == 7 && old_width == 5184 && old_height == 2916 && old_left == 0 && old_top == 270;
-    int known_4_3 = old_ratio == 2 && old_width == 4608 && old_height == 3456 && old_left == 288 && old_top == 0;
-    int known_1_1 = old_ratio == 1 && old_width == 3456 && old_height == 3456 && old_left == 864 && old_top == 0;
+    int known_3_2 = old_ratio == 0 && old_width == XPAN_SENSOR_WIDTH && old_height == XPAN_SENSOR_HEIGHT && old_left == 0 && old_top == 0;
+    int known_16_9 = old_ratio == 7 && old_width == XPAN_SENSOR_WIDTH && old_height == XPAN_ASPECT_16_9_HEIGHT && old_left == 0 && old_top == XPAN_ASPECT_16_9_TOP;
+    int known_4_3 = old_ratio == 2 && old_width == XPAN_ASPECT_4_3_WIDTH && old_height == XPAN_SENSOR_HEIGHT && old_left == XPAN_ASPECT_4_3_LEFT && old_top == 0;
+    int known_1_1 = old_ratio == 1 && old_width == XPAN_SENSOR_HEIGHT && old_height == XPAN_SENSOR_HEIGHT && old_left == XPAN_ASPECT_1_1_LEFT && old_top == 0;
     /* Accept earlier XPan records so existing test files can be moved to the active-area crop. */
     int known_xpan = old_ratio == 7 &&
         ((old_width == 5135 && old_height == 1896 && old_left == 24 &&
             (old_top == 0 || old_top == 780 || old_top == 1560)) ||
          (old_width == 5070 && old_height == 1872 && old_left == 92 && old_top == 818) ||
-         (old_width == 5184 && old_height == 1914 && old_left == 0 && old_top == 771) ||
-         (old_width == 5184 && old_height == 1920 && old_left == 0 && old_top == 768));
+         (old_width == XPAN_SENSOR_WIDTH && old_height == 1914 && old_left == 0 && old_top == 771) ||
+         (old_width == XPAN_SENSOR_WIDTH && old_height == 1920 && old_left == 0 && old_top == 768));
 #ifdef CONFIG_XPAN
     /* Also recognize a raster-relative exact1914 proof record at top0. RAW
      * pixels still use IFD0's full 5184x3456 canvas, checked below. This refers
      * to AspectInfo, not Canon's separate CropInfo.CropTopMargin field; Test20
      * and Test21 actually store the correct AspectInfo top771 already. */
-    known_xpan |= old_ratio==7 && old_width==5184 &&
+    known_xpan |= old_ratio==7 && old_width==XPAN_SENSOR_WIDTH &&
         (old_height==1914 || old_height==1920) && old_left==0 && old_top==0;
 #endif
     /* Preserve an unknown Canon crop instead of replacing a merely plausible record. */
@@ -1052,7 +1052,7 @@ int xpan_photo_patch_cr2_file(const char *filename)
         (type != 3 && type != 4) || count != 1) goto done;
     uint32_t height = type == 3 ? (little_endian ? value & 0xFFFF : value >> 16) : value;
     /* The recognized MakerNote rectangles above are specific to EOS M full-resolution CR2 files. */
-    if (width != 5184 || height != 3456) goto done;
+    if (width != XPAN_SENSOR_WIDTH || height != XPAN_SENSOR_HEIGHT) goto done;
 
     /* CR2 IFD0 is already the trimmed 5184x3456 image, not the larger RAW DMA
      * buffer. Subtracting RAW margins again incorrectly discarded side pixels. */
@@ -1130,15 +1130,15 @@ static int xpan_patch_native_jpeg_metadata(FILE *file, uint32_t file_size,
     uint32_t top=cr2_u32(aspect+16,little_endian);
     /* The visible XPan frame is the shared photo rectangle (5184x1920). */
     int rect_x,rect_y,rect_width,rect_height;
-    if (!xpan_photo_get_65_24_rect(5184,3456,&rect_x,&rect_y,&rect_width,&rect_height) ||
+    if (!xpan_photo_get_65_24_rect(XPAN_SENSOR_WIDTH,XPAN_SENSOR_HEIGHT,&rect_x,&rect_y,&rect_width,&rect_height) ||
         (uint32_t)rect_height>raster_height) return 0;
     uint32_t visible=rect_height,crop_top=(raster_height-visible)/2;
-    int full_record=ifd_width==5184 && ifd_height==3456 && left==0 &&
-        ((ratio==0 && width==5184 && height==3456 && top==0) ||
-         (ratio==7 && width==5184 && height==1914 && (top==771 || top==0)) ||
-         (ratio==7 && width==5184 && height==visible && (top==(uint32_t)rect_y || top==0)));
-    int raster_record=ifd_width==5184 && ifd_height==raster_height && ratio==7 &&
-        width==5184 && left==0 && ((height==visible && top==crop_top) ||
+    int full_record=ifd_width==XPAN_SENSOR_WIDTH && ifd_height==XPAN_SENSOR_HEIGHT && left==0 &&
+        ((ratio==0 && width==XPAN_SENSOR_WIDTH && height==XPAN_SENSOR_HEIGHT && top==0) ||
+         (ratio==7 && width==XPAN_SENSOR_WIDTH && height==1914 && (top==771 || top==0)) ||
+         (ratio==7 && width==XPAN_SENSOR_WIDTH && height==visible && (top==(uint32_t)rect_y || top==0)));
+    int raster_record=ifd_width==XPAN_SENSOR_WIDTH && ifd_height==raster_height && ratio==7 &&
+        width==XPAN_SENSOR_WIDTH && left==0 && ((height==visible && top==crop_top) ||
                                  (height==raster_height && top==0));
     if (!full_record && !raster_record) return 0;
 
@@ -1165,7 +1165,7 @@ static int xpan_patch_native_jpeg_metadata(FILE *file, uint32_t file_size,
     else if (little_endian) { new_height[0]=raster_height; new_height[1]=raster_height>>8; }
     else { new_height[0]=raster_height>>8; new_height[1]=raster_height; }
     cr2_put_u32(updated,7,little_endian);
-    cr2_put_u32(updated+4,5184,little_endian);
+    cr2_put_u32(updated+4,XPAN_SENSOR_WIDTH,little_endian);
     cr2_put_u32(updated+8,visible,little_endian);
     cr2_put_u32(updated+12,0,little_endian);
     cr2_put_u32(updated+16,crop_top,little_endian);
@@ -1284,8 +1284,8 @@ int xpan_photo_patch_jpeg_file(const char *filename)
 
 #ifdef CONFIG_XPAN
     uint32_t raster_width=0,raster_height=0;
-    if (xpan_jpeg_raster_size(file,file_size,&raster_width,&raster_height) && raster_width==5184 &&
-        (raster_height==1914 || raster_height==1920 || raster_height==2912))
+    if (xpan_jpeg_raster_size(file,file_size,&raster_width,&raster_height) && raster_width==XPAN_SENSOR_WIDTH &&
+        (raster_height==1914 || raster_height==1920 || raster_height==XPAN_ASPECT_16_9_NATIVE_HEIGHT))
     {
         /* These heights are the explicit native proof modes. The normal
          * full-size JPEG metadata path and RAW crop code stay unchanged. */
@@ -1298,14 +1298,14 @@ int xpan_photo_patch_jpeg_file(const char *filename)
     int crop_x, crop_y, crop_width, crop_height;
     /* Accept the four full-resolution native JPEG rasters verified from EOS M samples. */
     int known_native =
-        (ifd_width == 5184 && ifd_height == 3456 && old_ratio == 0 &&
-            old_width == 5184 && old_height == 3456 && old_left == 0 && old_top == 0) ||
-        (ifd_width == 5184 && ifd_height == 2912 && old_ratio == 7 &&
-            old_width == 5184 && old_height == 2912 && old_left == 0 && old_top == 0) ||
-        (ifd_width == 4608 && ifd_height == 3456 && old_ratio == 2 &&
-            old_width == 4608 && old_height == 3456 && old_left == 0 && old_top == 0) ||
-        (ifd_width == 3456 && ifd_height == 3456 && old_ratio == 1 &&
-            old_width == 3456 && old_height == 3456 && old_left == 0 && old_top == 0);
+        (ifd_width == XPAN_SENSOR_WIDTH && ifd_height == XPAN_SENSOR_HEIGHT && old_ratio == 0 &&
+            old_width == XPAN_SENSOR_WIDTH && old_height == XPAN_SENSOR_HEIGHT && old_left == 0 && old_top == 0) ||
+        (ifd_width == XPAN_SENSOR_WIDTH && ifd_height == XPAN_ASPECT_16_9_NATIVE_HEIGHT && old_ratio == 7 &&
+            old_width == XPAN_SENSOR_WIDTH && old_height == XPAN_ASPECT_16_9_NATIVE_HEIGHT && old_left == 0 && old_top == 0) ||
+        (ifd_width == XPAN_ASPECT_4_3_WIDTH && ifd_height == XPAN_SENSOR_HEIGHT && old_ratio == 2 &&
+            old_width == XPAN_ASPECT_4_3_WIDTH && old_height == XPAN_SENSOR_HEIGHT && old_left == 0 && old_top == 0) ||
+        (ifd_width == XPAN_SENSOR_HEIGHT && ifd_height == XPAN_SENSOR_HEIGHT && old_ratio == 1 &&
+            old_width == XPAN_SENSOR_HEIGHT && old_height == XPAN_SENSOR_HEIGHT && old_left == 0 && old_top == 0);
     if (!known_native && old_ratio != 7) goto done;
     if (!xpan_photo_get_65_24_rect(ifd_width, ifd_height,
             &crop_x, &crop_y, &crop_width, &crop_height)) goto done;
@@ -1353,7 +1353,7 @@ done:
 /* Shared writer; XPan sidecars request physical pixel trimming explicitly. */
 static int save_dng_internal(char* filename, struct raw_info * raw_info, int physical_xpan_crop)
 {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (!dng_writer_sem || take_semaphore(dng_writer_sem, 0)) return 0;
 #endif
     int32_t previous_thumbnail_width = dng_th_width;
@@ -1385,7 +1385,7 @@ static int save_dng_internal(char* filename, struct raw_info * raw_info, int phy
     int source_x = 0;
     int source_y = 0;
     int physical_crop = 0;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* A full-range user crop preserves the rectangle specified by the default crop tags. */
     dng_user_crop[0] = 0; dng_user_crop[1] = 1;
     dng_user_crop[2] = 0; dng_user_crop[3] = 1;
@@ -1455,7 +1455,7 @@ static int save_dng_internal(char* filename, struct raw_info * raw_info, int phy
     {
         dng_th_width = previous_thumbnail_width;
         dng_th_height = previous_thumbnail_height;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         give_semaphore(dng_writer_sem);
 #endif
         return 0;
@@ -1468,12 +1468,12 @@ static int save_dng_internal(char* filename, struct raw_info * raw_info, int phy
     if (!ok)
     {
         FIO_RemoveFile(filename);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         give_semaphore(dng_writer_sem);
 #endif
         return 0;
     }
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     give_semaphore(dng_writer_sem);
 #endif
     return 1;
@@ -1485,7 +1485,7 @@ int save_dng(char* filename, struct raw_info *raw_info)
     return save_dng_internal(filename, raw_info, 0);
 }
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* The capture worker uses this only for its optional XPan RAW sidecar. */
 int save_dng_xpan(char *filename, struct raw_info *raw_info)
 {

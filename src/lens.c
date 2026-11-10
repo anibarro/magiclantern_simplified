@@ -1538,6 +1538,32 @@ extern int bv_auto;
     #define CONFIG_MOVIE_EXPO_OVERRIDE_DISABLE_SYNC_WITH_PROPS
 #endif
 
+#ifdef CONFIG_M50
+/* ISO (2026-11-08, not confirmed on the camera yet): assumed to follow the
+ * shutter/aperture scheme below, Sv x 768 with Sv 5 = ISO 100, i.e. classic
+ * 32 + 8 Sv (72 = ISO 100, +8 per stop). Values that already fit a byte are
+ * taken as classic codes. 0 is Auto ISO. XPan's Exposure probe logs every raw
+ * value so this can be checked. */
+static int m50_raw_iso(uint32_t value)
+{
+    value &= 0xFFFF;
+    if (!value) return 0;
+    if (value <= 0xFF) return value;
+    return COERCE(32 + (int)((value + 48) / 96), 72, 160);
+}
+int m50_iso_known;      /* PROP_ISO seen at least once */
+static void lensinfo_set_iso(int raw);
+/* PROP_ISO is on the D678 handler deny list (property_whitelist.h), so the
+ * handler below is never registered on the M50. xpan-m50.c makes its own
+ * PROP_ISO registration after boot and passes the values here. */
+void m50_iso_from_prop(uint32_t value)
+{
+    m50_iso_known = 1;
+    if (!CONTROL_BV) lensinfo_set_iso(m50_raw_iso(value));
+    lens_display_set_dirty();
+}
+#endif
+
 static int iso_ack = -1;
 PROP_HANDLER( PROP_ISO )
 {
@@ -1570,6 +1596,9 @@ void iso_auto_restore_hack()
 PROP_HANDLER( PROP_ISO_AUTO )
 {
     uint32_t raw = *(uint32_t *) buf;
+    #ifdef CONFIG_M50
+    raw = m50_raw_iso(raw);
+    #endif
 
     #if defined(FRAME_ISO)
     if (lv && is_movie_mode()) raw = (uint8_t)FRAME_ISO;
@@ -1598,8 +1627,68 @@ PROP_HANDLER( PROP_BV ) // camera-specific
 }
 #endif
 
+#ifdef CONFIG_M50
+/* M50 (PowerShot-style firmware): PROP_SHUTTER and PROP_APERTURE carry a
+ * 16-bit APEX value in 1/768 EV (0x100 per 1/3 stop), not the classic
+ * 1-byte code in 1/8 EV. Shutter: Tv * 768, signed (0 = 1", 0x1000 = 1/40,
+ * 0x1400 = 1/100, 0x2400 = 1/4000; slower than 1" is negative). Aperture:
+ * Av * 768 (0x1200 = f/8, 0xAE0 = f/3.5). Measured with XPan > Exposure
+ * probe and checked on the camera at 1/4000, 1" and f/3.5-f/8 on
+ * 2026-11-08 (README-XPAN-M50.md). Converted to the classic codes the rest
+ * of ML uses (56 + 8 Tv, 8 + 8 Av); rounding lands on Canon's third-stop
+ * codes (+3/+5 per stop). 0 in an _AUTO property still means "not
+ * metering", so only nonzero auto values are converted. */
+static int m50_raw_shutter(uint32_t value)
+{
+    int tv = (int16_t)(value & 0xFFFF);
+    int eighths = tv >= 0 ? (tv + 48) / 96 : -((48 - tv) / 96);
+    return COERCE(56 + eighths, 16, 160);
+}
+static int m50_raw_aperture(uint32_t value)
+{
+    value &= 0xFFFF;
+    return value ? COERCE(8 + (int)((value + 48) / 96), 8, 255) : 0;
+}
+#define PROP_RAW_SHUTTER(v)       m50_raw_shutter(v)
+#define PROP_RAW_APERTURE(v)      m50_raw_aperture(v)
+#define PROP_RAW_SHUTTER_AUTO(v)  ((v) ? m50_raw_shutter(v) : 0)
+#else
+#define PROP_RAW_SHUTTER(v)       (v)
+#define PROP_RAW_APERTURE(v)      (v)
+#define PROP_RAW_SHUTTER_AUTO(v)  (v)
+#endif
+
+#ifdef CONFIG_M50
+/* At startup Canon replays PROP_SHUTTER before PROP_SHOOTING_MODE_2, while
+ * shooting_mode is still 0 (= SHOOTMODE_P), so the handler below dropped the
+ * value and lens_init's placeholder (raw 100 = "1/45") stayed until the dial
+ * moved (seen on the HUD, 2026-11-08). Keep the last value and apply it when
+ * the mode arrives. The mode is read from this property's own buffer, so the
+ * order of the PROP_SHOOTING_MODE_2 handlers (propvalues.c) does not matter. */
+static int m50_last_raw_shutter;
+static void m50_shooting_mode_shutter(unsigned property, void *token, void *data, unsigned len)
+{
+    (void)property; (void)token;
+    int mode = len ? (int)*(uint32_t *)data : -1;
+    if (m50_last_raw_shutter && mode != SHOOTMODE_AV && mode != SHOOTMODE_P && mode >= 0 && !CONTROL_BV)
+        lensinfo_set_shutter(m50_last_raw_shutter);
+    #ifdef CONFIG_XPAN
+    { extern void m50_boot_mark(int, int); m50_boot_mark(18, mode); }
+    #endif
+}
+REGISTER_PROP_HANDLER_EX(PROP_SHOOTING_MODE_2, m50_shooting_mode_shutter, 0);
+#endif
+
 PROP_HANDLER( PROP_SHUTTER )
 {
+#ifdef CONFIG_M50
+    uint32_t m50_value = PROP_RAW_SHUTTER(buf[0]);
+    buf = &m50_value;
+    m50_last_raw_shutter = m50_value;
+    #ifdef CONFIG_XPAN
+    { extern void m50_boot_mark(int, int); m50_boot_mark(10, (int)m50_value); }
+    #endif
+#endif
     if (!CONTROL_BV) 
     {
         if (shooting_mode != SHOOTMODE_AV && shooting_mode != SHOOTMODE_P)
@@ -1630,6 +1719,13 @@ PROP_HANDLER( PROP_SHUTTER )
 
 PROP_HANDLER( PROP_APERTURE )
 {
+#ifdef CONFIG_M50
+    uint32_t m50_value = PROP_RAW_APERTURE(buf[0]);
+    buf = &m50_value;
+    #ifdef CONFIG_XPAN
+    { extern void m50_boot_mark(int, int); m50_boot_mark(13, (int)m50_value); }
+    #endif
+#endif
     //~ NotifyBox(2000, "%x %x %x %x ", buf[0], CONTROL_BV, lens_info.raw_aperture_min, lens_info.raw_aperture_max);
     if (!CONTROL_BV)
     {
@@ -1651,6 +1747,10 @@ PROP_HANDLER( PROP_APERTURE )
 
 PROP_HANDLER( PROP_APERTURE_AUTO )
 {
+#ifdef CONFIG_M50
+    uint32_t m50_value = PROP_RAW_APERTURE(buf[0]);   /* 0 stays 0 */
+    buf = &m50_value;
+#endif
     /* this gets updated in Tv mode (where PROP_APERTURE is not updated); same for P, Auto and so on */
     /* it becomes 0 when camera is no longer metering */
 
@@ -1673,6 +1773,10 @@ PROP_HANDLER( PROP_APERTURE_AUTO )
 
 PROP_HANDLER( PROP_SHUTTER_AUTO )
 {
+#ifdef CONFIG_M50
+    uint32_t m50_value = PROP_RAW_SHUTTER_AUTO(buf[0]);
+    buf = &m50_value;
+#endif
     /* this gets updated in Av mode (where PROP_SHUTTER is not updated); same for P, Auto and so on */
     /* it becomes 0 when camera is no longer metering */
     
@@ -1839,7 +1943,15 @@ void iso_components_update()
 
 static void update_stuff()
 {
+#ifdef CONFIG_M50
+    /* Until the M50's exposure values were decoded the aperture was always
+     * 0, so the DOF maths never ran on this body. Keep it off until it is
+     * checked against M50 lens data (focus distance comes from
+     * PROP_LENS_DYNAMIC_DATA near/far here); a build running it hung at
+     * startup on 2026-11-08 (README-XPAN-M50.md). */
+#else
     focus_calc_dof();
+#endif
     //~ if (gui_menu_shown()) lens_display_set_dirty();
     
     #ifdef FEATURE_MOVIE_LOGGING
@@ -2283,6 +2395,10 @@ lens_init( void* unused )
     // This can cause problems with intervalometer logic in lens_wait_readytotakepic(),
     // which waits for too long, thinking the flash is charging.
     // We expect PROP_SHUTTER_* to fire and update this, but it doesn't happen on 200D.
+#ifdef CONFIG_M50
+    /* Do not overwrite a value Canon already replayed (see m50_last_raw_shutter). */
+    if (!lens_info.raw_shutter)
+#endif
     lens_info.raw_shutter = 100;
 
     focus_done_sem = create_named_semaphore("focus_sem", SEM_CREATE_UNLOCKED);
@@ -2318,7 +2434,7 @@ void SW2(int v, int wait)
 
 static int lens_wait_ready_for_exposure(void)
 {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     if (gui_menu_shown() && !is_movie_mode())
     {
         /* An Expo edit is not a capture: ML's dialog may hold the ICU UI lock

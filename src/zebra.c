@@ -54,7 +54,7 @@
 
 extern uint32_t ml_refresh_display_needed;
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 extern int xpan_photo_ui_active(void);
 extern int xpan_photo_get_65_24_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);
 extern int xpan_photo_get_liveview_frame_rect(int *x, int *y, int *crop_width, int *crop_height);
@@ -115,7 +115,7 @@ int FAST get_y_skip_offset_for_overlays()
     // in playback mode, and skip 16:9 bars for movies, but cover the entire area for photos
     if (!lv) return is_pure_play_movie_mode() ? os.off_169 : 0;
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* The XPan still-photo layout replaces both stock status bars. */
     if (xpan_photo_ui_active()) return 0;
 #endif
@@ -137,7 +137,7 @@ int FAST get_y_skip_offset_for_histogram()
     // in playback mode, and skip 16:9 bars for movies, but cover the entire area for photos
     if (!lv) return is_pure_play_movie_mode() ? os.off_169 : 0;
 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* Use the former status-bar rows when calculating the photo histogram. */
     if (xpan_photo_ui_active()) return 0;
 #endif
@@ -453,7 +453,7 @@ int get_global_draw() // menu setting, or off if
     if (lv && ZEBRAS_IN_LIVEVIEW)
     {
         return 
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
             /* XPan draws its own HUD in every Canon display mode. */
             (lv_disp_mode == 0 || xpan_photo_ui_active()) &&
 #else
@@ -2416,7 +2416,7 @@ static void spotmeter_step()
 
     int xcb = os.x0 + os.x_ex/2;
     int ycb = os.y0 + os.y_ex/2;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     int xpan_spotmeter_frame = 0;
     int xpan_frame_left = 0, xpan_frame_right = 0;
     int xpan_frame_top = 0, xpan_frame_bottom = 0;
@@ -2453,7 +2453,7 @@ static void spotmeter_step()
         }
         xcb = N2BM_X(aff_x0);
         ycb = N2BM_Y(aff_y0);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         if (xpan_spotmeter_frame)
         {
             /* Keep a focus-box-linked spot sample inside the selected XPan frame. */
@@ -3513,7 +3513,7 @@ static void draw_zoom_overlay(int dirty)
     }
     //~ bmp_printf(FONT_LARGE, 50, 50, "%d,%d %d,%d", W, H, aff_x0_lv);
 
-    #ifdef CONFIG_EOSM
+    #ifdef CONFIG_XPAN_BODY
     if (xpan_photo_ui_active())
     {
         int crop_x, crop_y, crop_w, crop_h;
@@ -3686,7 +3686,7 @@ int liveview_display_idle()
 int zebra_should_run()
 {
     int xpan_preview_needs_updates = 0;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     /* Keep the compact photo HUD alive even when native 3:2 needs no transform. */
     xpan_preview_needs_updates = xpan_photo_ui_active();
 #endif
@@ -3816,7 +3816,7 @@ void draw_histogram_and_waveform(int allow_play)
     int screen_layout = get_screen_layout();
 #endif
 
-#ifdef CONFIG_EOSM
+#if defined(CONFIG_XPAN_BODY) && (defined(FEATURE_HISTOGRAM) || defined(FEATURE_WAVEFORM))
     /* XPan monitoring overlays occupy the photograph, leaving its HUD clear. */
     int xpan_image_graph_y = 0;
     int xpan_image_graph_height = 0;
@@ -3842,7 +3842,7 @@ void draw_histogram_and_waveform(int allow_play)
     if( hist_draw && !WAVEFORM_FULLSCREEN)
     {
         extern int console_visible;
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         if (xpan_photo_frame)
         {
             if (xpan_photo_histogram_fits)
@@ -3877,7 +3877,7 @@ void draw_histogram_and_waveform(int allow_play)
 #ifdef FEATURE_WAVEFORM
     if (waveform_draw)
     {
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
         if (xpan_photo_frame)
         {
             /* Fit the waveform vertically inside the photograph. */
@@ -4287,7 +4287,7 @@ livev_hipriority_task( void* unused )
             #ifdef CONFIG_DISPLAY_FILTERS
             /* to refactor with CBR */
             extern void display_filter_step(int frame_number);
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
             /* Photo framing has a dedicated producer; monitoring must not pace the LCD. */
             if (!xpan_photo_preview_crop_enabled())
 #endif
@@ -4659,7 +4659,7 @@ static void zebra_init()
     #ifdef FEATURE_CROPMARKS
     menu_add( "Overlay", cropmarks_menu, COUNT(cropmarks_menu) );
     #endif
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
     menu_add( "Shoot", xpan_photo_menu, COUNT(xpan_photo_menu) );
 #ifdef CONFIG_XPAN
     /* Append look controls after the single parent/submenu has been registered. */

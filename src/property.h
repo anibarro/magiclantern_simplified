@@ -527,7 +527,7 @@
 #define PROP_PIC_QUALITY   0x8000002f
 #define PROP_PIC_QUALITY2  0x80000030
 #define PROP_PIC_QUALITY3  0x80000031
-#ifdef CONFIG_EOSM
+#ifdef CONFIG_XPAN_BODY
 /* EOS M storage aspect property; ROM1 confirms a four-byte value. */
 #define PROP_IMAGE_ASPECT_RATIO 0x80040059
 /* EOS M ROM FF1B2D10: four-byte storage value, 1=sRGB, 2=Adobe RGB. */

@@ -32,6 +32,27 @@ struct mmu_config
 };
 
 extern struct mmu_config global_mmu_conf; // in patch_mmu.c
+
+// Space reserved in magiclantern.bin for remapped ROM pages (patch_mmu_space.c),
+// when ML is not in the AllocMem pool: per page 0x10000 (0x10000 aligned) and
+// one L2 table (0x400, 0x400 aligned, one per 1 MB region with remaps) with its
+// metadata, plus one L1 table (0x4900, 0x4000 aligned) and 0x300 padding.
+// A camera may reserve more pages (CONFIG_MMU_REMAP_PAGES, internals.h).
+#ifndef CONFIG_MMU_REMAP_PAGES
+#define CONFIG_MMU_REMAP_PAGES 1
+#endif
+#ifdef CONFIG_MMU_REMAP_SMALL_PAGES
+// Fixed layout (calc_mmu_globals_small): L1 table at the 0x4000-aligned start,
+// L2 tables after it (0x400 aligned) and their metadata. The 64 kB page copies
+// come from the heap, 4 kB aligned (mapped with 4 kB small pages), so they
+// take nothing from ML's boot reservation (README-XPAN-M50.md "4 KB pages").
+#define GENERIC_MMU_SPACE_ALIGN 0x4000
+#define GENERIC_MMU_SPACE_SIZE (MMU_L1_TABLE_SIZE + 0x300 \
+                                + (MMU_L2_TABLE_SIZE + sizeof(struct mmu_L2_page_info)) * CONFIG_MMU_REMAP_PAGES)
+#else
+#define GENERIC_MMU_SPACE_ALIGN 0x10000
+#define GENERIC_MMU_SPACE_SIZE ((MMU_PAGE_SIZE + MMU_L2_TABLE_SIZE + sizeof(struct mmu_L2_page_info)) * CONFIG_MMU_REMAP_PAGES + MMU_L1_TABLE_SIZE + 0x300)
+#endif
 extern void change_mmu_tables(uint8_t *ttbr0, uint8_t *ttbr1, uint32_t cpu_id);
 void change_mmu_tables_wrapper(void);
 

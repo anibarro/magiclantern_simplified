@@ -133,9 +133,44 @@ void ml_gui_main_task()
             continue;
         }
 
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+        /* Boot log (XBOOT.LOG): every GUI event that arrives before ML has
+         * started, as type<<16 | code (README-XPAN-M50.md, boot log 13). */
+        {
+            extern int ml_started;
+            if (!ml_started)
+            {
+                extern void m50_boot_mark(int id, int value);
+                m50_boot_mark(30, (event->type << 16) | (event->param & 0xFFFF));
+                /* Canon's short start after the battery/card door closes:
+                 * ML must not start (xpan-m50.c m50_wait_for_real_start). */
+                int cmd = event->param & 0xFFFF;
+                if (cmd == GMT_GUICMD_START_AS_CHECK ||
+                    cmd == GMT_GUICMD_OPEN_SLOT_COVER ||
+                    cmd == GMT_GUICMD_LOCK_OFF)
+                {
+                    extern volatile int m50_check_start;
+                    m50_check_start = cmd;
+                }
+            }
+        }
+#endif
+
         index = event->type;
 
-        if (!magic_is_off())
+#if defined(CONFIG_M50) && defined(CONFIG_XPAN)
+        /* M50: no ML or XPan handler sees a GUI event before ML has started;
+         * every event goes straight to Canon (README-XPAN-M50.md, "Card swap
+         * after power-off", fifth attempt). 2026-11-08: the switch-on after
+         * a battery-door close hung inside Canon's init_task (LED solid),
+         * which waits on this task; the handlers (XPan's M50 controls among
+         * them) are not initialised yet. */
+        extern int ml_started;
+        int ml_handlers_on = ml_started;
+#else
+        int ml_handlers_on = 1;
+#endif
+        if (ml_handlers_on && !magic_is_off())
         {
 
             if (event->type == 0)

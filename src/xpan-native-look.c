@@ -21,17 +21,46 @@
 #endif
 #include "xpan-native-jpeg.h"
 
-#if !defined(CONFIG_EOSM) || defined(CONFIG_QEMU) || !defined(CONFIG_XPAN)
-#error Native look proof requires the physical EOS M 2.0.2 build.
+#if !defined(CONFIG_XPAN_BODY) || defined(CONFIG_QEMU) || !defined(CONFIG_XPAN)
+#error Native look requires a physical XPan camera build.
 #endif
 
 /* Test26 proves enable0 skips the old FF42D1AC transfer entirely. Intercept
- * the decision after LDRH, before Canon tests for disabled/invalid enables. */
+ * the decision after LDRH, before Canon tests for disabled/invalid enables.
+ * Canon's colour-table job block (R4) keeps the ROM profile at +0, the kind
+ * at +4 and the header at +8; then the OBWB block, the tone (Angel) row, the
+ * source table and the LuckyEnable halfword. */
+#if defined(CONFIG_6D)
+/* 6D 1.1.6: the still develop path is Canon's "TTL" routine (FF412038), the
+ * same code as the EOS M FOD routine with every block field 4 bytes later:
+ * LDRH R3,[R4,#0x38] at FF41254C, table copy from [R4,#0x34] to C0F1A000,
+ * Angel [R4,#0x30] (0x7E0 bytes), OBWB [R4,#0x2C] (0x188 bytes). */
+#define LOOK_HOOK 0xff412550
+#define FOD_OBWB 0x2c
+#define FOD_ANGEL 0x30
+#define FOD_SOURCE 0x34
+#define FOD_ENABLE 0x38
+/* The ROM profile/header identities of the 6D's full-photo job are not known
+ * yet: they are recorded (Debug info) and the hook relies on the other guards
+ * and on the source table passing the Neutral-table validation. */
+#define FOD_PROFILE 0
+#define FOD_HEADER 0
+#define FOD_KIND 0
+#else
 #define LOOK_HOOK 0xff42d178
+#define FOD_OBWB 0x28
+#define FOD_ANGEL 0x2c
+#define FOD_SOURCE 0x30
+#define FOD_ENABLE 0x34
+#define FOD_PROFILE 0xff92da38
+#define FOD_HEADER 0xff92da94
+#define FOD_KIND 0x17
+#endif
 #define LOOK_INSTRUCTION 0xe2430cff
 #define TABLE_WORDS 1024
 #define TABLE_BYTES 4096
-#define FRONT_PREFIX_BYTES 0x38
+/* Private copy of the block through the enable halfword. */
+#define FRONT_PREFIX_BYTES (FOD_ENABLE+4)
 
 /* Session settings are saved by the normal ML configuration mechanism. */
 static CONFIG_INT("xpan.look",selected_look,0);
@@ -101,6 +130,8 @@ static volatile struct {
  * hook: 0x701B8 on this firmware, 0xE0 below the normal-path JPEG job
  * (0x70298). Recognised by content, never assumed: 0 until seen. */
 static volatile uint32_t look_fod;
+/* Words +0/+4/+8 of the last block seen at the hook (6D identity discovery). */
+static volatile uint32_t look_identity[3];
 static int fod_in_ram(uint32_t address)
 {
     uint32_t ram=address&~0x40000000u;
@@ -109,7 +140,7 @@ static int fod_in_ram(uint32_t address)
 void xpan_native_look_note_jpeg(uint32_t jpeg_job)
 {
     uint32_t fod=jpeg_job-0xE0;
-    if (fod_in_ram(fod) && *(volatile uint32_t *)fod==0xff92da38) look_fod=fod;
+    if (FOD_PROFILE && fod_in_ram(fod) && *(volatile uint32_t *)fod==FOD_PROFILE) look_fod=fod;
     fod=look_fod;
     struct card_info *card=get_shooting_card();
     unsigned slot=capture_trace_count%COUNT(capture_trace);
@@ -122,8 +153,8 @@ void xpan_native_look_note_jpeg(uint32_t jpeg_job)
      * Observe it at JPEG setup even when the conditional LUT call never ran. */
     if (fod) {
         capture_trace[slot].kind=*(volatile uint32_t *)(fod+4);
-        capture_trace[slot].enable=*(volatile uint16_t *)(fod+0x34);
-        capture_trace[slot].source=*(volatile uint32_t *)(fod+0x30);
+        capture_trace[slot].enable=*(volatile uint16_t *)(fod+FOD_ENABLE);
+        capture_trace[slot].source=*(volatile uint32_t *)(fod+FOD_SOURCE);
         capture_trace[slot].profile=*(volatile uint32_t *)fod;
         capture_trace[slot].config=*(volatile uint32_t *)(fod+8);
     }
@@ -220,8 +251,8 @@ static int native_preview_table(uint32_t source)
             if (armed_look==3 && armed_headroom && !get_htp() && get_alo()==ALO_OFF &&
                 (armed_headroom==2 || xpan_native_base_table()) &&
                 xpan_native_obwb_headroom(preview_obwb,
-                    *(volatile uint32_t *)(look_fod+0x28),XPAN_HEADROOM_STOPS(armed_headroom))==1 &&
-                xpan_native_angel_shadow(preview_angel,*(volatile uint32_t *)(look_fod+0x2c))==1)
+                    *(volatile uint32_t *)(look_fod+FOD_OBWB),XPAN_HEADROOM_STOPS(armed_headroom))==1 &&
+                xpan_native_angel_shadow(preview_angel,*(volatile uint32_t *)(look_fod+FOD_ANGEL))==1)
                 preview_headroom=armed_headroom;
             if (armed_look==3)
                 prepared=xpan_native_table_prepare_cube(preview_output,preview_actual,
@@ -244,18 +275,19 @@ static int native_preview_table(uint32_t source)
 
 static void native_redirect_front(uint32_t *regs,uint32_t *prefix,uint32_t *output,uint32_t *obwb,uint32_t *angel)
 {
-    /* From FF42D178 until the POP at FF42D204, Canon reads only offsets30,
-     * 2C and28 of R4. Supply a private complete prefix through offset34.
+    /* From the hook until the POP, Canon reads only the source, Angel and OBWB
+     * fields of R4 (EOS M 0x30/0x2C/0x28, 6D 0x34/0x30/0x2C). Supply a private
+     * complete prefix through the enable halfword.
      * The outer function restores the caller's original R4 from its stack;
      * the Canon-owned FOD block and table stay unchanged. */
     const volatile uint32_t *original=(const volatile uint32_t *)regs[4];
     for (unsigned i=0; i<FRONT_PREFIX_BYTES/4; i++) prefix[i]=original[i];
-    prefix[0x30/4]=(uint32_t)output;
-    prefix[0x34/4]=(prefix[0x34/4]&0xffff0000u)|1;
+    prefix[FOD_SOURCE/4]=(uint32_t)output;
+    prefix[FOD_ENABLE/4]=(prefix[FOD_ENABLE/4]&0xffff0000u)|1;
     /* The headroom base in 'output' assumes this lowered-gain OBWB copy;
      * both are published together or not at all (Test68 front +0x28). */
-    if (obwb) prefix[0x28/4]=(uint32_t)obwb;
-    if (angel) prefix[0x2c/4]=(uint32_t)angel; /* HTP luma row (shadow room) */
+    if (obwb) prefix[FOD_OBWB/4]=(uint32_t)obwb;
+    if (angel) prefix[FOD_ANGEL/4]=(uint32_t)angel; /* HTP luma row (shadow room) */
     __asm__ __volatile__("" ::: "memory");
     last_original_enable=regs[3]; last_effective_enable=1;
     if (!regs[3]) enable_overrides++;
@@ -301,13 +333,14 @@ static void native_table_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
     uint32_t fod=regs[4];
     if (!fod_in_ram(fod)) { last_guard_mask=4; return; }
     const volatile uint32_t *block=(const volatile uint32_t *)fod;
-    uint32_t source=block[0x30/4];
-    unsigned enable=*(volatile uint16_t *)(fod+0x34);
+    uint32_t source=block[FOD_SOURCE/4];
+    unsigned enable=*(volatile uint16_t *)(fod+FOD_ENABLE);
+    look_identity[0]=block[0]; look_identity[1]=block[1]; look_identity[2]=block[2];
     last_guard_mask=(pc!=LOOK_HOOK ? 1:0) | (regs[3]!=enable ? 2:0) |
         (!source ? 8:0) |
-        (block[1]!=0x17 ? 16:0) |
+        (FOD_KIND && block[1]!=FOD_KIND ? 16:0) |
         (enable>1 ? 32:0) | (lens_info.raw_picstyle!=0x84 ? 64:0) |
-        (block[0]!=0xff92da38 || block[2]!=0xff92da94 ? 128:0);
+        (FOD_PROFILE && (block[0]!=FOD_PROFILE || block[2]!=FOD_HEADER) ? 128:0);
     if (last_guard_mask) return;
     look_fod=fod;
     accepted_transfer_calls++;
@@ -350,9 +383,9 @@ static void native_table_hook(uint32_t *regs, uint32_t *stack, uint32_t pc)
                 else if (armed_headroom==1 && !xpan_native_base_table()) headroom_code=6;
                 else {
                     headroom_obwb_code=xpan_native_obwb_headroom(look_obwb,
-                        *(volatile uint32_t *)(look_fod+0x28),XPAN_HEADROOM_STOPS(armed_headroom));
+                        *(volatile uint32_t *)(look_fod+FOD_OBWB),XPAN_HEADROOM_STOPS(armed_headroom));
                     headroom_angel_code=headroom_obwb_code==1 ?
-                        xpan_native_angel_shadow(look_angel,*(volatile uint32_t *)(look_fod+0x2c)):0;
+                        xpan_native_angel_shadow(look_angel,*(volatile uint32_t *)(look_fod+FOD_ANGEL)):0;
                     if (headroom_obwb_code!=1) headroom_code=3;
                     else if (headroom_angel_code!=1) headroom_code=7;
                     else { headroom=armed_headroom; headroom_code=0; }
@@ -390,10 +423,11 @@ void xpan_native_capture_diag(char *buf, int size)
     unsigned j[11]; xpan_native_jpeg_diag(j);
     struct card_info *card=get_shooting_card();
     snprintf(buf,size,"file %d en %d pano %d q %x mode %x | jpeg inst %x act %d mode %d calls %d off %d r0 %x pass %d crop %d rej %d why %d err %x"
-        " | look hook %d jpeg %d ready %d table %d/%d/%d guard %x fod %x look %d/%d | ca ev %d len %d val %x | %s",
+        " | look hook %d jpeg %d ready %d table %d/%d/%d guard %x fod %x id %x/%x/%x look %d/%d | ca ev %d len %d val %x | %s",
         card ? card->file_number:-1,xpan_photo_enabled(),xpan_photo_is_panoramic(),pic_quality,shooting_mode,
         j[0],j[1],j[2],j[3],j[9],j[10],j[4],j[5],j[6],j[7],j[8],
         hook_installed,jpeg_installed_automatic,automatic_capture_ready,
         transfer_calls,ready_transfer_calls,accepted_transfer_calls,last_guard_mask,look_fod,
+        look_identity[0],look_identity[1],look_identity[2],
         selected_look,armed_look,chromatism_events,chromatism_len,chromatism_raw[0],look_status);
 }

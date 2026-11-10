@@ -1,4 +1,6 @@
 #include "all_features.h"
+/* XPan panoramic photo mode (README-XPAN.md): shared code for supported bodies. */
+#define CONFIG_XPAN_BODY
 
 /* Works just fine */
 #define FEATURE_SWAP_INFO_PLAY

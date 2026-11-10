@@ -1,5 +1,43 @@
 #ifndef XPAN_MODE_H
 #define XPAN_MODE_H
+/* Body geometry. Full-resolution Canon image (CR2 IFD0 / Large JPEG), the
+ * sensor width in tenths of a millimetre (XPan equivalent lens), and Canon's
+ * own 16:9, 4:3 and 1:1 MakerNote crop records at full resolution. */
+#if defined(CONFIG_6D)
+#define XPAN_SENSOR_WIDTH 5472
+#define XPAN_SENSOR_HEIGHT 3648
+#define XPAN_SENSOR_WIDTH_MM10 358
+#define XPAN_ASPECT_16_9_HEIGHT 3078
+#define XPAN_ASPECT_16_9_TOP 285
+#define XPAN_ASPECT_16_9_NATIVE_HEIGHT 3072  /* 16:9 JPEG raster */
+#define XPAN_ASPECT_4_3_WIDTH 4864
+#define XPAN_ASPECT_4_3_LEFT 304
+#define XPAN_ASPECT_1_1_LEFT 912
+#elif defined(CONFIG_M50)
+/* EOS M50: 6000x4000 L image, 22.3 mm wide APS-C sensor. Canon's 16:9 L JPEG
+ * is 6000x3368, 4:3 is 5328x4000, 1:1 is 4000x4000. The crop records are
+ * derived from those sizes like the EOS M's, not yet read from an M50 CR3
+ * (the record writer only runs in QEMU builds). */
+#define XPAN_SENSOR_WIDTH 6000
+#define XPAN_SENSOR_HEIGHT 4000
+#define XPAN_SENSOR_WIDTH_MM10 223
+#define XPAN_ASPECT_16_9_HEIGHT 3376
+#define XPAN_ASPECT_16_9_TOP 312
+#define XPAN_ASPECT_16_9_NATIVE_HEIGHT 3368
+#define XPAN_ASPECT_4_3_WIDTH 5328
+#define XPAN_ASPECT_4_3_LEFT 336
+#define XPAN_ASPECT_1_1_LEFT 1000
+#else /* EOS M */
+#define XPAN_SENSOR_WIDTH 5184
+#define XPAN_SENSOR_HEIGHT 3456
+#define XPAN_SENSOR_WIDTH_MM10 223
+#define XPAN_ASPECT_16_9_HEIGHT 2916
+#define XPAN_ASPECT_16_9_TOP 270
+#define XPAN_ASPECT_16_9_NATIVE_HEIGHT 2912
+#define XPAN_ASPECT_4_3_WIDTH 4608
+#define XPAN_ASPECT_4_3_LEFT 288
+#define XPAN_ASPECT_1_1_LEFT 864
+#endif
 /* The saved mode switch gates framing, metadata and automatic photo hooks. */
 int xpan_photo_enabled(void);
 /* User-facing option controls only the bitmap HUD, not framing or capture. */

@@ -597,14 +597,21 @@ static int workflow_install_hooks(struct card_info *card)
     }
     if (!hook_installed)
     {
-        if (*(volatile uint32_t *)0xff42d174!=0xe1d433b4 ||
-            *(volatile uint32_t *)0xff42d178!=LOOK_INSTRUCTION ||
-            *(volatile uint32_t *)0xff42d17c!=0xe25000ff ||
-            *(volatile uint32_t *)0xff42d1a0!=0xe5941030 ||
-            *(volatile uint32_t *)0xff42d204!=0xe8bd87ff ||
-            *(volatile uint32_t *)0xff42d1b0!=0x1b2f76a2 ||
-            *(volatile uint32_t *)0xff42d264!=0xc0f20000)
-        { look_status="Unexpected Canon transfer map"; return 0; }
+        /* The hook and its neighbours, against the supported ROM only. */
+        static const uint32_t look_guard[][2]={
+#if defined(CONFIG_6D)
+            {0xff41254c,0xe1d433b8},{LOOK_HOOK,LOOK_INSTRUCTION},{0xff412554,0xe25000ff},
+            {0xff412578,0xe5941034},{0xff412588,0x1b2feb69},{0xff4126c4,0xe5941030},
+            {0xff4126d8,0xe594102c},{0xff4126f4,0xe8bd83f0},{0xff4126a0,0xc0f20000},
+#else
+            {0xff42d174,0xe1d433b4},{LOOK_HOOK,LOOK_INSTRUCTION},{0xff42d17c,0xe25000ff},
+            {0xff42d1a0,0xe5941030},{0xff42d204,0xe8bd87ff},{0xff42d1b0,0x1b2f76a2},
+            {0xff42d264,0xc0f20000},
+#endif
+        };
+        for (unsigned i=0; i<COUNT(look_guard); i++)
+            if (*(volatile uint32_t *)look_guard[i][0]!=look_guard[i][1])
+            { look_status="Unexpected Canon transfer map"; return 0; }
         patch_result=patch_hook_function(LOOK_HOOK,LOOK_INSTRUCTION,native_table_hook,"XPan automatic look");
         if (patch_result) { look_status="Look hook unavailable"; return 0; }
         hook_installed=1;

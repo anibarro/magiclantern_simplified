@@ -124,7 +124,12 @@ init_task_func init_task_patched(void)
         while(1);                                       /* refuse to boot */
     }
 
-    #if defined(CONFIG_6D) || defined(CONFIG_100D) || defined(CONFIG_70D)
+    #if defined(CONFIG_6D) && defined(CONFIG_XPAN)
+    /* XPan on the 6D: change the start to 0x500000 => reserve 720K for ML.
+     * The pool (end 0xD3C000) keeps about 8.2 MB for Canon. */
+    addr_AllocMem_end[1] = MOV_R0_0x500000_INSTR;
+    ml_reserved_mem = 0x500000 - RESTARTSTART;
+    #elif defined(CONFIG_6D) || defined(CONFIG_100D) || defined(CONFIG_70D)
     /* R0: 0x44C000 (start address, easier to patch, change to 0x4E0000 => reserve 592K for ML) */
     /* R1: 0xD3C000 [6D, 70D] / 0xC3C000 [100D] (end address, unchanged) */
     addr_AllocMem_end[1] = MOV_R0_0x4E0000_INSTR;

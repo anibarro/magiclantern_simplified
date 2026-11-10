@@ -11,6 +11,13 @@
 // Cam has MMU (by itself, does nothing, see CONFIG_MMU_REMAP)
 #define CONFIG_MMU
 
+// Four remapped 64 kB ROM pages: XPan's hooks in E00E0000, Canon's creative
+// filter grain driver in E0860000, the Live View filter map in E0770000 and
+// the JPEG encoder size table in E0FC0000 (runtime patch, README-XPAN-M50.md
+// "65:24 JPEG"), mapped with 4 kB small pages from the heap.
+#define CONFIG_MMU_REMAP_PAGES 6   /* hooks E00E, E086, E077, E013, E042 + the 65:24 encoder table E0FC (runtime patch) */
+#define CONFIG_MMU_REMAP_SMALL_PAGES
+
 /** Digic 8 does not have bitmap font in ROM, try to load it from card **/
 #define CONFIG_NO_BFNT
 

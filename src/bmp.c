@@ -114,6 +114,10 @@ TASK_CREATE( "redraw_task", refresh_yuv_from_rgb_task, 0, 0x1e, 0x1000 );
 #endif
 // SJE should this global live in bmp.c?
 uint32_t ml_refresh_display_needed = 0;
+/* While set, redraw_task does not copy ML's layer into Canon's RGBA layer,
+ * so Canon's own UI (dialogs, exposure overlays) draws on top of whatever ML
+ * pushed last (XPan on the M50: src/xpan-m50.c, dim-and-freeze). */
+volatile int ml_refresh_frozen = 0;
 
 /** Returns a pointer to currently selected BMP vram (real or mirror) */
 uint8_t * bmp_vram(void)
@@ -191,12 +195,51 @@ void bmp_idle_copy(int direction, int fullsize)
 // but this struct is not yet determined for 200D
 extern int XimrExe(void *);
 extern struct semaphore *winsys_sem;
+#if defined(CONFIG_M50)
+/* M50 (README-XPAN-M50.md "EVF crashes"): ML used to keep the MARV it found
+ * at boot and write 960x540 pixels into it forever. Canon's WINSYS layer is
+ * read again (its own pointer, _rgb_vram_info) under winsys_sem, the lock
+ * Canon holds around its own XimrExe, and ML writes only when the layer holds
+ * at least 960x540 pixels (BMP_VRAM_SIZE, what ML writes). A replaced layer is
+ * followed, a smaller one is skipped. The lock is taken with a timeout: a
+ * skipped refresh stays pending and is retried, never a wait forever. XPan
+ * logs the layer (xpan-m50.c, XM50.LOG). */
+volatile unsigned rgb_layer_changes, rgb_layer_skips;
+volatile uint32_t rgb_layer_marv, rgb_layer_data, rgb_layer_w, rgb_layer_h;
+#define RGB_LAYER_LOCK_MS 200
+static int rgb_layer_current(void)
+{
+    struct MARV *m = _rgb_vram_info;
+    uint32_t data = m ? (uint32_t)m->bitmap_data : 0;
+    uint32_t w = m ? m->width : 0, h = m ? m->height : 0;
+    if ((uint32_t)m != rgb_layer_marv || data != rgb_layer_data || w != rgb_layer_w || h != rgb_layer_h)
+    {
+        rgb_layer_marv = (uint32_t)m; rgb_layer_data = data; rgb_layer_w = w; rgb_layer_h = h;
+        rgb_layer_changes++;
+    }
+    if (!m || !data || w < BMPPITCH || w * h < BMP_VRAM_SIZE) return 0;
+    rgb_vram_info = m;
+    return 1;
+}
+#endif
+
 void refresh_yuv_from_rgb(void)
 {
     // get our indexed buffer, convert into our real rgb buffer
     uint8_t *b = bmp_vram_indexed;
     uint32_t *rgb_data = NULL;
 
+#if defined(CONFIG_M50)
+    if (!winsys_sem || take_semaphore(winsys_sem, RGB_LAYER_LOCK_MS))
+        return;                         /* still pending: retried next time */
+    if (!rgb_layer_current())
+    {
+        rgb_layer_skips++;
+        give_semaphore(winsys_sem);
+        ml_refresh_display_needed = 0;
+        return;
+    }
+#endif
     if (rgb_vram_info != NULL)
     {
         rgb_data = (uint32_t *)rgb_vram_info->bitmap_data;
@@ -204,6 +247,9 @@ void refresh_yuv_from_rgb(void)
     else
     {
         DryosDebugMsg(0, 15, "rgb_vram_info was NULL, can't refresh OSD");
+#if defined(CONFIG_M50)
+        give_semaphore(winsys_sem);     /* not reached: rgb_layer_current() set it */
+#endif
         return;
     }
 
@@ -261,6 +307,9 @@ void refresh_yuv_from_rgb(void)
     // trigger Ximr to render to OSD from RGB buffer
 #ifdef CONFIG_DIGIC_VI
     XimrExe((void *)XIMR_CONTEXT);
+#elif defined(CONFIG_M50)
+    XimrExe((void *)XIMR_CONTEXT);      /* winsys_sem taken above */
+    give_semaphore(winsys_sem);
 #else
     take_semaphore(winsys_sem, 0);
     XimrExe((void *)XIMR_CONTEXT);
@@ -271,8 +320,15 @@ void refresh_yuv_from_rgb(void)
 
 void rgba_buffer_clear()
 {
+#if defined(CONFIG_M50)
+    if (!winsys_sem || take_semaphore(winsys_sem, RGB_LAYER_LOCK_MS)) return;
+    if (rgb_layer_current())
+        bzero32(rgb_vram_info->bitmap_data, BMP_VRAM_SIZE*4);
+    give_semaphore(winsys_sem);
+#else
     if (rgb_vram_info == NULL) return;
     bzero32(rgb_vram_info->bitmap_data, BMP_VRAM_SIZE*4);
+#endif
 }
 
 #if defined(CONFIG_INSTALLER)
@@ -291,7 +347,7 @@ void refresh_yuv_from_rgb_task(void *unused)
     #endif
     TASK_LOOP
     {
-        if (ml_refresh_display_needed && !ml_shutdown_requested && DISPLAY_IS_ON)
+        if (ml_refresh_display_needed && !ml_shutdown_requested && DISPLAY_IS_ON && !ml_refresh_frozen)
         {
             refresh_yuv_from_rgb();
         }

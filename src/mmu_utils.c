@@ -196,6 +196,31 @@ int32_t replace_large_page_in_l2_table(uint32_t addr, uint32_t replacement, uint
     return 0;
 }
 
+// Patch one 64kB block of an L2 table with 16 small (4kB) pages pointing to a
+// RAM copy that only needs 4kB alignment (CONFIG_MMU_REMAP_SMALL_PAGES).
+// addr: offset of virtual memory chunk (64kB, aligned to 64kB) inside the 1MB range of L2 table
+// replacement: address of physical memory chunk (64kB long, aligned to 4kB)
+// l2tableaddr: physical address of L2 table (1024 bytes, 1024-byte alignment)
+// flags: flags in large page format (as get_l2_largepage_flags_from_l1_section()
+//        returns them); converted to the small page format: XN bit 15 -> 0,
+//        TEX bits 14:12 -> 8:6, bit 1 set; C, B, AP, APX, S, nG keep their bits.
+// does nothing and returns nonzero in case of inappropriate addresses
+int32_t replace_large_page_with_small_pages_in_l2_table(uint32_t addr, uint32_t replacement, uint32_t l2tableaddr, uint32_t flags)
+{
+    if (l2tableaddr & 0x3ff || addr & 0xffff || replacement & 0xfff) {
+        return -1;
+    }
+    uint32_t small = (flags & 0x0e3c) | (((flags >> 12) & 7) << 6) | ((flags >> 15) & 1) | 2;
+    addr = (addr >> 16) & 0xf;
+    l2tableaddr += addr * 0x40;
+    unsigned m;
+    for (m=0; m<16; m++) {
+        unsigned *entry = (unsigned*)(l2tableaddr + m * 4);
+        *entry = (replacement + m * 0x1000) | small;
+    }
+    return 0;
+}
+
 // replace a 64kB large ROM page with its RAM copy
 // romaddr: start of ROM page (64kB aligned), has to fall within the range of L2 table
 // ramaddr: suitable 64kB aligned RAM address, caller is responsible for the
@@ -208,7 +233,11 @@ void replace_rom_page(uint32_t romaddr, uint32_t ramaddr, uint32_t l2addr, uint3
     // copy 64kB "large" page to RAM
 
     // make L2 table entry point to copied ROM content
+#ifdef CONFIG_MMU_REMAP_SMALL_PAGES
+    replace_large_page_with_small_pages_in_l2_table(romaddr, ramaddr, l2addr, flags);
+#else
     replace_large_page_in_l2_table(romaddr, ramaddr, l2addr, flags);
+#endif
 }
 
 // replace L1 section with newly created L2 table

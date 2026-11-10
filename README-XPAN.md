@@ -10,7 +10,10 @@ the colour tables and a few properties on the way. No extra DryOS task is
 created and no image buffer is reserved at boot.
 
 **Only the EOS M 2.0.2 is supported.** Use at your own risk, like any Magic
-Lantern build.
+Lantern build. A port to the Canon 6D (1.1.6) is in progress on the
+`xpan-6d` branch: see [README-XPAN-6D.md](README-XPAN-6D.md). A first phase
+for the Canon EOS M50 (1.1.0: framing and HUD only) is on the `xpan-m50`
+branch: see [README-XPAN-M50.md](README-XPAN-M50.md).
 
 > **Disable all external modules.** XPan changes Canon's colour tables, JPEG
 > encoder, sensor crop, key routing and several properties. These changes make

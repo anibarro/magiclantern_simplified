@@ -128,7 +128,9 @@ SECTIONS
     /* BSS segment to be zeroed */
     . = ALIGN(64);
     _bss_start = .;
-    .bss : { *(.bss) }
+    /* patch_mmu_space.o first: its 64 kB aligned array (remapped ROM pages)
+     * then starts the 64 kB aligned .bss and nothing else is padded for it. */
+    .bss : { *patch_mmu_space.o(.bss) *(.bss) }
     . = ALIGN(64);
     _bss_end = .;
 
