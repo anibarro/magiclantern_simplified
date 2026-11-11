@@ -35,7 +35,22 @@ static CONFIG_INT("xpan.enabled", xpan_enabled, 1);
  * xpan-hud-controls.c), because Canon locks the look settings there. */
 static int xpan_auto_mode(void)
 {
+#ifdef CONFIG_M50
+    /* M50 (README-XPAN-M50.md "XPan only in P, Tv, Av and M"): a physical
+     * dial XPan cannot turn, so XPan's photo side is off in every other
+     * position (A+, scene modes, creative filters...). Video keeps its own
+     * movie LUT switch (xpan_movie_on); there shooting_mode is the movie
+     * exposure mode (propvalues.c is_movie_mode). */
+    if (is_movie_mode()) return 0;
+    /* Both of Canon's mode values (equal in P/Tv/Av/M, camera test
+     * 2026-11-11), in case another position reports an exposure sub-mode in
+     * one of them, as video does. */
+    #define XPAN_PASM(m) ((m)==SHOOTMODE_P || (m)==SHOOTMODE_TV || (m)==SHOOTMODE_AV || (m)==SHOOTMODE_M)
+    return !(XPAN_PASM(shooting_mode) && XPAN_PASM(shooting_mode_custom));
+    #undef XPAN_PASM
+#else
     return shooting_mode==SHOOTMODE_AUTO || shooting_mode==SHOOTMODE_AP;
+#endif
 }
 #define XPAN_ACTIVE (xpan_enabled && !xpan_auto_mode())
 static CONFIG_INT("xpan.align", xpan_frame_align, 0);
@@ -73,6 +88,7 @@ int xpan_photo_canon_layout(void)
 /* XPan > Debug info: on-screen key/touch diagnostics only (no file logging). */
 static CONFIG_INT("xpan.debug", xpan_photo_debug, 0);
 int xpan_photo_debug_enabled(void) { return xpan_photo_debug; }
+void xpan_photo_debug_toggle(void) { xpan_photo_debug=!xpan_photo_debug; }   /* M50: XPan > Diagnostics */
 /* DNG sidecars are disabled: on-camera conversion stalls capture for minutes. */
 /* XPan metadata cropping follows the mode switch unconditionally. */
 /* Manual-lens values feed the XPan equivalent readout only; they never change exposure. */
@@ -327,10 +343,22 @@ int xpan_photo_ensure_capture_quality(void)
 }
 
 /* Use Canon's native EOS M quality codes; RAW+JPEG is Large Fine on this model. */
+#ifdef CONFIG_M50
+/* M50 (xpan-m50.c, README "Capture format on the M50"): Canon's PICQ has
+ * another layout there and ML cannot write it; XPan's own writer sets it. */
+void m50_picq_step_format(int delta);
+void m50_picq_step_quality(int delta);
+const char *m50_capture_format_name(void);
+const char *m50_jpeg_quality_name(void);
+#endif
 static void xpan_photo_capture_format_select(void *priv, int sign)
 {
     (void)priv;
     if (is_movie_mode()) return;
+#ifdef CONFIG_M50
+    m50_picq_step_format(sign);
+    return;
+#endif
 #ifdef CONFIG_XPAN_BODY
     /* Wait for Canon's first property event; zero-initialized state is not a format. */
     if (xpan_pic_quality_valid != 1 || !xpan_picq_is_known()) return;
@@ -350,6 +378,12 @@ static void xpan_photo_capture_format_select(void *priv, int sign)
 
 static MENU_UPDATE_FUNC(xpan_photo_capture_format_display)
 {
+#ifdef CONFIG_M50
+    MENU_SET_VALUE("%s",m50_capture_format_name());
+    MENU_SET_ENABLED(xpan_pic_quality_valid==1 && !is_movie_mode());
+    MENU_SET_HELP("JPEG, RAW+JPEG or cRAW+JPEG, always L (XPan needs the JPEG). Same as the HUD's FMT field.");
+    return;
+#endif
     xpan_photo_check_pic_quality_request();
 #ifdef CONFIG_XPAN_BODY
     if (xpan_pic_quality_valid != 1)
@@ -399,6 +433,10 @@ static MENU_UPDATE_FUNC(xpan_photo_capture_format_display)
 static void xpan_photo_jpeg_quality_select(void *priv, int sign)
 {
     (void)priv;
+#ifdef CONFIG_M50
+    if (!is_movie_mode()) m50_picq_step_quality(sign);
+    return;
+#endif
 #ifdef CONFIG_XPAN_BODY
     if (xpan_pic_quality_valid != 1 || !xpan_picq_is_known()) return;
 #endif
@@ -411,6 +449,12 @@ static void xpan_photo_jpeg_quality_select(void *priv, int sign)
 
 static MENU_UPDATE_FUNC(xpan_photo_jpeg_quality_display)
 {
+#ifdef CONFIG_M50
+    MENU_SET_VALUE("%s",m50_jpeg_quality_name());
+    MENU_SET_ENABLED(xpan_pic_quality_valid==1 && !is_movie_mode());
+    MENU_SET_HELP("The XPan JPEG: Large Fine or Large Normal.");
+    return;
+#endif
     xpan_photo_check_pic_quality_request();
 #ifdef CONFIG_XPAN_BODY
     if (xpan_pic_quality_valid != 1)
@@ -663,7 +707,11 @@ static MENU_UPDATE_FUNC(xpan_mode_display)
     MENU_SET_VALUE("%s",XPAN_ACTIVE ? "ON":"OFF");
     MENU_SET_ENABLED(XPAN_ACTIVE);
     if (xpan_auto_mode())
+#ifdef CONFIG_M50
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"XPan works in P, Tv, Av and M (and its LUT in video).");
+#else
         MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Not available in the A+ position of the mode dial.");
+#endif
 #ifdef CONFIG_XPAN
     const char *status=xpan_native_look_status();
     MENU_SET_HELP("SET toggles XPan. PLAY opens options. %s",status);
@@ -829,7 +877,8 @@ static struct menu_entry xpan_photo_menu[] = {
                 .update = xpan_photo_manual_lens_display,
                 .help = "Fallback f-number for an unchipped lens; enter the value set on its aperture ring. Readout only.",
             },
-            /* --- Development --- */
+            /* --- Development (M50: in XPan > Diagnostics) --- */
+#ifndef CONFIG_M50
             {
                 .name = "Debug info",
                 .priv = &xpan_photo_debug,
@@ -837,6 +886,7 @@ static struct menu_entry xpan_photo_menu[] = {
                 .choices = (const char *[]) {"OFF", "ON"},
                 .help = "Development only: key and touch diagnostics on the XPan HUD. Keep OFF.",
             },
+#endif
             MENU_EOL
         },
     },

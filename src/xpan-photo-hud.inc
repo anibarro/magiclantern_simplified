@@ -425,7 +425,11 @@ static void xpan_loading_box(int top, int bottom, int color)
     int x=360-W/2, y=(top+bottom)/2-XPAN_LOADING_H/2;
     char name[64],state[24];
     xpan_native_look_hud_label(name,sizeof(name),state,sizeof(state));
+#ifdef CONFIG_M50
+    const char *title=blocked ? "XPan needs 3:2":"Loading...";   /* xpan-m50.c: the only M50 block */
+#else
     const char *title=blocked ? "LUT not loaded":"Loading...";
+#endif
     const char *line=blocked ? blocked:name;
     int background=xpan_hud_background;
     xpan_hud_background=COLOR_TRANSPARENT_BLACK;   /* dims Live View, keeps it visible */

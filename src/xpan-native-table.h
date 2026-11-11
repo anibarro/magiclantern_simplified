@@ -32,6 +32,20 @@ struct xpan_native_cube_stats {
 int xpan_native_table_prepare_cube(uint32_t *output,const uint32_t *source,
     const struct xpan_lut *cube,unsigned strength,int identity,const struct xpan_lut *base,
     struct xpan_native_cube_stats *stats,uint32_t *format_flags);
+/* 17-point grid (M50 Lucky engine): the same composition on 17^3 nodes, from
+ * Canon's 10-point table resampled at the 17-point nodes. output has
+ * XPAN_GRID17_WORDS words. The node order is one of the candidate layouts
+ * until the camera test names the right one. */
+#define XPAN_GRID17_WORDS 4913u
+#define XPAN_GRID17_BYTES 0x4CC4u            /* Canon's loader size for grid 17 */
+enum { XPAN_GRID17_RGB=1,                    /* r + 17 g + 289 b */
+       XPAN_GRID17_BGR=2,                    /* b + 17 g + 289 r */
+       XPAN_GRID17_HALVES=3,                 /* eight blocks: nodes 0..8 / 9..16 per axis */
+       XPAN_GRID17_PARITY=4 };               /* eight blocks: even / odd nodes per axis */
+unsigned xpan_native17_index(unsigned layout, unsigned r, unsigned g, unsigned b);
+int xpan_native_table_prepare_cube17(uint32_t *output,const uint32_t *source,
+    const struct xpan_lut *cube,unsigned strength,int identity,const struct xpan_lut *base,
+    unsigned layout,struct xpan_native_cube_stats *stats,uint32_t *format_flags);
 /* Private JPEG_OBWB copy (392 bytes) with the four CFA WB gains lowered by
  * 'stops'. Returns 1, or <=0 (output unused) for an unexpected layout/value. */
 #define XPAN_OBWB_BYTES 392

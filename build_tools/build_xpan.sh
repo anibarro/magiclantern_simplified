@@ -76,19 +76,69 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     grep -q "0x2d, 0xe9, 0xfc, 0x41, 0x1f, 0x46, 0x15, 0x46" platform/M50.110/include/platform/mmu_patches.h || fail "colour-table hook lost its original-bytes check"
     if grep -q "CONFIG_INIT1_HIJACK" platform/M50.110/*.h; then fail "core-1 start hijack enabled on the M50 (conflicts with m50_release_core1)"; fi
     echo "ok: MMU remap with the checked colour-table hook, no core-1 hijack"
-    # 6a2. Custom LUT step 1 (README "Custom LUT, step 1"): the hook passes a
-    #      10-point table (size 0x1000) until the 17-point layout is known, XPan's
-    #      table only when the EOS M format check accepted Canon's, written back
-    #      to RAM and passed by its uncached address.
-    grep -q "canon_load(\*(void \*\*)canon_ctx(),a1,a2,use,0x1000,a3)" src/xpan-m50.c || fail "colour-table hook no longer passes size 0x1000"
-    grep -q "if (xpan_native_table_prepare_cube(m50_look_table," src/xpan-m50.c || fail "Custom LUT table not built by the checked EOS M conversion"
+    # 6a2. Custom LUT (README "Custom LUT, step 1" and "17-point grid: layout
+    #      test"): Canon's table always goes to Canon's loader with Canon's
+    #      size 0x1000. Size 0x4CC4 (17 points) only together with XPan's own
+    #      17-point table. XPan's tables only when the EOS M format check
+    #      accepted Canon's, written back to RAM, passed by the uncached address.
+    grep -q "canon_load(\*(void \*\*)canon_ctx(),a1,a2,use,size,a3)" src/xpan-m50.c || fail "colour-table hook no longer passes the table's own size"
+    grep -q "if (use==table) size=0x1000;" src/xpan-m50.c || fail "Canon's own colour table may get a size other than 0x1000"
+    [ "$(grep -c 'size=XPAN_GRID17_BYTES' src/xpan-m50.c)" = 1 ] && grep -q 'use=UNCACHEABLE(m50_look17\[m50_look17_cur\]); \*size=XPAN_GRID17_BYTES;' src/xpan-m50.c || fail "17-point size not tied to XPan's finished 17-point table"
+    grep -q 'if (m50_look17_cur>=0 && !memcmp(key,m50_look17_key,sizeof(key))) {' src/xpan-m50.c || fail "17-point table handed out without matching the shot's table, LUT and settings"
+    grep -q 'int target=1-m50_look17_handed;' src/xpan-m50.c || fail "17-point build may rewrite the table Canon had last"
+    grep -q "#define XPAN_GRID17_BYTES 0x4CC4u" src/xpan-native-table.h && grep -q "#define XPAN_GRID17_WORDS 4913u" src/xpan-native-table.h || fail "17-point table size changed"
+    grep -q "if (ok) dcache_clean((uint32_t)t,XPAN_GRID17_BYTES);" src/xpan-m50.c || fail "17-point table not cleaned to RAM before the develop reads it"
+    grep -q "uint8_t \*raw=malloc(XPAN_GRID17_WORDS\*4u+128u);" src/xpan-m50.c || fail "17-point table allocation changed (aligned, with room)"
+    LAP=$(sed -n '/^static void \*m50_look_apply(void \*table, int \*size)/,/^}/p' src/xpan-m50.c)
+    # The hook only compares for 17 points: the table is built in XPan's task.
+    if grep -nE 'msleep|take_semaphore\(|FIO_|malloc|NotifyBox|prepare_cube17' <<< "$LAP"; then fail "colour-table hook blocks, allocates, touches the card or builds the 17-point table"; fi
+    [ -n "$LAP" ] || fail "colour-table hook function not found"
+    grep -q "else if (xpan_native_table_prepare_cube(m50_look_table," src/xpan-m50.c || fail "Custom LUT table not built by the checked EOS M conversion"
     grep -q "dcache_clean((uint32_t)m50_look_table,sizeof(m50_look_table));" src/xpan-m50.c || fail "Custom LUT table not cleaned to RAM before the develop reads it"
     grep -q "use=UNCACHEABLE(m50_look_table);" src/xpan-m50.c || fail "Custom LUT table not passed by its uncached address"
-    echo "ok: Custom LUT passes a checked, cleaned 10-point table"
+    # 17-point is off until its camera failure is understood (README "17-point
+    # grid: camera test"): no build with it enabled may reach a card.
+    grep -q "^#define M50_GRID17_TEST 0$" src/xpan-m50.c || fail "17-point test is enabled: it hung the camera on 2026-11-10 (README)"
+    # 17-point layouts are bijections, even nodes equal Canon's, grey stays
+    # grey (host test with Canon's ROM table; needs the ROM dump).
+    G17_ROM=extras/M50/ROMS/ROM0.BIN
+    if [ -f "$G17_ROM" ]; then
+      G17=$(mktemp)
+      gcc -std=gnu99 -O1 -w -o "$G17" build_tools/xpan_grid17_test.c src/xpan-native-table.c src/xpan-lut.c || fail "17-point host test does not compile"
+      G17_OUT=$("$G17" "$G17_ROM") || { echo "$G17_OUT"; rm -f "$G17"; fail "17-point table host test"; }
+      rm -f "$G17"; echo "ok: $G17_OUT"
+    else
+      echo "note: no ROM dump, 17-point host test skipped"
+    fi
+    echo "ok: Custom LUT passes checked, cleaned tables; 17-point size only with XPan's 17-point table"
     # 6a3. XPan's working hooks plus the read-only display probe (camera test 2026-11-10: photos slow,
     #      clean-up of the JPEG setup, Live View grain and resize probes).
     HOOKS=$(grep -o "\.patch_addr = 0x[0-9a-f]*" platform/M50.110/include/platform/mmu_patches.h | sed 's/.*0x//' | sort | tr '\n' ' ')
-    [ "$HOOKS" = "e00e73bc e01389ac e01390e0 e042268a e0423406 e042667c e0776cc6 e086da10 " ] || fail "M50 MMU hooks changed: $HOOKS (expected colour table, display panel/EVF, AF converter probe, Live View filter map, grain stage)"
+    [ "$HOOKS" = "e00e73bc e01389ac e01390e0 e042268a e0423406 e042667c e0776cc6 e086da10 e08db920 " ] || fail "M50 MMU hooks changed: $HOOKS (expected colour table, display panel/EVF, AF converter probe, Live View filter map, grain stage, Hilton)"
+    # The 65:24 EXIF size comes from the save module's own table (crop patch 4);
+    # the EXIF hook (E00A551C) is gone.
+    if grep -n 'xpan_m50_exif_jpeg\|exif_tab' src/xpan-m50.c platform/M50.110/include/platform/mmu_patches.h; then fail "EXIF size hook is back (the save module's table patch replaces it)"; fi
+    # Hilton probe (README "Still processing path"): read only. XPan's function
+    # replaces Canon's whole E08DB920 and must make Canon's two calls with
+    # Canon's own pointers; the record never writes a Canon block.
+    HIL=$(sed -n '/^int xpan_m50_hilton(void \*obwb, void \*corr)/,/^}/p' src/xpan-m50.c)
+    grep -q 'const set_fn canon_obwb=(set_fn)0xE08E56F7;' <<< "$HIL" && grep -q 'const set_fn canon_corr=(set_fn)0xE08E57AB;' <<< "$HIL" || fail "Hilton probe: Canon's register writers changed"
+    grep -q 'if (use) ret=canon_obwb(use);' <<< "$HIL" && grep -q 'if (corr) return canon_corr(corr);' <<< "$HIL" || fail "Hilton hook no longer makes Canon's two calls"
+    # Highlight headroom (README "Highlight headroom on the 14-bit data"):
+    # Canon's block or XPan's copy of it, the copy only for the checked
+    # layout, only the four gains changed, by 1 or 2 EV; not saved.
+    [ "$(grep -c 'use=hil_copy;' <<< "$HIL")" = 1 ] && grep -q 'void \*use=obwb;' <<< "$HIL" || fail "Hilton hook passes something other than Canon's block or XPan's copy"
+    grep -q 'if (base_ok && hil_readable((uint32_t)b) && xpan_photo_enabled() && !is_movie_mode() && hil_layout_ok(b)) {' <<< "$HIL" || fail "headroom copy no longer limited to XPan's stills and the checked layout"
+    grep -q 'stops=1;' <<< "$HIL" && grep -q 'for (int k=9;k<13;k++) hil_copy\[k\]=(b\[k\]+(1u<<(stops-1)))>>stops;' <<< "$HIL" || fail "headroom changes more than the four gains, or more than 1 EV"
+    # Lowered gains only for a photo that will get the matching base (CIN1EV):
+    # never a darker photo without its base.
+    grep -q 'int base_ok=m50_look_on && m50_cube_valid && m50_bases\[0\].valid && m50_bases\[1\].valid && !live_applied;' <<< "$HIL" && grep -q 'if (m50_tone_cineon==2 && obwb) {' <<< "$HIL" || fail "headroom no longer limited to photos with the CIN1EV base"
+    grep -q 'hil_shot_lowered=1;' <<< "$HIL" && grep -q 'const struct xpan_lut \*base=lowered ? &m50_bases\[1\].lut :' src/xpan-m50.c || fail "a photo with lowered gains may not get the CIN1EV base"
+    grep -q 'MAKE_M50_CIN1EV\|M50/CIN1EV.cube' platform/M50.110/Makefile || fail "M50 package lost its CIN1EV.cube"
+    HILR=$(sed -n '/^static void hil_record(const uint32_t \*obwb, const uint32_t \*corr, uint32_t lr, int stops)/,/^}/p' src/xpan-m50.c)
+    [ -n "$HIL" ] && [ -n "$HILR" ] || fail "Hilton probe functions not found"
+    # (r->obwb[k]= is XPan's own record; a bare obwb[k]= would be Canon's block)
+    if grep -nE '(^|[^>.a-z_])(obwb|corr)\[[^]]*\] *=[^=]|memcpy|msleep|take_semaphore|FIO_|snprintf|malloc' <<< "$HIL$HILR"; then fail "Hilton probe writes Canon's block, blocks or allocates"; fi
     # AF converter probe (README "Touch AF and Canon's AF box"): read only,
     # Canon's converter always runs with the same arguments.
     AFC=$(sed -n '/^int xpan_m50_af_conv(void \*frame/,/^}/p' src/xpan-m50.c)
@@ -118,17 +168,72 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     # only, Canon's setter always runs, trampolines replay its first 8 bytes.
     for H in panel evf; do
       DP=$(sed -n "/^int xpan_m50_disp_$H(void \*p/,/^}/p" src/xpan-m50.c)
-      grep -q "return xpan_m50_disp_${H}_tramp(p,a1,a2,a3,s0,s1);" <<< "$DP" || fail "display probe ($H) does not always run Canon's setter"
+      [ "$(grep -c "xpan_m50_disp_${H}_tramp(" <<< "$DP")" = 1 ] || fail "display probe ($H) does not always run Canon's setter exactly once"
       # The 65:24 placement changes only XPan's copy (q), never Canon's block.
-      if grep -nE '(^|[^>.a-z_])p\[[^]]*\] *=[^=]' <<< "$DP"; then fail "display hook ($H) writes Canon's parameter block"; fi
+      if grep -nE '(^|[^>.a-z_])p\[[^]]*\] *=[^=]' <<< "$DP$(sed -n '/^static int disp_hook(int k/,/^}/p' src/xpan-m50.c)"; then fail "display hook ($H) writes Canon's parameter block"; fi
     done
-    # 65:24 live picture (README "Live View crop: the display's image layer"):
-    # only the exact LCD block, source/destination row and height (words 6, 8,
-    # 10) from XPan's geometry, checked to stay inside 480 rows.
-    DPP=$(sed -n '/^int xpan_m50_disp_panel(void \*p/,/^}/p' src/xpan-m50.c)
-    grep -q 'if (disp_lcd_block((const uint32_t \*)p) && disp_band(&src_y,&dst_y,&h)) {' <<< "$DPP" && grep -q 'q\[6\]=src_y; q\[8\]=dst_y; q\[10\]=h;' <<< "$DPP" || fail "65:24 live picture placement changed"
-    grep -q 'if (x || w!=720 || y<0 || hh<2 || y+hh>480 || d<0 || d+hh>480) return 0;' src/xpan-m50.c || fail "65:24 live picture rows not bounded to the 480-row panel"
+    # 65:24 live picture (README "Canon's main menu breaks Live View: the
+    # cause"): the geometry changes only inside Canon's transition call
+    # (a2 != 0); normal frames always get the geometry decided there.
+    DHK=$(sed -n '/^static int disp_hook(int k, void \*p, int a2, uint32_t q\[16\])/,/^}/p' src/xpan-m50.c)
+    [ -n "$DHK" ] || fail "display placement function not found"
+    grep -q '    if (a2) band_decide(l,k);' <<< "$DHK" && [ "$(grep -c 'band_decide(' src/xpan-m50.c)" = 2 ] || fail "Live View geometry may change outside Canon's transition call (menu hang, Err 70)"
+    grep -q 'if (mv) { memcpy(q,p,16\*sizeof(uint32_t)); q\[6\]=l->s; q\[8\]=l->d; q\[10\]=l->h; }' <<< "$DHK" || fail "65:24 live picture placement changed"
+    grep -q '    int mv=blk && l->mv && lv_shown;' <<< "$DHK" && grep -q '    int lv_shown=lv && !PLAY_OR_QR_MODE;' <<< "$DHK" || fail "65:24 band also moves Canon's quick review / playback picture"
+    for H in panel evf; do
+      DP=$(sed -n "/^int xpan_m50_disp_$H(void \*p/,/^}/p" src/xpan-m50.c)
+      grep -q "return xpan_m50_disp_${H}_tramp(mv ? (void \*)q : p,a1,a2,a3,s0,s1);" <<< "$DP" || fail "display hook ($H) does not always run Canon's setter with Canon's block or XPan's copy"
+    done
+    grep -q '    y&=~1; hh&=~1; dd&=~1;' src/xpan-m50.c && grep -q 'if (x || w!=720 || y<0 || hh<2 || y+hh>480 || dd<0 || dd+hh>480) return 0;' src/xpan-m50.c || fail "Live View band not even or not bounded to the 480-row picture"
     grep -q 'return cfg_ram((uint32_t)p) && p\[0\]==1 && p\[3\]==736 && p\[4\]==480 && !p\[5\] && !p\[6\] && !p\[7\] && !p\[8\]' src/xpan-m50.c || fail "65:24 live picture no longer limited to Canon's LCD block"
+    if grep -n 'lvgeo\|LVGEO\|M50_LV_PLACE\|disp_decide\|disp_latch\|M50_DISP_MOVE\|hang_capture\|XM50HANG' src/xpan-m50.c; then fail "table placement or diagnostic code is back"; fi
+    # Forced Live View restart (README "... forced restart"): only through
+    # Canon's menu request, once per target, from the XPan task, never
+    # blocking, with a bound on each step; nothing else asks for a GUI mode.
+    BRS=$(sed -n '/^static void band_restart_step(void)$/,/^}/p' src/xpan-m50.c)
+    [ -n "$BRS" ] || fail "forced Live View restart not found"
+    if grep -n 'SetGUIRequestMode(' src/xpan-m50.c; then fail "XPan asks Canon for a GUI mode directly (froze Live View, 766c9f6c6f54); use Canon's MENU button path"; fi
+    [ "$(grep -c 'fake_simple_button(BGMT_MENU);' src/xpan-m50.c)" = 2 ] && [ "$(grep -c 'fake_simple_button(BGMT_MENU);' <<< "$BRS")" = 2 ] || fail "MENU presses outside the forced Live View restart"
+    grep -q 'if (MENU_MODE && !lv && now-quiet_ms>=300) {' <<< "$BRS" || fail "forced Live View restart closes the menu before Canon's Live View has stopped"
+    grep -q 'br_tried=key;' <<< "$BRS" && grep -q 'key==br_tried' <<< "$BRS" || fail "forced Live View restart may repeat for the same band"
+    [ "$(grep -c 'now-br_ms>3000' <<< "$BRS")" = 2 ] && [ "$(grep -c 'br_state=BR_OFF' <<< "$BRS")" = 2 ] || fail "forced Live View restart step without a bound"
+    grep -q '&& gui_state==GUISTATE_IDLE && !gui_menu_shown() && !xpan_photo_canon_layout() && !canon_layout_state' <<< "$BRS" && grep -q '!get_halfshutter_pressed() && !lens_info.job_state && NOT_RECORDING' <<< "$BRS" || fail "forced Live View restart may run while Canon is busy"
+    if grep -nE 'msleep|take_semaphore|FIO_|band_decide' <<< "$BRS"; then fail "forced Live View restart blocks or places the band itself"; fi
+    grep -q 'if (get_ms_clock()-start>3000) band_restart_step();' src/xpan-m50.c || fail "forced Live View restart not called from the XPan task"
+    # Off until reworked: 766c9f6c6f54 froze Live View at the first start.
+    grep -q '^#define M50_LV_RESTART 1' src/xpan-m50.c && grep -q '^#define M50_BOOT_DUMP 0' src/xpan-m50.c || fail "forced Live View restart off, or the per-start Canon log test still on"
+    # UI-lock log: read only.
+    ULK=$(sed -n '/^static void m50_uilock_prop(/,/^}/p;/^static void disp_gap(int k)$/,/^}/p' src/xpan-m50.c)
+    [ -n "$ULK" ] || fail "UI-lock log not found"
+    if grep -nE 'prop_request_change|msleep|take_semaphore|FIO_|malloc|\*\(uint32_t \*\)data *=[^=]' <<< "$ULK"; then fail "UI-lock log writes, blocks or allocates"; fi
+    # Canon's debug log at the hang: only Canon's own dumpf, from the XPan
+    # task, once per start automatically; nothing waits or allocates.
+    CDS=$(sed -n '/^static void canon_dump_step(void)$/,/^}/p' src/xpan-m50.c)
+    [ -n "$CDS" ] && [ "$(grep -c 'call("dumpf");' src/xpan-m50.c)" = 4 ] && [ "$(grep -c 'call("dumpf");' <<< "$CDS")" = 3 ] || fail "Canon log dump outside its step"
+    # ... and at a stuck power-off: Debug info only, 5 s after the power-off
+    # started, once, nothing else touches the card or Canon there.
+    CDO=$(sed -n '/^static int canon_dump_stuck_off(void)$/,/^}/p' src/xpan-m50.c)
+    [ "$(grep -c 'call("dumpf");' <<< "$CDO")" = 1 ] && grep -q 'if (canon_dumped_off || !m50_dbg()) return 1;' <<< "$CDO" && grep -q 'if (get_ms_clock()-off_ms<5000) return 0;' <<< "$CDO" || fail "stuck power-off Canon log not limited to Debug info, 5 s, once"
+    if grep -nE 'msleep|take_semaphore|FIO_|malloc|prop_request_change|call\("dm|dm_set' <<< "$CDO"; then fail "stuck power-off Canon log blocks, writes or changes Canon"; fi
+    # Display on (README-XPAN-M50.md "Display on"): Canon's own flag, and
+    # nothing touches Canon's screen while it is off.
+    grep -qF '#define DISPLAY_IS_ON               (!*(volatile uint8_t *)0x8EB9)' platform/M50.110/consts.h || fail "M50 DISPLAY_IS_ON is not Canon's checked display-off flag"
+    sed -n '/^void _redraw_do()$/,/^}/p' src/zebra.c | grep -qF 'if (!DISPLAY_IS_ON) { ml_redraw_deferred=1; return; }' || fail "ML's redraw runs Canon's dialog redraw with the display off"
+    sed -n '/^void refresh_yuv_from_rgb(void)/,/^}/p' src/bmp.c | grep -A1 -F 'if (!DISPLAY_IS_ON)' | grep -q 'return;' || fail "ML pushes its layer with Canon's display off"
+    grep -qF 'if (!DISPLAY_IS_ON) { idle_since=0; return; }' src/xpan-m50.c && grep -qF '|| canon_layout_state || !DISPLAY_IS_ON) return;' src/xpan-m50.c || fail "XPan's Canon layout or dim overlay runs with Canon's display off"
+    grep -qF 'if (ml_redraw_deferred && DISPLAY_IS_ON) {' src/xpan-m50.c || fail "deferred redraw never done"
+    # ... and only back in XPan's Live View: elsewhere Canon has drawn its own
+    # screen (camera test 2026-11-11: Canon's menu came up blank).
+    grep -A2 -F 'if (ml_redraw_deferred && DISPLAY_IS_ON) {' src/xpan-m50.c | grep -qF 'if (xpan_photo_ui_active() && gui_state==GUISTATE_IDLE && !menu) { xpan_photo_hud_force_redraw(); redraw(); }' || fail "deferred redraw clears Canon's menu or playback"
+    # ML's redraw stage marker (zebra.c): records where _redraw_do is, nothing else.
+    grep -q '^#define ML_REDRAW_STAGE(s) { ml_redraw_stage=(s); ml_redraw_stage_ms=get_ms_clock(); }' src/zebra.c && [ "$(grep -c 'ML_REDRAW_STAGE([0-3]);' src/zebra.c)" = 4 ] && grep -A1 'ML_REDRAW_STAGE(2);' src/zebra.c | grep -q 'dialog_redraw(LiveViewApp_dialog);' || fail "redraw stage marker changed"
+    # Task states into Canon's log before its dump: reads DryOS's records only.
+    MLT=$(sed -n '/^static void m50_log_tasks(void)$/,/^}/p' src/xpan-m50.c)
+    [ -n "$MLT" ] && [ "$(grep -c 'm50_log_tasks();' src/xpan-m50.c)" = 2 ] || fail "task state log missing or called outside the Canon log dumps"
+    if grep -nE 'msleep|take_semaphore|give_semaphore|FIO_|malloc|prop_request_change|call\(|[^=!<>]=[^=]*;.*\*\(uint32_t \*\)|\*\([^)]*\)[^=]*= ' <<< "$MLT" | grep -v 'uint32_t w=\*(const uint32_t \*)p;'; then fail "task state log writes, blocks or calls Canon"; fi
+    grep -q 'if (canon_dumped) return;' <<< "$CDS" && grep -q 'canon_dumped=1;' <<< "$CDS" || fail "automatic Canon log dump not limited to once per start"
+    if grep -nE 'msleep|take_semaphore|FIO_|malloc|call\("dm|dm_set' <<< "$CDS"; then fail "Canon log dump blocks, allocates or changes Canon's log levels"; fi
+    grep -q '        canon_dump_step();' src/xpan-m50.c || fail "Canon log dump not called from the XPan task"
     grep -q '1:  .word 0xE01389B5' src/xpan-m50.c && grep -q '2:  .word 0xE01390E9' src/xpan-m50.c && [ "$(grep -c 'adds r0, #0x14\\n"' src/xpan-m50.c)" = 2 ] || fail "display probe trampolines changed"
     DREC=$(sed -n '/^static void disp_record/,/^}/p' src/xpan-m50.c)
     if grep -nE '(^|[^>.a-z_])p\[[^]]*\] *=[^=]|msleep|take_semaphore|FIO_|snprintf|malloc' <<< "$DREC"; then fail "display probe writes Canon's block, blocks or allocates"; fi
@@ -139,6 +244,8 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     # patch_mmu_space.c; README "Memory for a second hooked page").
     MMU_PAGES=$(grep -oE "^#define CONFIG_MMU_REMAP_PAGES [0-9]+" platform/M50.110/internals.h | awk '{print $3}')
     [ -n "$MMU_PAGES" ] && [ "$PAGES" -le "$MMU_PAGES" ] || fail "MMU hooks span $PAGES ROM pages, only ${MMU_PAGES:-1} reserved (CONFIG_MMU_REMAP_PAGES)"
+    # The runtime ROM patch (65:24 encoder table, E0FC) needs its own page.
+    [ $(( PAGES + 1 )) -le "$MMU_PAGES" ] || fail "no reserved MMU page left for the 65:24 encoder table"
     grep -q " generic_mmu_space$" <<< "$SYMS" || fail "generic_mmu_space missing"
     if grep -q "^static uint8_t generic_mmu_space" src/patch_mmu.c; then fail "generic_mmu_space back in patch_mmu.c (its 64 KB alignment pads patch_mmu.o's .bss twice)"; fi
     grep -q "MMU_L2_TABLE_SIZE \* num_64k_pages;" src/patch_mmu.c || fail "L2 table space check uses sizeof() again"
@@ -164,6 +271,18 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     if sed -n '/^static int patch_memory_rom/,/^}/p' src/patch_mmu.c | grep -q 'reserve_heap_pages'; then fail "heap pages reserved inside the patch critical section"; fi
     [ "$(tr -d '\r\n ' <<< "$(sed -n '/^int apply_normal_patches/,/^}/p' src/patch_mmu.c)" | grep -o '^intapply_normal_patches(void){#ifdefined(CONFIG_MMU_REMAP_SMALL_PAGES)&&!defined(CONFIG_ALLOCATE_MEMORY_POOL)reserve_heap_pages();' | wc -l)" = 1 ] || fail "heap pages not reserved first in apply_normal_patches()"
     [ "$(grep -c 'reserve_heap_pages();' src/patch_mmu.c)" = 1 ] || fail "reserve_heap_pages() called from more than one place"
+    # Menu hang (README "Menu hang: Canon's own log"): ROM pages are copied
+    # before the critical section, and each hook gets its own apply_patches()
+    # call, so ML's start never stops the camera for long while Live View runs.
+    ANP=$(sed -n '/^int apply_normal_patches/,/^}/p' src/patch_mmu.c)
+    grep -q 'if (apply_patches(&code_patches\[i\], 1))' <<< "$ANP" || fail "MMU hooks installed in one long critical section again (menu hang)"
+    # Every apply_patches() copies its ROM pages before cli() (the 65:24
+    # encoder patch at ~4.7 s stalled Live View too, Canon's LOG005).
+    APS=$(tr -d '\r' < src/patch.c | sed -n '/^int apply_patches(struct patch \*patches, uint32_t count)/,/^}/p')
+    [ "$(grep -n 'mmu_prefill_rom_pages(patches, count);' <<< "$APS" | cut -d: -f1)" -lt "$(grep -n 'uint32_t old_int = cli();' <<< "$APS" | cut -d: -f1)" ] 2>/dev/null || fail "apply_patches() copies ROM pages inside its critical section (menu hang)"
+    PF=$(sed -n '/^static void prefill_heap_page(uint32_t addr)/,/^}/p' src/patch_mmu.c)
+    grep -q 'memcpy_dryos(heap_pages\[i\], (uint8_t \*)base, MMU_PAGE_SIZE);' <<< "$PF" && ! grep -qE 'cli\(|malloc' <<< "$PF" || fail "ROM page prefill changed"
+    grep -q 'if (heap_page_rom\[backing_page_index\] != rom_page)' src/patch_mmu.c || fail "critical section copies ROM pages again"
     # Live View filter map (README "Live View without Canon's filter"): Canon's
     # function always runs; the trampoline reproduces its first 8 bytes, the
     # bcc included; XPan's case returns Canon's own kind-0 value.
@@ -179,7 +298,56 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     # patches, through apply_patches (old values checked), after checking both
     # tables, never while half-pressed/busy/recording; undone on any error.
     CRP=$(sed -n '/^static void m50_crop_poll/,/^}/p' src/xpan-m50.c)
-    [ "$(grep -c 'apply_patches(' src/xpan-m50.c)" = 1 ] && grep -q 'crop_err=apply_patches(crop_patch,3);' <<< "$CRP" || fail "Canon tables patched outside m50_crop_poll"
+    [ "$(grep -c 'apply_patches(' src/xpan-m50.c)" = 1 ] && grep -q 'crop_err=apply_patches(crop_patch,n);' <<< "$CRP" || fail "Canon tables patched outside m50_crop_poll"
+    # The save module's copy (README "The AF block's image size"): only its
+    # 3:2 L height, only when found as Canon's table, undone with the crop.
+    FSE=$(sed -n '/^static uint32_t fcs_size_entry(void)/,/^}/p' src/xpan-m50.c)
+    grep -q "if (name\[0\]!='C' || name\[1\]!='a' || name\[2\]!='n' || name\[3\]!='o' || name\[4\]!='n') return 0;" <<< "$FSE" && grep -q 'if (t\[0x48/4\]!=6000 || t\[0x4C/4\]!=CROP_FULL_H || t\[0x58/4\]!=6000 || t\[0x5C/4\]!=3368) return 0;' <<< "$FSE" || fail "save module's table patched without checking it"
+    grep -q 'crop_patch\[3\]=(struct patch){ .addr=(uint8_t \*)(f+4), .old_value=CROP_FULL_H, .new_value=CROP_H, .size=4,' <<< "$CRP" && grep -q 'for (int i=0;i<4;i++) if (crop_patch\[i\].addr) unpatch_memory' src/xpan-m50.c || fail "save module's table patch changed or not undone"
+    # XPan menu (README "XPan menu"): on/off rows without a priv draw their own
+    # state; development rows only inside XPan > Diagnostics.
+    for F in look_display live_lut_display grain_display debug_info_display; do
+      sed -n "/^static MENU_UPDATE_FUNC($F)/,/^}/p" src/xpan-m50.c | grep -q 'MENU_SET_ENABLED(' || fail "XPan menu row ($F) drawn OFF while on: no MENU_SET_ENABLED"
+    done
+    XM=$(sed -n '/^static struct menu_entry xpan_m50_menu\[\]={/,/^};/p' src/xpan-m50.c)
+    DIAG=$(grep -n '{ .name="Diagnostics"' <<< "$XM" | cut -d: -f1)
+    [ -n "$DIAG" ] || fail "XPan > Diagnostics submenu missing"
+    for N in "Canon settings" "Learned settings" "Save Canon log" "Touch probe" "Exposure probe" "65:24 JPEG crop"; do
+      L=$(grep -n "{ .name=\"$N\"" <<< "$XM" | cut -d: -f1)
+      [ -n "$L" ] && [ "$L" -gt "$DIAG" ] || fail "development row \"$N\" outside XPan > Diagnostics"
+    done
+    if grep -q '"Watermark"' <<< "$XM"; then fail "XPan menu shows the Watermark row the M50 does not have"; fi
+    # Rows with a fixed list of values use ML's choice list, so ML's picker
+    # shows names, not numbers, and the first value is not drawn OFF.
+    for N in "Tone base" "Grain size"; do
+      grep -A1 "{ .name=\"$N\"" <<< "$XM" | grep -q '\.choices=CHOICES(' || fail "XPan menu row \"$N\" without a choice list (picker shows numbers)"
+    done
+    if grep -q 'Cineon log +1 EV"' <<< "$XM"; then fail "Tone base value too long for the menu row"; fi
+    # The M50's semi-transparent black (3:2 panel) must not reach ML's own
+    # clears: they use COLOR_EMPTY.
+    grep -q '^#define RGB_TRANSPARENT_BLACK 0xa0000000\s*$' src/bmp.c && grep -q 'memset(bmp_vram_indexed, COLOR_EMPTY, BMP_VRAM_SIZE);' src/bmp.c || fail "M50 transparent black or ML's initial clear changed"
+    if grep -q 'memset(bmp_vram_indexed, COLOR_TRANSPARENT_BLACK' src/bmp.c; then fail "ML's layer starts semi-transparent black on the M50"; fi
+    # Video mode (README-XPAN-M50.md "Video mode"): Canon's PROP_SHOOTING_MODE,
+    # photo modes only outside video, the movie LUT and Neutral with XPan's
+    # movie switch, the photo format never in video.
+    grep -A7 'defined(CONFIG_M50)' src/propvalues.c | grep -qF 'return shooting_mode_custom == SHOOTMODE_MOVIE;' || fail "M50 is_movie_mode is not Canon's PROP_SHOOTING_MODE"
+    sed -n '/^static int m50_pasm(void)$/,/^}/p' src/xpan-m50.c | grep -qF 'return !is_movie_mode() && M50_PASM(shooting_mode) && M50_PASM(shooting_mode_custom);' || fail "M50 photo-mode test true in video or outside P/Tv/Av/M"
+    # XPan only in P, Tv, Av and M (README-XPAN-M50.md): photo side off in every
+    # other dial position, movie LUT on its own switch, no mode forcing.
+    XAM=$(sed -n '/^static int xpan_auto_mode(void)$/,/^}/p' src/cropmarks.c)
+    grep -qF 'if (is_movie_mode()) return 0;' <<< "$XAM" && grep -qF 'return !(XPAN_PASM(shooting_mode) && XPAN_PASM(shooting_mode_custom));' <<< "$XAM" || fail "M50 XPan active outside P/Tv/Av/M"
+    sed -n '/^static void keep_manual_mode(void)$/,/^}/p' src/xpan-hud-controls.c | grep -A3 -F '#if defined(CONFIG_M50) || defined(CONFIG_6D)' | grep -q 'return;' || fail "XPan changes the M50's shooting mode"
+    grep -qF 'int on=movie ? xpan_movie_enabled() : xpan_photo_enabled() && m50_pasm();' src/xpan-m50.c && grep -qF 'if (!movie && m50_picq_known() && !picq_write_req) {' src/xpan-m50.c || fail "forced settings wrong in video"
+    grep -qF '&& (is_movie_mode() ? xpan_movie_enabled() : m50_live_on && xpan_photo_enabled());' src/xpan-m50.c || fail "movie LUT not on XPan's movie switch"
+    # ML menu in Live View (README-XPAN-M50.md "ML menu timeout"): Canon drops
+    # the GUI mode ML's menu sits on after 6 s unless ML re-requests it.
+    grep -q '^#define CONFIG_MENU_TIMEOUT_FIX' platform/M50.110/internals.h || fail "ML menu closes after 6 s in Live View (CONFIG_MENU_TIMEOUT_FIX missing)"
+    # ... and each refresh masks Canon's redrawn dialog, as opening the menu does.
+    grep -A12 'refresh Canon dialog before it times out' src/menu.c | grep -A1 -F 'start_redraw_flood();' | grep -qF '#endif' || fail "menu refresh leaves Canon's icons over ML's menu"
+    # Mode log: Debug info only.
+    sed -n '/^static void m50_log_mode(void)$/,/^}/p' src/xpan-m50.c | grep -q 'if (!m50_dbg()) return;' || fail "mode log runs without Debug info"
+    # UI state log: Debug info only.
+    sed -n '/^static void m50_log_ui(uint32_t st)$/,/^}/p' src/xpan-m50.c | grep -q 'if (!m50_dbg()) return;' || fail "UI state log runs without Debug info"
     grep -q 'if (get_halfshutter_pressed() || lens_info.job_state || RECORDING) return;' <<< "$CRP" || fail "65:24 crop lost its busy guard"
     grep -q 'if (crop_err) { crop_undo(); crop_refused=1; return; }' <<< "$CRP" || fail "65:24 crop not undone on a partial failure"
     grep -q "enc\[0\]!=6000 || enc\[1\]!=0 || enc\[2\]!=0 || enc\[10\]!=(CROP_FULL_H/8u-1u)" <<< "$CRP" || fail "65:24 crop lost its encoder table check"
@@ -191,12 +359,14 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     # outer cacheable); only the remapped page gets RAM attributes (README "ROM
     # attributes in hooked sections": Live View stutter otherwise).
     grep -q 'flags_section);' src/patch_mmu.c && grep -q 'uint32_t flags_section = get_l2_largepage_flags_from_l1_section((uint32_t)patch->addr, CANON_ORIG_MMU_TABLE_ADDR);' src/patch_mmu.c || fail "hooked sections no longer keep Canon's ROM attributes"
-    echo "ok: six hooks (display placement, AF converter probe read only), no old probe code; $PAGES hooked ROM pages of $MMU_PAGES reserved (one more for the 65:24 encoder table)"
+    echo "ok: six hooks (display placement, AF converter probe read only), no old probe code; $PAGES hooked ROM pages of $MMU_PAGES reserved (+1 for the 65:24 encoder table)"
     # XPan off = Canon (camera test 2026-11-10: photos slow with XPan off): grain,
     # photo LUT and Live LUT only while XPan is on, in photo mode, as on the EOS M.
-    grep -q 'static int film_stage_wanted(void) { return M50_STAGE_GRAIN && film_grain && grain_strength>0 && xpan_photo_enabled() && !is_movie_mode(); }' src/xpan-m50.c || fail "film grain runs with XPan off"
+    grep -q 'static int film_stage_wanted(void) { return M50_STAGE_GRAIN && film_grain && grain_strength>0 && xpan_photo_enabled() && !is_movie_mode() && !m50_picq_raw_wanted(); }' src/xpan-m50.c || fail "film grain runs with XPan off"
     grep -A1 'go=m50_look_on && m50_cube_valid' src/xpan-m50.c | grep -q 'xpan_photo_enabled() && !is_movie_mode()' || fail "photo LUT applied with XPan off"
-    grep -A1 'int want=m50_live_on && m50_look_on' src/xpan-m50.c | grep -q 'xpan_photo_enabled() && !is_movie_mode()' || fail "Live LUT preview active with XPan off"
+    # Live LUT library: photo with XPan's photo switch, video with its movie
+    # switch (README-XPAN-M50.md "Video mode").
+    grep -A1 'int want=m50_look_on && m50_cube_valid' src/xpan-m50.c | grep -qF '(is_movie_mode() ? xpan_movie_enabled() : m50_live_on && xpan_photo_enabled())' || fail "Live LUT preview active with XPan off"
     echo "ok: grain, photo LUT and Live LUT only while XPan is on"
     # EVF crashes (README "EVF crashes"): ML writes Canon's RGBA layer only when it
     # is Canon's current one and holds at least 960x540 pixels, under winsys_sem,
@@ -232,9 +402,7 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     grep -q 'xpan_hud_last_clipped=(y<BMP_H_MINUS || y+XPAN_PHOTO_HUD_HEIGHT>480);' src/xpan-photo-hud.inc || fail "HUD refuses EVF rows above 0"
     if grep -nE 'last_hud_y *(>=|<) *0|last_hud_y=-1|xpan_hud_last_y *< *0' src/xpan-photo-hud.inc; then fail "HUD uses a negative row as 'nothing drawn' (EVF panels start at -30)"; fi
     grep -q 'for (int y=BMP_H_MINUS; y<480; y++) {' <<< "$(sed -n '/^static void canon_ui_enter/,/^}/p' src/xpan-m50.c)" || fail "Canon UI dim leaves the EVF top rows bright"
-    DPE=$(sed -n '/^int xpan_m50_disp_evf(void \*p/,/^}/p' src/xpan-m50.c)
-    grep -q 'if (disp_evf_block((const uint32_t \*)p) && disp_band(&src_y,&dst_y,&h)) {' <<< "$DPE" && grep -q 'if (ed+eh>682) ed=682-eh;' <<< "$DPE" && grep -q 'q\[6\]=es; q\[8\]=ed; q\[10\]=eh;' <<< "$DPE" || fail "EVF band placement changed or unbounded"
-    grep -q '&& p\[9\]==1024 && p\[10\]==682;' src/xpan-m50.c || fail "EVF band no longer limited to Canon's EVF block"
+    grep -q '    if (\*ed+\*eh>682) \*ed=682-\*eh;' src/xpan-m50.c || fail "EVF band not bounded to Canon's 682-row EVF picture"
     echo "ok: EVF layout on Canon's EVF picture, band placed by the display, bounded and cleared"
     # 6a3b. Grain stage probe (README "Grain stage probe"): read only, Canon's
     #       driver always runs through the trampoline, which replays E086DA10's
@@ -330,10 +498,10 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     grep -q "m50_check_start = cmd" src/gui.c || fail "gui.c no longer flags Canon's check command"
     grep -q " xpan_m50_card_ok$" <<< "$SYMS" || fail "power-off card guard (xpan_m50_card_ok) missing"
     grep -q "xpan_m50_card_ok()) return" src/xpan-hud-controls.c || fail "key log writes without the power-off guard"
-    grep -q "xpan_m50_card_ok()) continue" src/xpan-m50.c || fail "XPan M50 task works without the power-off guard"
-    grep -q "FIO_RemoveFile(ISO_GUARD);" src/xpan-m50.c && [ "$(grep -c 'FIO_RemoveFile(ISO_GUARD)' src/xpan-m50.c)" = 1 ] || fail "ISO guard removed from more than one place (one may run at power-off)"
+    grep -qF "if (!xpan_m50_card_ok()) { canon_dump_stuck_off(); continue; }" src/xpan-m50.c || fail "XPan M50 task works without the power-off guard"
+    if grep -nE 'ISO_GUARD|m50_iso_reader_on|"ISO reader"|"ISO write test"' src/xpan-m50.c; then fail "ISO reader switch, guard file or test rows are back (ISO is read like any setting)"; fi
+    grep -q 'if (!iso_checked && get_ms_clock()-start>5000) { iso_checked=1; iso_reader_register(); }' src/xpan-m50.c || fail "ISO reader not always started"
     grep -q "ui_hook_remove(0)" src/xpan-m50.c || fail "dial callback not restored at power-off"
-    grep -q '"xpan.m50.iso_reader"' src/xpan-m50.c || fail "ISO reader on/off setting missing"
     grep -q '!M50_CHECK_CMD() && gui_wait' src/init.c || fail "GUI wait no longer ends on Canon's check command"
     echo "ok: check start caught, no XPan card writes at power-off"
     # 6c4. Switch-on after a door close hung inside Canon's init_task (2026-11-08):
@@ -370,7 +538,25 @@ fail() { echo "CHECK FAILED: $*"; exit 1; }
     #      keep its recorded-option guard and stay out of busy/half-press states.
     grep -q " m50_ctl_write_now$" <<< "$SYMS" || grep -q "static void m50_ctl_write_now" src/xpan-m50.c || fail "learned-settings writer missing"
     grep -q "if (idx>=c->nopts || get_halfshutter_pressed() || lens_info.job_state || RECORDING)" src/xpan-m50.c || fail "learned-settings writer lost its guard"
-    if grep -n "_prop_request_change(" src/xpan-m50.c | grep -vqE "PROP_ISO|PROP_SHUTTER|PROP_APERTURE|PROP_M50_LV_CFILTER|c->props\[p\]|extern void"; then fail "a property write outside the checked writers in xpan-m50.c"; fi
+    if grep -n "_prop_request_change(" src/xpan-m50.c | grep -vqE "PROP_ISO|PROP_SHUTTER|PROP_APERTURE|PROP_M50_LV_CFILTER|PROP_PIC_QUALITY2?,&q,4|PROP_PICTURE_STYLE,&v,lutp_ps_len|PROP_IMAGE_ASPECT_RATIO,&v,4|c->props\[p\]|extern void"; then fail "a property write outside the checked writers in xpan-m50.c"; fi
+    # Capture format (README "Capture format on the M50"): only the M50 PICQ layout,
+    # always L with a JPEG; forced settings only in P/Tv/Av/M, idle, bounded tries.
+    PQW=$(sed -n '/^static void m50_picq_write_now(void)/,/^}/p' src/xpan-m50.c)
+    grep -q "if ((q&0xFF) || (kind!=0x01 && kind!=0x07) || (qual!=2 && qual!=3) || (raw!=3 && raw!=4)) return;" <<< "$PQW" && grep -q 'if (!m50_picq_known() || get_halfshutter_pressed() || lens_info.job_state || RECORDING) return;' <<< "$PQW" || fail "PICQ writer writes outside the M50 layout or while Canon is busy"
+    FST=$(sed -n '/^static void m50_force_step(void)/,/^}/p' src/xpan-m50.c)
+    grep -q 'if (get_halfshutter_pressed() || lens_info.job_state || RECORDING || gui_state!=GUISTATE_IDLE || gui_menu_shown()) return;' <<< "$FST" && grep -qF 'int on=movie ? xpan_movie_enabled() : xpan_photo_enabled() && m50_pasm();' <<< "$FST" || fail "forced Canon settings may be written while Canon is busy or outside P/Tv/Av/M"
+    grep -q 'if (f->tries>=5 || get_ms_clock()-f->ms<1000) return 0;' src/xpan-m50.c && grep -q 'lutp_ps_len>=1 && lutp_ps_len<=4' <<< "$FST" || fail "forced Canon settings without try limit or Canon's own lengths"
+    # The aspect ratio is asked for, not written (its write had no effect, 2026-11-11).
+    if grep -n '_prop_request_change(PROP_IMAGE_ASPECT_RATIO' src/xpan-m50.c; then fail "XPan writes Canon's aspect ratio again (the HUD asks for 3:2 instead)"; fi
+    grep -q 'return "Set Canon'"'"'s aspect ratio to 3:2";' src/xpan-m50.c || fail "HUD no longer asks for Canon's 3:2 aspect"
+    # RAW and Film grain (Canon's filter stage allows only JPEG): the grain pauses
+    # while a RAW format is chosen, and a RAW write waits for the filter to be off.
+    grep -q '&& !is_movie_mode() && !m50_picq_raw_wanted(); }' src/xpan-m50.c && grep -q 'if (m50_fmt_has_raw(q) && cf_lv_read(cur) && cur\[0\]) {' src/xpan-m50.c || fail "RAW formats blocked by Film grain's creative filter again"
+    # Debug info OFF (README "XPan menu"): no development records, logs or dumps.
+    for F in expo_add m50_log_poll hil_record disp_gap; do
+      sed -n "/^static void $F([^;]*$/,/^}/p" src/xpan-m50.c | sed -n 3p | grep -q 'if (!m50_dbg()) return;' || fail "$F runs without Debug info"
+    done
+    grep -q '    if (ml_started && !m50_dbg()) return;' src/xpan-m50.c && grep -q '    if (m50_shutdown_seen || !m50_dbg()) return;' src/xpan-m50.c && grep -q "    if (!m50_dbg()) { lv_start_pending=0; canon_dump_request=0; return; }" src/xpan-m50.c || fail "boot log, marks or Canon log dumps run without Debug info"
     echo "ok: property writes limited to the checked ISO/shutter/aperture writers and learned options"
     # 6d3. Second test (README "Controls, step 6b"): PROP_AE has the compensation in
     #      byte 1 (thirds), and not all PICQ aliases report on the M50. The EV key and

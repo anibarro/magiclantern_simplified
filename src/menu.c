@@ -4923,6 +4923,13 @@ static int menu_ensure_canon_dialog()
     static int last_refresh = 0;
     if (lv && should_run_polling_action(2000, &last_refresh))
     {
+#ifdef FEATURE_VRAM_RGBA
+        /* One layer for Canon and ML (M50): each request restarts Canon's
+         * dialog (LV Picture Style, DlgLiveViewPictureStyle.c), which draws
+         * its icons over ML's menu; mask them as piggyback_canon_menu does
+         * (README-XPAN-M50.md "ML menu timeout"). */
+        start_redraw_flood();
+#endif
         SetGUIRequestMode(GUIMODE_ML_MENU);
     }
 #endif

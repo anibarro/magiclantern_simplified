@@ -46,6 +46,7 @@ int xpan_photo_hud_is_enabled(void);
 int xpan_photo_aspect_ratio(void);
 int xpan_photo_is_panoramic(void);
 int xpan_photo_debug_enabled(void);   /* XPan > Debug info */
+void xpan_photo_debug_toggle(void);   /* M50: XPan > Diagnostics > Debug info */
 /* Readback must confirm a supported format before automatic capture is ready. */
 int xpan_photo_ensure_capture_quality(void);
 /* The 214-row matte belongs only to the panoramic HUD; 3:2 uses compact overlays. */

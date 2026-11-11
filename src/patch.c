@@ -78,6 +78,12 @@ int apply_patches(struct patch *patches, uint32_t count)
 {
     int err = E_PATCH_OK;
 
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+    /* ROM pages copied before the critical section (README-XPAN-M50.md
+     * "Menu hang: Canon's own log"): a 64 kB copy with interrupts off stalls
+     * Canon's Live View. */
+    mmu_prefill_rom_pages(patches, count);
+#endif
     /* ensure thread safety */
     uint32_t old_int = cli();
     uint32_t c = 0;

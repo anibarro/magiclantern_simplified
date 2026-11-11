@@ -48,6 +48,13 @@ extern void *memcpy_dryos(void *dst, const void *src, uint32_t count);
 // assign_64k_to_L2_table() only takes the next one (NULL: the patch fails
 // cleanly). 4 kB aligned (small pages), never freed.
 static uint8_t *heap_pages[CONFIG_MMU_REMAP_PAGES];
+// ROM page (64 kB base) already copied into heap_pages[i], 0 if none.
+// README-XPAN-M50.md "Menu hang: Canon's own log": copying 64 kB pages from
+// ROM inside the critical section (interrupts off, cpu1 parked) stalled the
+// camera for ~13 ms while Canon's Live View ran, and Canon's Live View image
+// control was left out of step (the next Live View start timed out). ROM
+// does not change, so the copy is made beforehand, interrupts on.
+static uint32_t heap_page_rom[CONFIG_MMU_REMAP_PAGES];
 static uint32_t heap_pages_reserved = 0;
 static void reserve_heap_pages(void)
 {
@@ -58,6 +65,38 @@ static void reserve_heap_pages(void)
     {
         void *mem = malloc(MMU_PAGE_SIZE + 0x1000);
         heap_pages[i] = mem ? (uint8_t *)(((uint32_t)mem + 0xfff) & ~0xfffu) : NULL;
+        heap_page_rom[i] = 0;
+    }
+}
+// Task context, interrupts on, before the patches that use the page.
+static void prefill_heap_page(uint32_t addr);
+// Called by apply_patches() before its critical section, for every caller:
+// boot hooks and runtime patches (the 65:24 encoder table at ~4.7 s also
+// stalled Live View: Canon's log LOG005, 2026-11-11).
+void mmu_prefill_rom_pages(const struct patch *patches, uint32_t count)
+{
+    if (!heap_pages_reserved)
+        return;
+    for (uint32_t i = 0; i < count; i++)
+        prefill_heap_page((uint32_t)patches[i].addr);
+}
+static void prefill_heap_page(uint32_t addr)
+{
+    uint32_t base = addr & 0xffff0000;
+    if (!IS_ROM_PTR(base))
+        return;
+    uint32_t i;
+    for (i = 0; i < CONFIG_MMU_REMAP_PAGES; i++)
+        if (heap_page_rom[i] == base)
+            return;
+    for (i = 0; i < CONFIG_MMU_REMAP_PAGES; i++)
+    {
+        if (heap_pages[i] && heap_page_rom[i] == 0)
+        {
+            memcpy_dryos(heap_pages[i], (uint8_t *)base, MMU_PAGE_SIZE);
+            heap_page_rom[i] = base;
+            return;
+        }
     }
 }
 #endif
@@ -90,16 +129,34 @@ static int assign_64k_to_L2_table(struct patch *patch,
         // Heap-backed copy reserved before the critical section (no malloc
         // here: interrupts are off and cpu1 is parked). Normal patches only:
         // a camera with this option must have no early patches (build check).
+        // A page copied beforehand for this ROM page (prefill_heap_page)
+        // moves to the next slot: then nothing is copied here.
+        uint32_t rom_page = (uint32_t)patch->addr & 0xffff0000;
+        for (uint32_t k = backing_page_index; k < CONFIG_MMU_REMAP_PAGES; k++)
+        {
+            if (heap_page_rom[k] == rom_page && k != backing_page_index)
+            {
+                uint8_t *p = heap_pages[k]; heap_pages[k] = heap_pages[backing_page_index]; heap_pages[backing_page_index] = p;
+                uint32_t r = heap_page_rom[k]; heap_page_rom[k] = heap_page_rom[backing_page_index]; heap_page_rom[backing_page_index] = r;
+                break;
+            }
+        }
         if (heap_pages[backing_page_index] == NULL)
             return -1;
         pages[i] = heap_pages[backing_page_index];
+        if (heap_page_rom[backing_page_index] != rom_page)
+        {
+            qprintf("Rom->Ram copy: 0x%08x, 0x%08x\n", rom_page, pages[i]);
+            memcpy_dryos(pages[i], (uint8_t *)rom_page, MMU_PAGE_SIZE);
+            heap_page_rom[backing_page_index] = rom_page;
+        }
 #else
         pages[i] = global_mmu_conf.phys_mem_pages + MMU_PAGE_SIZE * backing_page_index;
-#endif
         qprintf("Rom->Ram copy: 0x%08x, 0x%08x\n", (uint32_t)patch->addr & 0xffff0000, pages[i]);
         memcpy_dryos(pages[i],
                      (uint8_t *)((uint32_t)patch->addr & 0xffff0000),
                      MMU_PAGE_SIZE);
+#endif
         backing_page_index++;
     }
     else
@@ -721,8 +778,24 @@ int apply_normal_patches(void)
                                          &code_hooks[8 * i]))
                 return -3;
         }
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+        // One hook per apply_patches() call (which copies the ROM page
+        // first, interrupts on), so interrupts come back between hooks and
+        // each critical section only edits the tables (README-XPAN-M50.md
+        // "Menu hang: Canon's own log"). All or none, as before.
+        for (uint32_t i = 0; i != COUNT(normal_code_patches); i++)
+        {
+            if (apply_patches(&code_patches[i], 1))
+            {
+                for (uint32_t k = 0; k < i; k++)
+                    unpatch_memory((uint32_t)code_patches[k].addr);
+                return -3;
+            }
+        }
+#else
         if (apply_patches(code_patches, COUNT(normal_code_patches)))
             return -3;
+#endif
     }
     return 0;
 }

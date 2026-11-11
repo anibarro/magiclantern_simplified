@@ -134,6 +134,12 @@ def main():
         0xE011E194: "2de9f8438146",                              # push.w {r3-r9,lr}; mov r9,r0
         0xE011E1AC: "a4f59840c43831d0",                          # size 0x4CC4 -> grid 17 (beq)
         0xE0082CC0: "64f07cfb",                                  # ShootDevelop: bl E00E73BC
+        # 17-point grid (README "17-point grid: layout test")
+        0xE087D9D0: "0600008000030080",                          # grid register values: 10 -> 0x80000006, 17 -> 0x80000300
+        0xE01C73AE: "44f6c444",                                  # Canon's 17-point loader: movw r4,#0x4cc4
+        0xE0885E8C: "41f23131",                                  # LesserLucky: 17-point table count 0x1331 (4913)
+        0xE0194C26: "05f58055",                                  # Opera 17-point: next 4 KB page of one table (add.w r5,#0x1000)
+        0xE0B18330: "0000000020d43f0140a87f026080af03",          # ROM default table: identity, nodes 64 apart
     }
     lk_ok = True
     for addr, hexbytes in lk.items():
@@ -196,6 +202,15 @@ def main():
         0xE0426684: "01eb500080b27047",  # add.w r0,r1,r0,lsr #1; uxth r0,r0; bx lr (where the trampoline continues)
         0xE04266A4: "70b50546fff7e8ff04462846faf7ecfaa4eb500080b270bd",  # top getter: bl E042667C; bl E0420C8C; sub.w r0,r4,r0,lsr #1; uxth (unsigned: Bottom cannot shift the area)
         0xE042268A: "2de9fc5f04469846",  # AF box on screen: push.w {r2-r11,ip,lr}; mov r4,r0; mov r8,r3
+        # Hilton probe (README "Still processing path"): the whole function XPan's replaces, its two
+        # register writers and its two callers
+        0xE08DB920: "10b50c4608b109f0e6fe002c04d02046bde8104009f039bf10bd",  # if (obwb) E08E56F6(obwb); if (corr) return E08E57AA(corr);
+        0xE08E56F6: "4b490268c1f8d020",  # Hilton OBWB writer: ldr r1,=regs; ldr r2,[r0]; str.w r2,[r1,#0xd0]
+        0xE08E57AA: "1e490268c1f83021",  # Hilton Corr writer: ldr r1,=regs; ldr r2,[r0]; str.w r2,[r1,#0x130]
+        0xE08C7FC4: "13f0acbc",          # wrapper: b.w E08DB920
+        0xE08C8A54: "12f064bf",          # wrapper: b.w E08DB920
+        0xE08AF01A: "18f0d3ff",          # StartPreDevelopPath: bl E08C7FC4
+        0xE08B02BA: "18f0cbfb",          # StartRecoverPath: bl E08C8A54
     }
     gs_ok = True
     for addr, hexbytes in gs.items():
@@ -207,6 +222,28 @@ def main():
     if gs_ok:
         print("ROM check: grain driver run E086DA10, its caller and the 10 s stage wait as expected")
     ok = ok and gs_ok
+
+    # Canon's display-off flag (consts.h DISPLAY_IS_ON, README-XPAN-M50.md
+    # "Display on"): GUILock object 0x8EB8, byte +1, set by E065AD8A
+    # (take GUILock's semaphore, strb r5,[r4,#1], give it); 0 from
+    # TurnOnDisplay, 1 from TurnOffDisplay and the power-off turn-off.
+    dsp = {
+        0xE065AD8A: "70b505467d4c0021e06e1cf762ffc043c00705d1aff2d8220621d4201df713f96570e06e1cf792ff",
+        0xE065ADD8: "0020fff7d6ff",
+        0xE065AE5A: "0120fff795ff",
+        0xE065B302: "0120fff741fd",
+        0xE065AF84: "b88e0000",
+    }
+    dsp_ok = True
+    for addr, hexbytes in dsp.items():
+        want = bytes.fromhex(hexbytes)
+        got = rom[addr - ROM0_BASE: addr - ROM0_BASE + len(want)]
+        if got != want:
+            print("ROM check: ERROR display-off flag code at %08X differs (%s)" % (addr, got.hex()))
+            dsp_ok = False
+    if dsp_ok:
+        print("ROM check: display-off flag 0x8EB9 and its writers (GUILock E065AD8A) as expected")
+    ok = ok and dsp_ok
     return 0 if ok else 1
 
 

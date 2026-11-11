@@ -54,6 +54,7 @@ extern int pic_quality;
 #ifdef CONFIG_XPAN_BODY
 extern volatile uint32_t xpan_image_aspect_ratio;
 extern volatile int xpan_image_aspect_ratio_valid;
+extern volatile unsigned xpan_image_aspect_ratio_len;
 extern volatile int xpan_pic_quality_valid;
 /* Preserve each EOS M PICQ property independently for XPan change diagnostics. */
 extern volatile uint32_t xpan_pic_quality1, xpan_pic_quality2, xpan_pic_quality3;

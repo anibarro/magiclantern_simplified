@@ -4000,13 +4000,34 @@ CONFIG_INT("display.dont.mirror", display_dont_mirror, 1);
 // this should be synchronized with
 // * graphics code (like zebra); otherwise zebras will remain frozen on screen
 // * gui_main_task (to make sure Canon won't call redraw in parallel => crash)
+#ifdef CONFIG_M50
+/* Where ML's redraw is (XPan's task log at a stuck power-off, xpan-m50.c
+ * m50_log_tasks): 1 bmp_lock held, 2 inside Canon's dialog_redraw, 3 back
+ * from it, 0 done; with the time of the last change. Recording only. */
+volatile int ml_redraw_stage;
+volatile uint32_t ml_redraw_stage_ms;
+#define ML_REDRAW_STAGE(s) { ml_redraw_stage=(s); ml_redraw_stage_ms=get_ms_clock(); }
+#else
+#define ML_REDRAW_STAGE(s)
+#endif
+#ifdef CONFIG_M50
+volatile int ml_redraw_deferred;   /* xpan-m50.c redraws once the display is on */
+#endif
 void _redraw_do()
 {
     extern int ml_started;
     if (!ml_started) return;
     if (gui_menu_shown()) { menu_redraw(); return; }
+#ifdef CONFIG_M50
+    /* Canon's display is off while it rebuilds its screen (leaving playback
+     * or a menu): Canon's dialog redraw would wait for the graphics core
+     * forever, holding bmp_lock (README-XPAN-M50.md "Display on"). Done
+     * again when Canon has turned the display on. */
+    if (!DISPLAY_IS_ON) { ml_redraw_deferred=1; return; }
+#endif
 
 BMP_LOCK (
+    ML_REDRAW_STAGE(1);
 
 #ifdef CONFIG_VARIANGLE_DISPLAY
     if (display_dont_mirror && display_dont_mirror_dirty)
@@ -4039,7 +4060,9 @@ BMP_LOCK (
     extern struct dialog* LiveViewApp_dialog;
     if(LiveViewApp_dialog)
     {
+        ML_REDRAW_STAGE(2);
         dialog_redraw(LiveViewApp_dialog); // try to redraw (this has semaphores for winsys)
+        ML_REDRAW_STAGE(3);
     }
     else
     {
@@ -4085,6 +4108,7 @@ BMP_LOCK (
         }
     }
 #endif //CONFIG_DIGIC_678X
+    ML_REDRAW_STAGE(0);
 )
 
     // ask other stuff to redraw

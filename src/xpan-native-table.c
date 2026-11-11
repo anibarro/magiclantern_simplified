@@ -92,6 +92,48 @@ static int native_component(int numerator)
         -(int)divide_65535_rounded((unsigned)-numerator*2);
 }
 
+/* One table node: Canon's packed Y/Cb/Cr, the tone base and the Cube composed
+ * on it, packed back. 0 = failed (nothing written). */
+static int grade_word(uint32_t word,const struct xpan_lut *cube,unsigned strength,
+    const struct xpan_lut *base,struct xpan_native_cube_stats *stats,uint32_t *format_flags,uint32_t *out)
+{
+    int y=(word>>20)&1023,cr=signed_chroma(word),cb=signed_chroma(word>>10);
+    /* Inverse of [[77,150,29],[128,-107,-21],[-43,-85,128]]/256,
+     * in Q16. The integer forward matrix and signed rounding reproduce
+     * every ROM fallback node. Its physical colour space is still uncalibrated.
+     * Source validation bounds each accumulator well within signed32. */
+    int rgb_q16[3]={round_signed_512(65536*y+91715*cr+199*cb),
+        round_signed_512(65536*y-47003*cr-22559*cb),
+        round_signed_512(65536*y-402*cr+116158*cb)};
+    uint16_t input[3],graded[3];
+    for (unsigned c=0; c<3; c++) {
+        int value=rgb_q16[c];
+        if (value<0 || value>65536) {
+            unsigned clipped=value<0 ? (unsigned)-value:(unsigned)(value-65536);
+            stats->input_clipped_components++;
+            if (clipped>stats->worst_input_clip_q16) stats->worst_input_clip_q16=clipped;
+            value=value<0 ? 0:65536;
+        }
+        input[c]=((uint32_t)value*65535+32768u)>>16;
+    }
+    /* Headroom base: invert Canon's -2 EV render and encode (Cineon). */
+    if (base && !xpan_lut_apply_rgb16(base,input,input,1,65535)) return 0;
+    /* Only one native table node is sampled, never a sensor/image pixel. */
+    if (!xpan_lut_apply_rgb16(cube,input,graded,1,strength)) return 0;
+    int out_y=native_component(77*graded[0]+150*graded[1]+29*graded[2]);
+    int out_cr=native_component(128*graded[0]-107*graded[1]-21*graded[2]);
+    int out_cb=native_component(-43*graded[0]-85*graded[1]+128*graded[2]);
+    if (out_y<0 || out_y>512 || out_cr < -256 || out_cr>256 || out_cb < -256 || out_cb>256) {
+        /* Fail the whole redirection instead of wrapping overflow into
+         * packed fields or silently changing an unverified output range. */
+        stats->output_clipped_components++;
+        *format_flags|=XPAN_NATIVE_TABLE_CUBE_OUTPUT; return 0;
+    }
+    *out=((uint32_t)out_y<<20)|(((uint32_t)out_cb&1023)<<10)|((uint32_t)out_cr&1023);
+    stats->prepared_entries++;
+    return 1;
+}
+
 int xpan_native_table_prepare_cube(uint32_t *output,const uint32_t *source,
     const struct xpan_lut *cube,unsigned strength,int identity,const struct xpan_lut *base,
     struct xpan_native_cube_stats *stats,uint32_t *format_flags)
@@ -108,42 +150,65 @@ int xpan_native_table_prepare_cube(uint32_t *output,const uint32_t *source,
     if (identity) strength=0; /* base only */
     for (unsigned r=0; r<10; r++) for (unsigned g=0; g<10; g++) for (unsigned b=0; b<10; b++) {
         unsigned index=table_index(r,g,b);
-        uint32_t word=source[index];
-        int y=(word>>20)&1023,cr=signed_chroma(word),cb=signed_chroma(word>>10);
-        /* Inverse of [[77,150,29],[128,-107,-21],[-43,-85,128]]/256,
-         * in Q16. The integer forward matrix and signed rounding reproduce
-         * every ROM fallback node. Its physical colour space is still uncalibrated.
-         * Source validation bounds each accumulator well within signed32. */
-        int rgb_q16[3]={round_signed_512(65536*y+91715*cr+199*cb),
-            round_signed_512(65536*y-47003*cr-22559*cb),
-            round_signed_512(65536*y-402*cr+116158*cb)};
-        uint16_t input[3],graded[3];
-        for (unsigned c=0; c<3; c++) {
-            int value=rgb_q16[c];
-            if (value<0 || value>65536) {
-                unsigned clipped=value<0 ? (unsigned)-value:(unsigned)(value-65536);
-                stats->input_clipped_components++;
-                if (clipped>stats->worst_input_clip_q16) stats->worst_input_clip_q16=clipped;
-                value=value<0 ? 0:65536;
-            }
-            input[c]=((uint32_t)value*65535+32768u)>>16;
-        }
-        /* Headroom base: invert Canon's -2 EV render and encode (Cineon). */
-        if (base && !xpan_lut_apply_rgb16(base,input,input,1,65535)) return 0;
-        /* Only one native table node is sampled, never a sensor/image pixel. */
-        if (!xpan_lut_apply_rgb16(cube,input,graded,1,strength)) return 0;
-        int out_y=native_component(77*graded[0]+150*graded[1]+29*graded[2]);
-        int out_cr=native_component(128*graded[0]-107*graded[1]-21*graded[2]);
-        int out_cb=native_component(-43*graded[0]-85*graded[1]+128*graded[2]);
-        if (out_y<0 || out_y>512 || out_cr < -256 || out_cr>256 || out_cb < -256 || out_cb>256) {
-            /* Fail the whole redirection instead of wrapping overflow into
-             * packed fields or silently changing an unverified output range. */
-            stats->output_clipped_components++;
-            *format_flags|=XPAN_NATIVE_TABLE_CUBE_OUTPUT; return 0;
-        }
-        output[index]=((uint32_t)out_y<<20)|(((uint32_t)out_cb&1023)<<10)|((uint32_t)out_cr&1023);
-        stats->prepared_entries++;
+        if (!grade_word(source[index],cube,strength,base,stats,format_flags,&output[index])) return 0;
     }
+    return 1;
+}
+
+/* 17-point grid (M50, README-XPAN-M50.md "The 17-point grid"): 4913 words,
+ * 17^3 with no padding. Its node order is in no Canon table, so the
+ * candidates are tested on the camera. Each is a bijection onto 0..4912
+ * (checked by build_xpan.sh). */
+static unsigned split17(unsigned layout, unsigned j, unsigned *local)
+{
+    if (layout==XPAN_GRID17_HALVES) { *local=j>8 ? j-9:j; return j>8; }   /* 0..8, 9..16 */
+    *local=j>>1; return j&1;                                               /* even, odd */
+}
+unsigned xpan_native17_index(unsigned layout, unsigned r, unsigned g, unsigned b)
+{
+    if (layout==XPAN_GRID17_RGB) return r+17*(g+17*b);
+    if (layout==XPAN_GRID17_BGR) return b+17*(g+17*r);
+    unsigned lr,lg,lb,hr=split17(layout,r,&lr),hg=split17(layout,g,&lg),hb=split17(layout,b,&lb);
+    unsigned k=hr|hg<<1|hb<<2,start=0;
+    /* Eight blocks in order, red fastest: 9 low/even nodes, 8 high/odd. */
+    for (unsigned o=0; o<k; o++) start+=(o&1 ? 8u:9u)*(o&2 ? 8u:9u)*(o&4 ? 8u:9u);
+    return start+lr+(hr ? 8u:9u)*(lg+(hg ? 8u:9u)*lb);
+}
+/* Canon's 10-point nodes 0..8 span the input range (node 8 is white, node 9
+ * a guard), so 17-point node j sits at 10-point position j/2. An odd
+ * position takes the tetrahedral value of Canon's cell: the mean of its low
+ * corner and the corner one step up on every odd axis, so grey stays grey. */
+static uint32_t resample17(const uint32_t *source, unsigned r, unsigned g, unsigned b)
+{
+    uint32_t lo=source[table_index(r>>1,g>>1,b>>1)];
+    if (!((r|g|b)&1)) return lo;
+    uint32_t hi=source[table_index((r>>1)+(r&1),(g>>1)+(g&1),(b>>1)+(b&1))];
+    unsigned y=(((lo>>20)&1023)+((hi>>20)&1023)+1)>>1;
+    int cr=signed_chroma(lo)+signed_chroma(hi),cb=signed_chroma(lo>>10)+signed_chroma(hi>>10);
+    cr=cr>=0 ? (cr+1)/2:-((-cr+1)/2); cb=cb>=0 ? (cb+1)/2:-((-cb+1)/2);
+    return (y<<20)|(((uint32_t)cb&1023)<<10)|((uint32_t)cr&1023);
+}
+
+int xpan_native_table_prepare_cube17(uint32_t *output,const uint32_t *source,
+    const struct xpan_lut *cube,unsigned strength,int identity,const struct xpan_lut *base,
+    unsigned layout,struct xpan_native_cube_stats *stats,uint32_t *format_flags)
+{
+    if (!output || !source || !cube || !cube->rgb || !stats || !format_flags ||
+        cube->size<2 || cube->size>33 || strength>65535 ||
+        layout<XPAN_GRID17_RGB || layout>XPAN_GRID17_PARITY) return 0;
+    *stats=(struct xpan_native_cube_stats){0};
+    *format_flags=xpan_native_table_validate(source);
+    if (*format_flags) return 0;
+    /* Identity Cube or zero strength, no base: Canon's own table, resampled. */
+    int bypass=(identity || !strength) && !base;
+    if (identity) strength=0; /* base only */
+    for (unsigned r=0; r<17; r++) for (unsigned g=0; g<17; g++) for (unsigned b=0; b<17; b++) {
+        unsigned index=xpan_native17_index(layout,r,g,b);
+        uint32_t word=resample17(source,r,g,b);
+        if (bypass) output[index]=word;
+        else if (!grade_word(word,cube,strength,base,stats,format_flags,&output[index])) return 0;
+    }
+    stats->identity_bypass=bypass;
     return 1;
 }
 

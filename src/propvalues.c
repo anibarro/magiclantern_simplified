@@ -142,6 +142,7 @@ void REQUIRES(PropMgrTask) _prop_handler_xpan_pic_quality3(
 volatile uint32_t xpan_image_aspect_ratio;
 /* Trust the aspect only after its Canon property handler has supplied a real value. */
 volatile int xpan_image_aspect_ratio_valid = -1;
+volatile unsigned xpan_image_aspect_ratio_len;   /* as Canon reports it (M50 forced settings) */
 static void _prop_handler_xpan_image_aspect_ratio();
 REGISTER_PROP_HANDLER_EX(PROP_IMAGE_ASPECT_RATIO, _prop_handler_xpan_image_aspect_ratio, sizeof(uint32_t));
 void REQUIRES(PropMgrTask) _prop_handler_xpan_image_aspect_ratio(
@@ -150,6 +151,7 @@ void REQUIRES(PropMgrTask) _prop_handler_xpan_image_aspect_ratio(
     if (len >= sizeof(uint32_t))
     {
         xpan_image_aspect_ratio = buf[0];
+        xpan_image_aspect_ratio_len = len;
         xpan_image_aspect_ratio_valid = 1;
     }
 }
@@ -227,6 +229,13 @@ bool FAST is_movie_mode()
             && get_expsim() == 2  // movie enabled, but photo display is considered photo mode
             #endif
         ;
+    #elif defined(CONFIG_M50)
+    /* M50 (README-XPAN-M50.md "Video mode"): in the dial's video position
+     * PROP_SHOOTING_MODE_2 (shooting_mode) is the movie exposure mode, 3 for
+     * movie manual like photo M and 0 for movie auto; PROP_SHOOTING_MODE is
+     * SHOOTMODE_MOVIE in both (camera test 2026-11-11: 0x14 with
+     * lv_movie_select 2, photo M 3 with lv_movie_select 1). */
+    return shooting_mode_custom == SHOOTMODE_MOVIE;
     #else
     return shooting_mode == SHOOTMODE_MOVIE;
     #endif

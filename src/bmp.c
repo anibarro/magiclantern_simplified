@@ -230,6 +230,10 @@ void refresh_yuv_from_rgb(void)
     uint32_t *rgb_data = NULL;
 
 #if defined(CONFIG_M50)
+    /* Not while Canon has its display off (consts.h DISPLAY_IS_ON): it
+     * rebuilds its layers then. Still pending: done when it is on. */
+    if (!DISPLAY_IS_ON)
+        return;
     if (!winsys_sem || take_semaphore(winsys_sem, RGB_LAYER_LOCK_MS))
         return;                         /* still pending: retried next time */
     if (!rgb_layer_current())
@@ -355,8 +359,17 @@ void refresh_yuv_from_rgb_task(void *unused)
     }
 }
 
+/* COLOR_TRANSPARENT_BLACK (3): semi-transparent black on the M50, as the
+ * index is on the older bodies (XPan's 3:2 panel must stay readable on a
+ * white scene, camera test 2026-11-11). Black, so straight or premultiplied
+ * alpha give the same result. */
+#ifdef CONFIG_M50
+#define RGB_TRANSPARENT_BLACK 0xa0000000
+#else
+#define RGB_TRANSPARENT_BLACK 0x00000000
+#endif
 static uint32_t indexed2rgbLUT[RGB_LUT_SIZE] = {
-    0x00000000, 0xffebebeb, 0xff000000, 0x00000000, 0xffa33800, // 0
+    0x00000000, 0xffebebeb, 0xff000000, RGB_TRANSPARENT_BLACK, 0xffa33800, // 0
     0xff20bbd9, 0xff009900, 0xff01ad01, 0xffea0001, 0xff0042d4, // 5
     0xffb9bb8c, 0xff1c237e, 0xffc80000, 0xff0000a8, 0xffc9009a, // 10
     0xffd1c000, 0xffe800e8, 0xffd95e4c, 0xff003e4b, 0xffe76d00, // 15
@@ -1538,7 +1551,7 @@ static void bmp_init(void* unused)
     // existing screen, rather than replace it, due to checks
     // in refresh_yuv_from_rgb()
     if (bmp_vram_indexed != NULL)
-        memset(bmp_vram_indexed, COLOR_TRANSPARENT_BLACK, BMP_VRAM_SIZE);
+        memset(bmp_vram_indexed, COLOR_EMPTY, BMP_VRAM_SIZE);   /* both mapped to 0 before; 3 is semi-transparent on the M50 */
     else
         ASSERT(1);
 #endif

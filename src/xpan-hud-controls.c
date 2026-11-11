@@ -1034,12 +1034,9 @@ static void keep_clean_display(unsigned mask)
  * mode is wrong; the A+ dial position never gets here (XPan is off there). */
 static void keep_manual_mode(void)
 {
-#if defined(CONFIG_M50)
-/* M50: the controls are done and MMU remap (colour-table hook) needs the
- * memory (2026-11-09): a short log is enough for key checks. */
-#define KEY_LOG_SIZE 32
-#elif defined(CONFIG_6D)
-    /* Physical mode dial: XPan does not fight it (the worker reports it). */
+#if defined(CONFIG_M50) || defined(CONFIG_6D)
+    /* Physical mode dial: XPan does not fight it. M50: XPan is simply off
+     * outside P, Tv, Av and M (cropmarks.c xpan_auto_mode). */
     return;
 #endif
     static int tries,last_ms;

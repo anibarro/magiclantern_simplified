@@ -15,7 +15,7 @@
 // filter grain driver in E0860000, the Live View filter map in E0770000 and
 // the JPEG encoder size table in E0FC0000 (runtime patch, README-XPAN-M50.md
 // "65:24 JPEG"), mapped with 4 kB small pages from the heap.
-#define CONFIG_MMU_REMAP_PAGES 6   /* hooks E00E, E086, E077, E013, E042 + the 65:24 encoder table E0FC (runtime patch) */
+#define CONFIG_MMU_REMAP_PAGES 7   /* hooks E00E, E086, E077, E013, E042, E08D + the 65:24 encoder table E0FC (runtime patch) */
 #define CONFIG_MMU_REMAP_SMALL_PAGES
 
 /** Digic 8 does not have bitmap font in ROM, try to load it from card **/
@@ -37,3 +37,9 @@
 
 #define CONFIG_TASK_STRUCT_V2_SMP
 #define CONFIG_TASK_ATTR_STRUCT_V5
+
+/** Workaround for menu timeout in LiveView (README-XPAN-M50.md "ML menu
+ * timeout"): Canon drops the GUI mode ML's menu sits on (0x63) after 6 s
+ * (camera test 2026-11-11: 99 -> 0 at +6.0 s each time, display on), and ML
+ * closes its menu; menu.c re-requests it every 2 s, as on the EOS M and 6D. */
+#define CONFIG_MENU_TIMEOUT_FIX

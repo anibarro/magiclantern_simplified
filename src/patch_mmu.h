@@ -58,6 +58,10 @@ void change_mmu_tables_wrapper(void);
 
 int apply_patch(struct patch *patch);
 int apply_normal_patches(void);
+#if defined(CONFIG_MMU_REMAP_SMALL_PAGES) && !defined(CONFIG_ALLOCATE_MEMORY_POOL)
+// Copies the ROM pages these patches will remap, interrupts on (patch_mmu.c).
+void mmu_prefill_rom_pages(const struct patch *patches, uint32_t count);
+#endif
 
 // Sets up structures required for remapping via MMU,
 // and applies compile-time specified patches from platform/XXD/include/platform/mmu_patches.h

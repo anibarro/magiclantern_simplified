@@ -1,16 +1,16 @@
-# XPan for the Canon EOS M50 (firmware 1.1.0): phase 1
+# XPan for the Canon EOS M50 (firmware 1.1.0)
 
-Branch `xpan-m50` (started from `xpan-6d`). The M50 shares XPan's framing
-and HUD code with the EOS M ([README-XPAN.md](README-XPAN.md)) and the 6D
-([README-XPAN-6D.md](README-XPAN-6D.md)). Code specific to the M50 is behind
+Branch `xpan-m50`. The M50 shares XPan's framing and HUD code with the EOS M
+([README-XPAN.md](README-XPAN.md)). Code specific to the M50 is behind
 `CONFIG_M50`; the code all bodies share is behind `CONFIG_XPAN_BODY`.
 
-**Not tested on a camera yet.** Magic Lantern itself is experimental on the
-M50 (DIGIC 8): photo capture with ML loaded is still marked unreliable
-(`CONFIG_IMAGE_CAPTURE_NOT_WORKING`) and ML cannot change Canon settings
-(`CONFIG_PROP_REQUEST_CHANGE` is off). Phase 1 is built around both limits:
-it only draws on the screen and reads Canon's settings, and it installs no
-hook in Canon's code.
+**Where the port stands: [HANDOFF-XPAN-M50.md](HANDOFF-XPAN-M50.md)** (what
+works on the camera, what is open, rules, build, hooks). This file is the
+research log, oldest first. Its early sections ("What phase 1 does", "DIGIC 8
+differences", "Known unknowns") describe the first build, which only drew on
+the screen; since then the M50 has the HUD controls, Custom LUT, Live LUT
+preview, film grain, the 65:24 JPEG and the 65:24 live picture, all tested
+on the camera. Read from "EVF screen" down for the current design.
 
 ## Building
 
@@ -55,7 +55,7 @@ compares every file on the card with the package, checks the boot markers,
 the exFAT boot sector and checksum, and that no `.FIR` is left at the root,
 and logs each update in `platform/<cam>/xpan_builds/card-history.log`.
 
-## What phase 1 does
+## What phase 1 did (first build, 2026-11-08; superseded, see the hand-off)
 
 | Feature | M50 | Notes |
 | --- | --- | --- |
@@ -2366,18 +2366,17 @@ Open questions, in order:
 
 ### To do (not forgotten)
 
-* **Live View crop and position.** The XPan view on the M50 only masks Live
-  View: it does not cut the 65:24 band out of the middle and move it into
-  place as the EOS M does. Still to find on DIGIC 8 (possibly Canon's XIMR
-  compositor, kitor's `Ximr_Compositor_PoC` branch).
-* **JPEG crop** to 65:24 (encoder sizes from the size/aspect codes and ROM
-  tables `E0A9AE64`/`E0A9B060`).
-* **Film grain** on the YUV image at the JPEG encoder setup.
-* **Watermark** (same stage as the grain).
-* **17-point grid** and an **M50-calibrated Cineon base**, together.
-* **Library tables rejected** by the chroma-range check (16 of 27).
+The current list is in [HANDOFF-XPAN-M50.md](HANDOFF-XPAN-M50.md), "Open /
+next". Done since this section was first written: Live View crop and
+position (Canon's display setters), the 65:24 JPEG (Canon's size and encoder
+tables), film grain (Canon's grain stage). Still open from the old list:
 
-### JPEG crop
+* **Watermark** (same stage as the grain).
+* **17-point grid** (layout test below) and an **M50-calibrated Cineon base**.
+* **Library tables rejected** by the chroma-range check (16 of 27; Live LUT
+  preview only).
+
+### JPEG crop (first study; done since, see "65:24 JPEG via Canon's 3:2 size")
 
 Canon's JPEG sizes per aspect ratio are in RAM, in a camera spec block that
 starts with "Canon EOS M50" at `0x7599C` (copied from ROM `E19E00B0`). At
@@ -2398,7 +2397,7 @@ comes from this table, Canon's 16:9 L entry set to 6000x2216 (65:24) would
 make Canon itself write a 65:24 JPEG, with RAW untouched. Not tried: that is
 a write to Canon's memory and needs its own test. The probe logs the table.
 
-### Grain and creative filters
+### Grain and creative filters (first study; done since, see "XPan Film grain in Canon's grain stage")
 
 * `mvcfNoiseGrainGeneration` / `mvcfNoiseScratchGeneration`
   (`Conductor/Cop/MvCfilter`) belong to the **movie** creative filter
@@ -2411,30 +2410,1118 @@ a write to Canon's memory and needs its own test. The probe logs the table.
   `EHD/Jpeg/JpegEnc`, `StlJpegResize...`), so XPan's CPU "Film" grain should
   carry over once that YUV buffer is found.
 
+### 17-point grid: layout test (2026-11-10; FAILED on the camera, switched off: see the hand-off, item 4)
+
+ROM study:
+
+* **Canon's own 17-point path** is `E01C7358` (DevelopStandard): it sets the
+  grid register (`E087D76C`: 17 -> `0x80000300` at Lucky `+0x4C`) and loads
+  `0x4CC4` bytes with `E087D7DC`, nothing else. The still loader `E011E194`
+  does the same from the size it is given. So the size alone selects the
+  grid: XPan's hook passes `0x4CC4` with its own 17-point table and `0x1000`
+  with anything else.
+* **The table is 4913 contiguous words** (17^3, no padding): LesserLucky
+  checks the table count per grid (`E0885E78`: 729 / 1024 / `0x1331`), and
+  the Opera path (`E0194BD4`) copies it as five 4 KB pages from one base
+  (`+0x1000` per pass, bank register `0x39070` = 0..4; the last pass 817
+  words). `E087D74C` gives the table memory for grids 9 and 10 (`D043A000`,
+  `D043B000`) and asserts for 17 ("Grid != ELD_LUCKY_LUT_GRID_17"): the
+  17-point memory is only reached through the bank register or the loader.
+* **Node positions.** Canon's ROM default table (`E0B18330`) is the identity
+  with nodes 64 apart: node 8 = 512 = white, node 9 = 576 is a guard. So the
+  10-point grid spans the input with nodes 0..8, and 17-point node j sits at
+  10-point position j/2 (32 apart, node 16 = white).
+* **Node order: not in the ROM.** No Canon code builds a 17-point table. The
+  10-point order is eight blocks of 5x5x5 (low/high half per axis, at
+  128 k + number of high axes); 17 nodes cannot split into equal halves, so
+  the order has to be found on the camera.
+
+Build:
+
+* **XPan > Custom LUT > Colour grid**: 10-point (Canon), or 17-point test A,
+  B, C, D:
+  A `r + 17 g + 289 b` (the 10-point strides, red fastest), B `b + 17 g +
+  289 r`, C eight blocks by half (nodes 0..8 / 9..16), D eight blocks by
+  parity (even / odd). The right one gives the same picture as 10-point; a
+  wrong one gives broken colours.
+* **The 17-point table** is Canon's table for the shot resampled at the
+  17-point nodes (even nodes are Canon's nodes; an odd position is the
+  tetrahedral value of Canon's cell, so grey stays grey), then the tone base
+  and the LUT on every node (`xpan_native_table_prepare_cube17`, same
+  conversion as 10-point).
+* **Nothing is computed in Canon's develop task.** The hook keeps a copy of
+  the shot's Canon table when it changed and hands Canon a finished 17-point
+  table only if it was built for exactly that Canon table, LUT, strength,
+  tone base and layout; otherwise the shot is 10-point as before. XPan's
+  task builds the table ahead, into the one of two buffers Canon did not get
+  last. So the first photo after start-up or a Picture Style change is
+  10-point. `XM50.LOG` says for each photo "LUT 17-point (layout N)",
+  "10-point" or "Canon's".
+* Live LUT preview stays 10-point (it grades Canon's style library; photos
+  then come from the library and the hook passes them through).
+* `build_xpan.sh` 6a2: Canon's table always with size `0x1000`; `0x4CC4` only
+  with XPan's finished table that matches the key; the hook neither builds,
+  blocks nor allocates; the build never targets the table Canon had last; a
+  host test (`build_tools/xpan_grid17_test.c`, with Canon's ROM table) checks
+  that the four layouts are bijections onto 0..4912, that even nodes equal
+  Canon's and that the grey axis stays grey. `check_m50_rom.py` checks the
+  grid register values, Canon's 17-point size and count and the ROM table.
+
+### Still processing path: where a LUT could act earlier (ROM study, 2026-11-10)
+
+No camera involved. From the path state strings and the parameter code.
+
+**Order of a still (L JPEG):**
+
+1. **ShootPreDevelop** (`ShootPreDevelopPathState.c`, set-up at `E08AEF80`):
+   the RAW image, **14-bit Bayer, linear**. Engines, in the order Canon sets
+   them up: Kaito (luminance-to-gain maps: `Bay2YParam`, `Y2G...Param`), Cdm,
+   **Hilton** (black level, white balance gains, clip), HiltonCorr, Rshd
+   (shading), Sibore (over-exposure: `SiboreOexParam`, `SiboreRecoveryParam`).
+2. **ShootDevelop** (`ShootDevelopPathState.c`): SusanPath (RGGB at 1/2...1/32
+   to YUV at 1/2...1/32: noise reduction pyramid), then DevelopPath with
+   Susan (`SusanReg` 304 words), **David** (`DavidPictParam1` 361 words,
+   `DavidPictParam2` 239, `DavidRelightPictParam` 40) and **Lucky** (the
+   colour table, `E0082C3C`). Output: YCbCr 4:2:2.
+3. ShootDistCorrect (Opti), the creative filter stage (XPan's grain), JPEG
+   encode.
+
+Every stage takes its registers from the shot's parameter pack (`DEV_PARAM`
+and others by name, `ShtDevPictParam.c`, getters `E0854B4C`...; the "REGOUT"
+dump functions at `E0854C1A`... give each block's name and size).
+
+**Lucky is the only 3D colour table in the still path**, and it is the last
+colour stage: after Susan and David, on YCbCr after Canon's tone curve. No
+engine before it takes a 3D table, and before the demosaic (Susan) there is
+no RGB pixel to look up. A true 3D LUT on the 14-bit linear data would have
+to be XPan's own CPU code with its own demosaic, white balance and matrix on
+24 MP: slow, and outside Canon's engines. Not a way forward.
+
+**What can be done on the 14-bit linear data, with Canon's own engine: the
+exposure the LUT receives.** Hilton's block (`HiltonObwbReg`, 21 words;
+Canon's ROM defaults at `E0F73EDC`, `E0F73F30`, `E0F73F84`):
+
+| words | meaning | default |
+|---|---|---|
+| 0 | clip level | `0x3FFF` (14 bits) |
+| 1-4 | black offset per channel | `-0x200` / `-0x800` |
+| 5-8 | enable per channel | 1 |
+| 9-12 | white balance gain, 12 bits, `0x400` = 1.0 | `0x578 0x400 0x400 0x5DC` |
+| 13-16 | gain shift (3 bits) | 0 |
+| 17-20 | third register per channel | `0x200` |
+
+(register writer `E08E56F6`, `ELD/Hilton/Hilton.c`: per channel offset, then
+`enable << 24 | shift << 16 | gain`, then word 17-20.) This is the M50's
+form of the EOS M's `JPEG_OBWB` block, which XPan's highlight headroom uses
+there (README-XPAN.md "Tone base / Highlight headroom": gains lowered by 1 or
+2 EV in the linear data, so highlights above Canon's JPEG white reach the
+colour table unclipped, and the Cineon tone base maps the range back).
+
+* **Where Canon hands the block over:** the shot's block is `DEV_PARAM +
+  0x2D8C` (HiltonCorr at `+0x2DE0`), chosen by `E08BC57C`; StartPreDevelopPath
+  passes both to `E08C7FC4` -> **`E08DB920(obwb, corr)`** (`E08AF01A`). A
+  second caller chain (`E08B02BA`, "Upd(%d)Rshd(%d)Hilto(%d)Cdm(%d)Kaito(%d)")
+  uses the same function; which path that is has to be identified before a
+  hook goes there.
+* **The M50 version of the EOS M headroom** would be: Canon's `E08DB920` gets
+  a copy of the shot's block with words 9-12 lowered by the headroom, only
+  for XPan's stills; the tone base in the colour table (to be calibrated for
+  the M50, hand-off item 5) maps it back. Canon's block is not written.
+* **Not known yet, needs the camera:** the real per-shot values (the RAM dump
+  has no shot in it), how much range the M50 has above JPEG white, and what
+  Kaito and Sibore do with a darker image (both sit next to Hilton and react
+  to highlights). So the first step is a read-only log of the shot's block.
+
+**The tone curve** (the other way to give the table a flatter input) is in
+the Susan / David parameters; their content is not decoded. Also a read-only
+log first.
+
+### Hilton probe: camera test (2026-11-10, build 311ea1715a57, works)
+
+Read-only hook on `E08DB920`. Camera normal (Live View, 65:24 crop,
+photos); `apply_normal_patches` = 0, so the seventh heap page fitted. Five
+photos IMG_2730-2734, ISO 100, f/3.5, 1/200 to 1/13 s (a 4-stop bracket),
+manual white balance, indoor light:
+
+* **One caller only**: `E08AF01F` (StartPreDevelopPath), once per photo.
+  The recover path (`E08B02BA`) did not run.
+* **The shot's OBWB block** (21 words, same in all five photos except the
+  black offsets by 1):
+
+| words | value | meaning |
+|---|---|---|
+| 0 | `0x3074` = 12404 | white / clip level (14-bit) |
+| 1-4 | `-0x1FF`, `-0x1FE` | black level per channel, measured per shot |
+| 5-8 | 1 | enable |
+| 9-12 | `0x460 0x400 0x400 0x768` | gains 1.09, 1.0, 1.0, 1.85 (R, G, G, B: warm light, blue raised) |
+| 13-16 | 0 | gain shift |
+| 17-20 | `0x200` | unknown, Canon's default value |
+
+* **The gains do not follow the exposure** (identical from 1/200 to 1/13 s):
+  exposure is in the RAW data itself, the block carries only black level and
+  white balance. So lowering words 9-12 lowers the image in the linear data,
+  before every tone and colour stage, as `JPEG_OBWB` on the EOS M.
+* **Clip.** Blue is multiplied by 1.85 against a white of 12404: in Canon's
+  JPEG, blue clips at 54 % of the sensor's range. With the gains halved
+  (-1 EV), every channel keeps the sensor's highlights up to raw white.
+* HiltonCorr (13 words): `0, 7fff7fff, 7fff x5, 7ffe x3, 2000200 x2,
+  30001770, 1000100` (`0x1770` = 6000, the width). Not decoded; not needed.
+* The log said "LUT Canon's" for these photos: Live LUT preview was ON, so
+  the photos were graded through Canon's style library and the hook passed
+  the table on (by design, but the log line should say so).
+
+### Highlight headroom on the 14-bit data (2026-11-10, camera test: works)
+
+Build `b3a0005a584d`. XPan > Custom LUT > Highlight headroom (OFF / -1 EV /
+-2 EV, off at every start). In XPan's `E08DB920`: for XPan's stills, when the
+shot's OBWB block has the layout the probe logged (white 8000..16383,
+enables 1, gains `0x100..0xFFF`, shifts 0), Canon's writer `E08E56F6` gets a
+copy with words 9-12 halved (or quartered), rounded; black level, clip and
+everything else are Canon's. Canon's block is never written. Canon's writer
+copies the block into the engine's registers (`D0435000`) during the call,
+so a static copy is enough. The log line says "gains -1 EV" / "-2 EV" /
+"Canon's gains" per photo. `build_xpan.sh` checks: Canon's block or the
+copy only, the copy only for the checked layout and XPan's stills, only the
+four gains, at most 2 EV, not saved in the config.
+
+Purpose: calibration photos (LUT `IDENT`, Canon Neutral) at 0, -1 and -2 EV
+to fit the M50's own tone base (the EOS M method, README-XPAN.md "Tone base /
+Highlight headroom"). Open: whether Canon's clip (word 0) acts after the
+gains (then the lowered gains keep highlights) or before (then the photo is
+only darker); the overexposed set answers it.
+
+**Camera test (2026-11-10, IMG_2735-2747).** Camera normal throughout;
+every photo logged with the gains chosen. Headroom OFF, -1 EV and -2 EV,
+each at 1/50 (normal), 1/100, 1/200 and 1/13 s (+2 EV), ISO 100, f/3.5,
+tripod; the scene has a lamp and a monitor (its picture changed between
+shots, so only the 1/13 s set lines up pixel for pixel).
+
+* **Lower gains = less exposure, in the mid-tones exactly.** -1 EV of gain
+  at 1/50 has the brightness of OFF at 1/100 (mean 46.8 / 46.1), -1 EV at
+  1/100 that of OFF at 1/200 (28.9 / 28.2), -2 EV at 1/50 that of OFF at
+  1/200 (29.3 / 28.2).
+* **The clip is after the gains: highlights are kept.** With lowered gains
+  the photo has a ceiling where the sensor clips (green 234 at -1 EV, 191 at
+  -2 EV; luma 227 / 183), and the pixels between Canon's JPEG white and that
+  ceiling have detail: at 1/13 s, OFF has 15.4 % clipped pixels (red alone
+  4.6 % at 1/50: a hue shift in the warm highlights), -1 EV 1.2 % (blue
+  only), -2 EV none.
+* **How much: about 0.5 EV in green** above Canon's JPEG white, more in a
+  channel with a high white balance gain (blue at 1.85 here: about 0.9 EV).
+  Canon's JPEG white shows at -1 EV as green 218 against the clip at 234.
+* **So -1 EV is enough**: it holds everything the sensor recorded, with the
+  ceiling still below 255. -2 EV only wastes the top of the table's input
+  (ceiling 183) and brings the shadows down another stop.
+* For the tone base: at the same exposure the -1 EV photo maps to OFF by
+  Canon's own curve one EV apart (smooth up to Canon's white, 1/13 s set);
+  the M50's CIN1EV is that mapping, continued into a Cineon shoulder for the
+  recovered range. The EOS M one is fitted to the EOS M's Neutral render.
+
+### M50 tone base for the headroom (2026-11-10, build 925b4bfdce76, camera test below)
+
+* **Fit** (`build_tools/xpan_m50_cin1ev.py`, no numpy: plain Python + PIL
+  in WSL). A lower gain is an exact linear pre-scale, so in each bracket of
+  the headroom test (same RAW exposure at gains 0, -1, -2 EV) a pixel's value
+  at one gain and at the next one are Canon's tone curve one EV apart.
+  log2 of the inverse curve, piecewise linear over 11 knots in J (0..255),
+  is fitted to "one EV per step" by least squares, with a smoothness term,
+  per-level medians over all pixels and channels of all four brackets, and
+  bins more than 0.2 EV off the fit dropped (the monitor in the scene changed
+  between shots): 203 bins, residual 0.03 EV rms. Anchor: the sensor clip
+  in the -1 EV photo (green J = 230) is X = 1, RAW green white, as the EOS M
+  base. One curve for R, G and B; Canon's Neutral colour is kept.
+* **Checks:** per level, the fitted curve predicts the 0 EV photo from the
+  -1 EV photo within 0.6 levels (median, all brackets; 4.7 at worst). Canon's
+  normal JPEG white is 0.36 EV below the sensor clip in green (J = 218 at -1
+  EV). Against `CINLV.cube` (the EOS M's normal-render base) on the same
+  scene: mid-tones within about 15 Cineon codes (0.15 EV), so a LUT keeps its
+  exposure and look; where Canon's normal photo is clipped, CINLV stops at
+  code 674, the new base goes on to about 770 with detail.
+* **Cineon encoding** exactly as the EOS M base (`xpan_cineon_base_v7.py`:
+  X <= 1, gain 0.18 x 2^3.5), so XPan's LUTs see the same scene scale.
+* **In the camera:** Tone base "Cineon log +1 EV" (config value 2). The
+  Hilton hook lowers the gains by 1 EV only when this photo will get the
+  matching base: tone base +1 EV, Custom LUT on, a LUT loaded, CINLV and
+  CIN1EV loaded, no Live LUT preview, XPan's still, the checked block
+  layout. It then marks the photo (`hil_shot_lowered`), and the colour-table
+  hook of the same photo uses CIN1EV instead of CINLV. A photo marked but
+  left with Canon's table (e.g. a LUT loading in between) is counted
+  (`hr_without_base`, shown in the menu). Live LUT preview keeps CINLV
+  (Live View's gains are never lowered).
+* `build_xpan.sh`: gains lowered only by 1 EV, only together with both
+  bases loaded and the photo marked, a marked photo always gets CIN1EV, the
+  package carries the M50's CIN1EV.cube.
+* Limits: one curve for all channels and Canon's colour kept (no chart was
+  used, unlike the EOS M fit); scene values above RAW green white are cut
+  at 1 as on the EOS M, so a channel with a high white balance gain (blue
+  under warm light) still clips there.
+
+**Camera test (2026-11-10, IMG_2748-2753).** Camera normal; the log shows
+Canon's gains for the two Cineon log photos and -1 EV for the four +1 EV
+photos. IDENT at 1/50 and 1/13 s with Cineon log (2748, 2749) and Cineon
+log +1 EV (2750, 2751); KODAK +1 EV at 1/50 and 1/13 s (2752, 2753). User:
+"the same highlight retention, but at -1 the highlight roll-off is more
+abrupt". Numbers (IDENT, luma, 8-bit; x4 = Cineon code):
+
+* **Top of the range:** Cineon log stops at 169.5 (code 678), +1 EV at 190
+  (code 762).
+* **Detail recovered in this scene: almost none.** At 1/13 s, 7.8 % of the
+  pixels sit at the Cineon log cap; +1 EV puts them at 187-190 (3 levels):
+  the backsplash under the lamp is beyond the sensor clip in both. The M50
+  has little to recover in green: Canon's JPEG white is only 0.36 EV below
+  the sensor clip (calibration above); the gain is mainly in red and blue
+  when their white balance gain is high.
+* **Tone check by exposure** (1/50 -> 1/13 s = 1.94 EV must be a constant
+  +44 levels in a log image): Cineon log (EOS M CINLV) is right (+41..+43)
+  from level 45 to 105, then compresses gradually: +36 at 123, +22 at 147,
+  +4 at 165. +1 EV (M50 CIN1EV) is right (+44..+45) up to 147, then falls
+  to 0 between 150 and 183, and stops dead at the sensor clip (5 % of the
+  pixels within 1 level of its cap at 1/13 s, against 3 % one level below).
+  So CINLV's soft shoulder is the EOS M curve not fully undoing the M50's
+  highlight compression (wrong, but gentle); CIN1EV undoes it (log-correct
+  0.5 EV higher) and then meets the hard clip: **the abrupt roll-off is
+  the sensor clip, no longer hidden by a shoulder.**
+* ~~CIN1EV's lower mid-tones too contrasty~~ (corrected below): the real
+  exposure step is 2.04 EV, not the nominal 1.94, so the ideal offset is
+  +46; CIN1EV's +44..+52 is within a few levels, and CINLV (+41..+43) is the
+  one about 8 % too flat.
+
+### Soft shoulder for the +1 EV base (2026-11-10, build cc4394872acf, camera test: works)
+
+* **Fit with exposure pairs too** (`xpan_m50_cin1ev.py`): besides the exact
+  gain pairs (weighted 3x), pairs of neighbouring exposures at the same gain,
+  each with its own unknown step, fitted. Steps found: 1.00-1.01 EV for the
+  one-stop shutter steps and 2.00-2.04 EV for 1/50 -> 1/13 s; 2295 of 3033
+  bins kept, 0.03 EV per bin (median). The curve is the same as before
+  within 0.1 EV: the earlier fit was right.
+* **The 10-point table is not the cause either:** simulating the camera
+  (base applied at Canon's Neutral grey nodes J = 0, 32, ..., 255, from the
+  RAM dump's Neutral table `0x69A820`, linear in between) changes nothing
+  above level 90.
+* **Shoulder:** above 1.5 EV below the sensor clip, log2 X is replaced by a
+  quadratic with slope 1 at the knee and 0 at the clip. The clip now lands
+  at Cineon code 710 (was 777; CINLV's top is 678), approached smoothly.
+  Simulated exposure check (ideal +46): flat +44..+45 up to level 123, then
+  +41, +34, +24, +13, 0 at 177, the shape of CINLV's roll-off (+36 at 123,
+  +22 at 147, +4 at 165) about 10 levels higher. The sensor clip itself
+  still stops flat: nothing can recover what the sensor clipped.
+
+
+**Camera test (2026-11-10, IMG_2754-2761):** IDENT and KODAK, Cineon log
+and +1 EV, 1/50 and 1/13 s; the log shows the gains as set. Exposure check
+(1/50 -> 1/13 s = 2.04 EV, +46 in a log image):
+
+| tone (8-bit) | 45-63 | 93-117 | 123 | 141 | 159 | 171 | top |
+|---|---|---|---|---|---|---|---|
+| IDENT Cineon log | +41..+42 | +40..+42 | +36 | +27 | +12 | -2 | 169.5 |
+| IDENT +1 EV | +51..+53 | +44..+45 | +43 | +35 | +18 | +6 | 178 |
+| KODAK Cineon log | +79..+88 | +77..+87 | +74 | +63 | +51 | +41 | 213 |
+| KODAK +1 EV | +80..+93 | +87..+95 | +84 | +73 | +60 | +50 | 222.5 |
+
+* **Roll-off: now gradual**, as simulated: +1 EV falls off over 117..177
+  like Cineon log over 105..170, about 10 levels higher. Through KODAK both
+  fall off smoothly to the top; +1 EV ends at 222.5 against 213.
+* **Highlights:** at 1/13 s, the pixels at KODAK Cineon log's top (213)
+  are at 216..222 with +1 EV: a little separation, no more (most of the
+  bright wall is beyond the sensor clip). Same-exposure mapping, KODAK:
+  Cineon 188 -> 199, 204 -> 216, 212 -> 221.
+* **Lower mid-tones (45-81):** +1 EV is still about 12 % too steep there
+  (+51..+53 against +46) and, at the same exposure, up to 11 levels darker
+  than Cineon log in IDENT (60 -> 49, 68 -> 57); Cineon log is about 10 %
+  too flat. Through KODAK the two are within 1-2 levels there. Likely
+  cause: the camera evaluates the base only at Canon's 10 table nodes
+  (J = 0, 32, 64, 96...) and interpolates straight lines between them; a
+  log curve is far from straight between J 0 and 96, so the chords sit
+  below it. The EOS M had the same effect and a "table-step compensation"
+  (`xpan_cineon_stepcomp_v8.npy`): node values chosen so the straight lines
+  match the curve on average, not sampled exactly at the nodes.
+
+### Table-step compensation: tried, not used (2026-11-10)
+
+* **Cause of the lower mid-tones confirmed.** Grey axes (Cineon codes):
+  CINLV J 0/16/32/64 = 95/225/285/367, the +1 EV base 95/291/368/456. The
+  +1 EV base rises steeply in Canon's first table segment (J 0..32): the
+  camera draws a straight line 95 -> 368 there, 60 codes too dark at J 16,
+  which is where the darker lower mid-tones are. Simulated through Canon's
+  table (Neutral grey nodes J = 0, 32, 64, 96, 128, 159, 191, 223, 255), the
+  exposure check gives +52, +55, +51 at levels 45, 57, 69: the camera's
+  +51..+53. The lowered gains make it worse than with CINLV: every tone is
+  a stop darker in Canon's render, so more of the picture lands in that
+  first segment.
+* **Compensation** (`xpan_m50_cin1ev.py`, reported, applied only with
+  `XPAN_STEPCOMP=1`): node values chosen by least squares, weighted by the
+  calibration photos' own pixels, black fixed. Error per pixel 23 -> 21
+  codes, worst in J 1..32 62 -> 51, but level 99 goes from +44 to +34: no
+  real gain. One straight segment cannot follow a log toe; only the node
+  positions could, and they are Canon's.
+* **The real fix is more room in the table's input for the shadows**, i.e.
+  Canon's tone curve before the table. The EOS M did exactly that: Canon's
+  HTP luma row in Canon's Angel block (`xpan_native_angel_shadow`, "Shadow
+  room for the 10-step hardware table"). On the M50 the tone curve is in the
+  Susan / David parameters (not decoded), or Canon's own Highlight Tone
+  Priority setting could be tried first (Canon's menu, no XPan code): it
+  renders a darker RAW with lifted shadows. It needs its own calibration.
+
+### Canon's tone curve: David probe (2026-11-10, build c82e4ce99741: HUNG, not used)
+
+**Camera test failed before any photo:** twice, XPan view -> Canon's main
+menu -> MENU back gave a black screen and no power-off (battery pull). No
+"David:" line in `XM50.LOG`: the probe never ran. `E00E7320` has a single
+caller (`E008338A` -> `E00834FC`) and no pointer in ROM; the build's other
+change is 10 KB more BSS. Cause open; `cc4394872acf` is back on the card.
+The study below stays valid.
+
+* **Where the still's picture parameters go.** DevelopPath (`E00834FC`)
+  takes three blocks from the shot's parameter pack: DavidPictParam1 (361
+  words, `DEV_PARAM + 0x233C`), DavidPictParam2 (239 words, `+ 0x28E0`),
+  DavidRelightPictParam (40 words, `+ 0x2C9C`), dumped by "David REGOUT"
+  (`E0854CD0`), then hands them to `E00E7320(p1, p2, relight, a3, s0, s1)`
+  = `E011E0A4(p1, p2, relight, a3, s0); return E011E148(s1)`. `E011E0A4`
+  gives each block to its David register writer (`E01A025A`, `E01A0DB4`,
+  `E01A1586`). ROM defaults when the pack has none: `E0B171F0` (Param1),
+  `+0x5A4` (Param2), `+0x3BC` (relight).
+* **Curve candidates** in the default Param1: two monotone tables with
+  shrinking steps (gamma-shaped), at `+0x338` (27 values `0x100 0x100 0x126
+  0x2DA 0x401 ... 0x9AE 0x9B5`, after `0x80 0x80 0x80 0xB2 0x800`) and at
+  `+0x4E4` (`0x100 0x100 0x123 0x2DD ... 0x808`, then `0x808` four times).
+  `0x800` may be 1.0; the first goes above it (headroom?), the second clips
+  at it. Their input positions are not known.
+* **Probe:** XPan's `xpan_m50_david` makes Canon's two calls with Canon's
+  arguments after copying the three blocks; `XM50.LOG` gets them per photo
+  (first 12 photos). Same 64 KB ROM page as the colour-table hook: no new
+  page. Build checks: Canon's callees and arguments, no write to a Canon
+  block, no blocking; `check_m50_rom.py` checks the function, its callees
+  and its caller.
+* **Test:** the same scene with only one tone setting changed per photo
+  (Neutral contrast 0 / -4 / +4, HTP on, Standard), ALO off: the words that
+  follow contrast are the tone curve.
+
+### Canon's main menu breaks Live View (2026-11-10, cause: the 65:24 live placement; no fix yet)
+
+* **Symptom (user):** XPan view -> MENU (Canon's menu) -> MENU: black
+  screen; MENU twice more: XPan's view back, Live View frozen; power-off
+  hangs (battery pull). **Intermittent:** a bisect over the session's builds
+  gave "works" on the two oldest, but the diagnostic build worked at one
+  start and hung at the next, so those were luck; the bug comes from the
+  65:24 live picture placement (`8f344d055b96` and before).
+* **Diagnostic marks** (`XBOOT.LOG`, build `7c16a8e4cf67`): UI state, XPan's
+  dim-and-freeze, button events, and every change in the panel / EVF setter
+  calls (a2, Canon's block recognised, moved by XPan). Steady Live View:
+  `a2 = 0`, block, moved. Start that worked: no setter call while the menu
+  opened; at the close one call with `a2 = 1` (moved), 370 ms later `a2 = 0`.
+  Start that hung: as the menu opened, a call with `a2 = 1`, Canon's block,
+  **not moved** (ML's `lv` flag had dropped 14 ms before), and after that no
+  change ever again: no `a2 = 0` frame after the menu, at either close.
+* **Fix:** `disp_decide` decides the band on Canon's normal frames (`a2 = 0`)
+  only and keeps that decision and geometry for a transition call, so the
+  geometry never changes inside one of Canon's display sequences (panel and
+  EVF). `build_xpan.sh` checks it.
+
+**First fix failed** (build `103739ee3363`, latch on Canon's transition
+call): hung at the first try, and that start had no transition call at all.
+**Placement off** (build `e2d704c10bf4`, `M50_DISP_MOVE 0`: the hooks pass
+Canon's own block): **no hang, whatever the user tried** (several starts).
+So moving the picture through Canon's setter causes it.
+
+* Canon's display around the menu, placement off (per-second call counts,
+  mark 77): Live View 30 calls/s; menu open 0/s; menu closed -> about 280
+  ms later one call with a2 = 1, about 370 ms later normal frames at 30/s.
+  In the two hangs that step never came after the menu: Canon's display
+  stopped before it reached the setter.
+* Canon's panel setter `E01389AC`: the block's words 2..10 (layer address,
+  buffer size, source x/y, destination x/y, shown size) go to the image
+  layer setter `E0154B64` (with `p[15] == 1`, the Live View case, also
+  `E01553E6` with words 0..10); a nonzero a2 is Canon's "PanelImgMute"
+  (`E0154CE4(0)`, `E0155570(0)`), the image unmute after a restart; p[11],
+  p[12] against the caller's `*s0`, `*s1` is a "panel mode change"
+  (`E01386D0`).
+* Not known: what in Canon's Live View stop / restart depends on the layer
+  geometry XPan set (shown 266 of 480 rows, moved), so that Canon sometimes
+  never restarts. Next: how Canon itself shows its cropped aspect ratios
+  (16:9, 1:1, 4:3) in Live View, from the display probe's block log, so the
+  band can be placed the way Canon does it.
+
+**How Canon crops Live View itself** (display probe, build `e2d704c10bf4`,
+Canon's aspect ratio changed in Canon's menu; block words 5-10 = source x/y,
+destination x/y, shown w/h):
+
+| Canon aspect | source | destination | shown |
+|---|---|---|---|
+| 3:2 | 0, 0 | 0, 0 | 720 x 480 |
+| 16:9 | 0, 38 | 0, 38 | 720 x 404 |
+| 1:1 | 120, 0 | 120, 0 | 480 x 480 |
+| 4:3 | 40, 0 | 40, 0 | 640 x 480 |
+
+* Canon crops **in place** (source = destination), and the shown area never
+  reaches the panel's edge (16:9 ends at row 442). Each change comes with a
+  transition call (a2 = 1), then normal frames (a2 = 0); word 15 counts.
+* XPan's 65:24 placement moves the band (source row 107, destination 0 /
+  60 / 214 for Top / Split / Bottom, 266 rows), changes it on normal frames,
+  and in Bottom ends exactly at row 480.
+* Next test, no new build: the same placement in **Top** and **Split**
+  (moved, but away from the panel's bottom edge). No hang there = the
+  bottom edge; a hang = the move itself.
+* **Top test** (build `103739ee3363`, placement on): hung at the third
+  start, same pattern (no restart call after the menu). So the bottom edge
+  is not it; what remains is the move (source row != destination row),
+  which Canon never does. After a hung power-off the camera stays dark at
+  the next power-on until the battery is pulled.
+* Next: build `5a8f84ef775b` crops **in place** (`M50_DISP_MOVE 2`: source
+  = destination = row 107, 266 rows, the centre, as the JPEG), HUD not
+  adjusted (test only).
+
+**In-place test** (build `5a8f84ef775b`, source = destination = 107): hung at
+the first try. So any geometry XPan sets in the setter call hangs, not only
+a move. **Cause, from Canon's code:**
+
+* Canon builds every Live View display block from its own **geometry table**
+  (pointer at `0xB47C`, RAM dump `0x40737500`; ROM image at `E1B1B51C`),
+  6 words per entry (shown w, h, source x, y, destination x, y), per output
+  and aspect ratio. Screen 3:2 / 16:9 / 4:3 / 1:1: `720 480 0 0 0 0`,
+  `720 404 0 38 0 38`, `640 480 40 0 40 0`, `480 480 120 0 120 0`; EVF 3:2
+  `1024 682 0 0 0 0` ...; a third output (900 x 600) is shown at 62,84 from
+  0,0: Canon itself moves a picture, through the table.
+* The table is used by Canon's Live View VRAM manager
+  (`Capture/VramDevelop.c`, code around `E07EBBC4`: "AllocImgVramCBR",
+  "ReallocImgVramCBR", `WaitForAnyEventFlag(m_hEvent,
+  EVENTID_REALLOCATE_IMAGE_VRAM, ALLOCATE_IMAGE_VRAM_TIMEOUT)`,
+  "DISP_SetImgRepVramParameter", `vramAddr == m_VramDisplayAddr`, "Invalid
+  AspectRatio"): at every Live View start it allocates and confirms the image
+  VRAM for that geometry and waits for the display.
+* The setter (`E01389AC`) hands the block to the image layer setter
+  `E0154B64`, which goes through Canon's compositor (`E0153E48`) to the
+  VRAM manager side (`E017BEF0`).
+* XPan changed the geometry in the setter call only: the hardware showed
+  XPan's band while Canon's display and VRAM state kept 720 x 480 at 0,0.
+  When Canon's menu stopped and restarted Live View, that disagreement
+  sometimes left Canon waiting for good: black screen, frozen Live View (the
+  display task never answers), no power-off. Intermittent: it depends on the
+  state the restart catches. Canon's own crops never hang because they come
+  from the table. The exact instruction it waits in is not traced.
+
+### 65:24 Live View through Canon's geometry tables (2026-11-10)
+
+* `m50_lvgeo_poll` (XPan's task, not while half-pressed / busy / recording)
+  checks Canon's whole table (the five entries above) and patches, through
+  ML's patch API, the 3:2 entries' height, source row and destination row for
+  the LCD (266 rows from row 106, at 0 / 60 / 214) and the EVF (378 rows from
+  152, the scaled destination); even values only, as in Canon's table.
+  Undone when 65:24 is off, in Canon's layout, in movie mode, and re-applied
+  when the layout changes; refused (and logged in the 65:24 JPEG crop help)
+  if the table is not Canon's.
+* The display hooks only observe now (record, marks); touch AF and the AF
+  box follow the band only when Canon's last LCD block really shows it.
+* Open: whether Canon applies a table change at once or only at its next
+  Live View start (then the band appears after the first menu / playback).
+
+**Camera test of `f20297824a9f` (RAM table only):** no crash, but Live View
+was neither cropped nor moved, in any layout, also after the menu: Canon's
+blocks stayed `720 480 0 0 0 0`. The blocks come from a second, constant
+copy: Live View's **DeliverStage** (`Conductor/Epp/Deliver/DeliverStage.c`,
+`E00705F4`: `ldr r1,=E09E1DD4`, entry = pattern x 24 + display type +
+aspect, copied into DeliverStage's state). ROM table `E09E1DD4`, three
+patterns of 24 entries; pattern 0 = the RAM copy = what Canon sent in the
+aspect test (photo Live View); pattern 1 a smaller picture with borders,
+pattern 2 another mode (16:9 at 0,0 shown at row 37).
+
+**Build `8e1b0daf4834`:** the band in both copies, as Canon's own crops are:
+pattern 0 of the ROM table (LCD 3:2 entry 0, EVF 3:2 entry 4) through ML's
+runtime MMU patch (one more reserved page: `CONFIG_MMU_REMAP_PAGES 8`), and
+the RAM table as before. Both checked against Canon's values first;
+`check_m50_rom.py` checks the ROM entries and DeliverStage's literal.
+
+### Canon's main menu breaks Live View: the cause (2026-11-11, from the logs, no new test)
+
+Analysis of every boot in `XBOOT.LOG` with the menu marks (builds
+`7c16a8e4cf67` ... `332341d80a0c`) and every start in `XM50.LOG`:
+
+| build | band on screen | menu closes | hangs |
+|---|---|---|---|
+| `e2d704c10bf4` placement off | no | 18 (4 boots) | 0 |
+| `f20297824a9f` RAM table only | no | 13 (3 boots) | 0 |
+| hook builds (`7c16`, `1037`, `5a8f`) | yes | 15 | 5 |
+| `8e1b0daf4834` both tables | yes | 5 | at the next start |
+| `332341d80a0c` hook + snapshot | yes | 11 | 0; Err 70 at a boot and when changing the layout |
+
+* **Every hang is the first menu close of its boot**; in the boots where the
+  first close went well, none of about 20 later closes hung.
+* **Canon changes Live View geometry only inside a transition**: a setter
+  call with a2 = 1 (a Live View stop / start), then normal frames (a2 = 0).
+  Its own crops (16:9, 4:3, 1:1) come that way (aspect test). Apart from a
+  Live View stop / start (menu, playback) Canon makes no transition after
+  power-on (every start in `XM50.LOG`); INFO makes none.
+* **XPan changed it outside one.** Canon starts Live View before ML is up
+  (first frame ~1.33 s, MMU hooks ~1.35 s, ML settings ~1.65 s); a few frames
+  later XPan's band appears on normal frames, no transition between (every
+  band boot: unmoved a2 = 0 frames, then moved a2 = 0 frames). The first Live
+  View stop after that is the first time Canon's display stops and restarts a
+  picture whose geometry changed behind its back: sometimes it never
+  restarts (black screen, frozen Live View, no power-off; Canon's
+  VRAM/display waits such as `ALLOCATE_IMAGE_VRAM_TIMEOUT` are assertions,
+  which on the M50 freeze the camera or end in Err 70). Once one restart has
+  gone through, every transition carries the band and it never fails again.
+* It fits every build: placement off and RAM-only never change the
+  geometry; every hook build changes it at boot; the latch fix
+  (`103739ee3363`) still changed it at boot (it decided on normal frames);
+  both tables changed it at 3 s when patched (and Canon then made a
+  transition of its own, with mode argument 2, followed by the stutter);
+  the snapshot build changed it when the layout changed (Err 70).
+* Not traced to the instruction: which Canon wait or assertion fails.
+
+**Fix (build `fe99a229ffe7`, 2026-11-11, waiting for the camera test):**
+`disp_hook` decides the band (`band_decide`) only when Canon's setter is
+called with a2 != 0 and keeps it, per output, for every normal frame; the
+frames before Canon's first transition after the hooks are installed keep
+Canon's geometry; touch / AF follow the latched geometry. `build_xpan.sh`
+fails if the geometry can change anywhere else. The table patches (RAM and
+ROM), the hang snapshot and the David probe are removed; 7 MMU pages again.
+
+Design: the geometry may change only inside Canon's transition call: XPan
+decides the band on a2 = 1 calls and keeps it, unchanged, for every normal
+frame until the next transition (the opposite of the failed latch). No ROM
+page, no table patch, no extra memory. Cost: after power-on (and after a
+layout or 65:24 / 3:2 change) the band appears at Canon's next Live View
+stop / start (first menu, playback ...), not at once.
+
+### Canon's main menu breaks Live View: forced restart (2026-11-11, build `766c9f6c6f54`, not camera-tested)
+
+The fix above was camera-tested (`fe99a229ffe7`): no hang; the band came
+on every menu close (panel mark a2 = 1, moved), and on the LCD / EVF
+switches (a2 = 2); INFO, Q, SET and XPan's own layout changes make no
+transition. Without a transition the band waits for the next one, so
+XPan now asks Canon for one:
+
+* **How:** Canon's menu request, `SetGUIRequestMode(GUIMODE_MENU)` (what the
+  MENU button asks for; ML already uses it on the M50), then
+  `SetGUIRequestMode(0)` once `MENU_MODE` and Live View has stopped (as
+  after a MENU press, ~120 ms in the logs). Canon's restart makes the
+  transition call, which places the band (`band_decide`, unchanged).
+* **When:** the active output (the one whose setter is being called) shows
+  another band than the settings want, for 1 s, with Canon idle (Live View,
+  not magnified, photo mode, XPan view, no dialog, no ML menu, not the Canon
+  layout, no half-press, lens idle, not recording). Covers power-on, layout
+  and 65:24 / 3:2 changes. Runs in the XPan task, never blocks.
+* **Bounds:** each target is tried once; a step not reached in 3 s stops
+  the forced restarts until the next start (mark 78 logs Canon's GUI mode).
+  Menu: XPan > "Live View band restart" (on/off, done/failed).
+* **Cost:** Canon's menu shows for a moment, ~1 s of black, as MENU twice.
+* **Not used:** the LCD / EVF switch (transition a2 = 2, Live View keeps
+  running). The eye sensor sets PROP_DISPSENSOR_CTRL and Canon switches
+  PROP_LV_OUTPUT_DEVICE (OutputChangeCtrlSTM); forcing it needs a property
+  write, off on the M50.
+
+### Forced restart: camera test (2026-11-11, `766c9f6c6f54`, failed)
+
+First start: XPan asked for the menu at 5924 ms; Canon made a transition
+call at 5954 ms (a2 = 1, not moved), which a MENU press never makes when
+the menu opens; `lv` went to 0 and XPan asked to leave at 6005 ms, 80 ms
+after the open. Canon's setter then stopped (5 calls, then 0 every second):
+Live View frozen; the user's own MENU / MENU later did not bring it back.
+
+* `lv` is PROP_LV_ACTION: Canon announces the stop there when it starts, not
+  when the stop is done. `MENU_MODE && !lv` was no "stopped" state.
+* `SetGUIRequestMode` is not the MENU button's path: it reaches Canon's GUI
+  mode directly, not through the Live View dialog, and ignores Canon's UI
+  lock. The user's fastest menu closes were 770-840 ms after the open.
+* The band was never moved: this freeze is not the geometry problem.
+
+Next: the MENU button's own path, fake MENU presses into Canon's GUI queue
+(`fake_simple_button`, as ML's `open_canon_menu`), the close sent only once
+Canon's UI lock (PROP_ICU_UILOCK) is clear; first a read-only log of the UI
+lock around the user's menu cycles.
+
+### Menu hang without the band (2026-11-11, `78556736e353`)
+
+First start of the UI-lock log build: MENU at 4803 ms (PROP_LV_ACTION 1 at
+4828), MENU again at 5650 (PROP_LV_ACTION 0 at 5661, Canon's GUI back to
+Live View at 5695), then Canon's display setter was never called again (2,
+then 0 calls per second; no transition call), the user's next MENU / MENU
+did not help. XPan had not moved the band at all in that start (no
+transition before, every frame Canon's block). So:
+
+* The cause written above ("geometry changed outside Canon's transition")
+  is wrong: the hang comes without it. The hook builds hung more often
+  (5 of 7 first closes) than the others (2 of 16), small numbers.
+* Canon's UI lock (PROP_ICU_UILOCK) stayed 0 the whole time.
+* PROP_LV_ACTION 0 is Canon announcing the start; the start then never
+  reaches the display. ML's tasks keep running during the hang (the boot
+  log kept writing for 19 s), so a detector could save Canon's own debug
+  messages at that point and show which step stops.
+
+### Canon's own debug log at the hang (ROM study, 2026-11-11)
+
+* `DryosDebugMsg` (E0577FD0) uses Canon's debug manager, pointer at RAM
+  0x50C0. Per class (struct +0x38 + 3 x class): print level (+0), store
+  level (+1). The message is formatted (73 characters) and, when stored,
+  posted (E0559100, `msg_queue_post`) to Canon's log object at struct +4,
+  handled by Canon's own log task.
+* Canon registers the event procedures `dmstart`, `dmstop`, `dump`, `dumpf`,
+  `dmstore`, `logstat`, `dmhistory` ... (E05789D0). `dumpf` (E057898C ->
+  E05782CE) only posts command 4 to that log object: Canon's log task then
+  writes the stored messages to the card itself (`%s%s_%d`, `[DM]` errors).
+  It does not block the caller and allocates nothing in ML.
+* ML's minimal M50 build calls `call("dumpf")` without changing any level
+  (`minimal-d678.c`), so it works on the M50 with Canon's default levels;
+  how much the default store keeps is only known from a dump.
+* During the hang ML's tasks keep running, so XPan can ask Canon for the
+  dump then: a detector (Canon announced the Live View start, PROP_LV_ACTION
+  0, and its display setter got no call within 2.5 s) calls `dumpf` once,
+  plus a menu item to save one after a good menu cycle for comparison. No
+  memory, no hook, no wait.
+
+### Menu hang: Canon's own log (2026-11-11, `1cf77b85ecb6`, 3 hangs, 3 dumps)
+
+Canon's log (LOG000-002.LOG at the card root, written by `dumpf`; Canon's
+clock is ML's + ~2.1 s) shows the same thing in both complete dumps:
+
+* **At ML's start** (Canon 3429 -> 3443 ms = ML 1343 ms, "MMU
+  apply_normal_patches"): ~13 ms without a single message, then
+  `[LVEVFC] ERROR Blanking DeadLine`, eight `[CAPD] WARN
+  EISSyncTimer0CBR:OVERRUN`, and `[CAPD] ERROR _imgCtrl_LV_EventDispatch
+  Current=8 / 6, dwEventID=3, 4, 5, 6`: Canon's Live View image control got
+  its events in the wrong state. Live View keeps showing pictures.
+* **Menu open:** a normal Live View stop, except `[LVCOM] ERROR [ADST]
+  ADST_CheckMemStatus(2):Locked`.
+* **Menu close:** `process_StarLiveViewApp`, `evfActive[14]` "Start Allocate
+  Resource"; the EVF device side never answers (no `evfdevSelectPath`, no
+  `evfCompleteEvfDevCBR`, no "End Allocate Resource"; at power-on it answers
+  in 12 ms), and 1 s later `[PO] ERROR LvCtrl ResTimeout:0x2`. That is the
+  frozen Live View.
+* No other error. XPan's card reads (LUT scan) came after the hang in one
+  dump: not the cause. The 65:24 crop patch at ~4.7 s caused no error.
+
+**Cause:** `apply_normal_patches` applies the 9 hooks in one
+`apply_patches` call: interrupts off on cpu0 for the whole batch, cpu1
+parked for each patch, and for each new ROM page a 64 KB copy from ROM inside
+that section (7 pages), plus a full cache sync per patch. Canon has been
+running Live View since ~1.33 s, so it misses its frame deadlines and its
+image control is left out of step; the next Live View start fails. It fits
+the history: more hooked pages, longer stall, more hangs; intermittent,
+because it depends on where in Canon's frame the stall falls.
+
+**Fix (build `806601dc65a3`, not camera-tested):** copy the ROM pages into the reserved heap pages
+before the critical section (ROM does not change), and apply each hook in
+its own `apply_patches` call, so interrupts come back between hooks and
+each section only edits the tables. Verify with Canon's log at every start:
+no `Blanking DeadLine` / `OVERRUN` / `_imgCtrl_LV_EventDispatch` errors.
+
+### Menu hang: first fix tested (2026-11-11, `806601dc65a3`)
+
+Three starts, Canon's log saved at each (LOG003-006):
+
+* **ML's start: fixed.** No Blanking DeadLine / OVERRUN / imgCtrl error at
+  ~1.34 s in any of them.
+* **The same errors at ~4.7 s** (Canon 6818-6835 ms) in two of them: the
+  65:24 JPEG crop patch (`m50_crop_poll`, task start + 3 s), which remaps
+  the encoder table's ROM page with `apply_patches` and copied that 64 KB
+  page inside the critical section. LOG004: one OVERRUN only, no imgCtrl
+  error, 4 menu cycles fine. LOG005: Blanking DeadLine + imgCtrl error
+  (Current=8, dwEventID=3), ADST "Locked" at the menu open, and the first
+  menu close hung (ResTimeout). LOG003: no error, 3 cycles fine.
+
+Fix (`d31841da9ff2`, not camera-tested): `apply_patches()` itself copies
+the ROM pages of its patches before `cli()` (`mmu_prefill_rom_pages`), so
+every caller, boot hooks and runtime patches, gets it; build check.
+
+### Menu hang fixed; forced restart through Canon's MENU button path (2026-11-11)
+
+`d31841da9ff2` camera test: 3 starts, 15 menu closes, no hang; Canon's log
+at each start (LOG007-009) has no Blanking DeadLine / OVERRUN / imgCtrl /
+ResTimeout error. The menu hang was ML's ROM page copies inside
+`apply_patches`' critical section (README "Menu hang: Canon's own log").
+
+Forced restart on again (`46a84ccbd3f2`, not camera-tested), now the way the
+user does it: XPan presses MENU through Canon's button queue
+(`fake_simple_button(BGMT_MENU)`, so Canon's IDLEHandler handles it as the
+real button: AF stop, metering stop, then its own SetGUIRequestMode), and
+presses it again once Canon is in its menu (`MENU_MODE`), Live View stopped
+(`lv` 0) and Canon's display setter has had no call for 300 ms. XPan no
+longer calls SetGUIRequestMode (build check). Same triggers, once per
+target, 3 s bounds, XPan > "Live View band restart". The per-start Canon log
+is off (`M50_BOOT_DUMP 0`); the dump at a hang stays.
+
+### Quick review, playback and the EXIF size (2026-11-11)
+
+`46a84ccbd3f2` camera test: the forced restart works. Two display faults:
+the quick-review image sat at the Live View band's place instead of
+Canon's centre, and playback images came up stretched (full height) until
+Canon's next transition call. Cause: the latched band was applied to every
+plain 720x480 panel block, and quick review / playback use the same block.
+Fix (`de685678701f`, not camera-tested): the band moves only while Canon
+shows Live View (`lv && !PLAY_OR_QR_MODE`), build check.
+
+The photos themselves: main image 6000x2216 (JPEG SOF), EXIF
+PixelX/YDimension 6000 x 4000, and Canon's embedded images 160x120 and
+1620x1080 hold the full 3:2 frame (no black rows), in old and new 65:24
+photos alike.
+
+EXIF size (ROM): Canon's EXIF header builders (E00A39A8, E00A41AC,
+E00A4A02, E00A5246, E00A54DC: tag A002 / A003 at header +0x136 / +0x142,
+values at +0x13E / +0x14A) leave the values empty; E00A80B2 fills them from
+a rectangle in a shooting-parameter structure (r7): width = [+0x1D0] -
+[+0x1C8] + 1, height = [+0x1D4] - [+0x1CC] + 1 for size codes 0x1000 /
+0x10000, the rectangle at +0x1D8..+0x1E4 for 0x4000 / 0x8000.
+
+Traced (2026-11-11): E00A80B2 is inside **E00A7DF2** (Canon's EXIF entry
+filler: r0 header, r1 size code, r2, r3, then three stack arguments), whose
+only caller is E009A0BC in E0099F74 (FCS save job, called from fcsExecJob
+E0076DC4 via E00774C8). The rectangle structure (E00A7DF2's 6th argument)
+is the FCS job object + 0x20, so the EXIF size is the FCS job's own copy of
+the shot's area, not the size table XPan patches (which sets the JPEG SOF
+height). E00A7DF2 only reads that structure (fields up to +0x58C, no
+store), so the standard fix is a hook on E00A7DF2 that, with XPan's 65:24
+crop on and the rectangle 6000 x 4000, passes Canon a copy of the
+structure with the rectangle's rows narrowed to the 2216-row band (top
++892), and Canon's own pointer otherwise. Cost: one more hooked ROM page
+(E00A0000), CONFIG_MMU_REMAP_PAGES 7 -> 8 (64 kB heap: margin ~208 -> ~144
+kB). Canon's ROM sensor table E19E0230 (276, 48, 6275, 4047 = 6000 x 4000)
+is the full-frame area.
+
+**Correction:** E00A7DF2 is the CR3 (CRAW) path (fcsExecJob's branch that
+logs "PT_CRAW"). The JPEG's EXIF filler is **E00A551C** (only caller
+E0072DB6, three stack arguments): it writes A002 / A003 (header +0x142 /
++0x14E) from a size table passed as its 6th argument, chosen by aspect
+([r6+0x29C]); 3:2 L reads +0x48 (width) and +0x4C (height), the same layout
+as Canon's size table at *(0xB4D4) that the crop patches, but the FCS job's
+own copy, so it kept 4000. It only reads the table (fields up to +0x58C).
+
+### 65:24 EXIF size (build `11febf286d06`, 2026-11-11, not camera-tested)
+
+Hook on E00A551C (`xpan_m50_exif_jpeg`): with the 65:24 crop on and the 3:2
+L entry 6000 x 4000, Canon gets a copy of the table (0x600 bytes) with the
+height 2216; otherwise its own pointer. The trampoline replays push.w
+{r0-r11,lr}; mov r7,r2; sub sp,#12. CONFIG_MMU_REMAP_PAGES 8 (one more 64 kB
+heap page). Counts in XPan > 65:24 JPEG crop (help line). Build checks: only
+the height changes, only with the crop and Canon's 6000 x 4000; ROM check of
+the prologue, the table reads and the call. CR3 EXIF is left as Canon writes
+it (the raw file is the full frame).
+
+### 65:24 EXIF size: camera test and the Canon maker note (2026-11-11)
+
+`11febf286d06` camera test: quick review centred, playback not stretched on
+the first image; **EXIF PixelYDimension 2216** (IMG_2773, IMG_2774). Still
+4000 in Canon's maker note, and browsing in playback shows each new image
+squashed for an instant.
+
+Canon's own 16:9 photo (IMG_2694) shows what Canon writes for a crop:
+AFInfo2 (0x26) CanonImageWidth/Height 6000 x 3368 and AFImageWidth/Height
+6000 x 3368; AspectInfo (0x9A) [7, 6000, 3368, 0, 0]; CropInfo (0x98)
+[left 0, right 0, top 316, bottom 316]. XPan's 65:24 photos: AFInfo2 6000 x
+4000 / 6000 x 4000, AspectInfo [0, 6000, 4000, 0, 0], CropInfo [0, 0, 0, 0].
+
+ROM:
+* Canon's camera-info table (ROM E19E0068, "Canon EOS KISS M", copied to
+  RAM): +0x48 the L sizes per aspect (3:2 6000x4000, 4:3 5328x4000, 16:9
+  6000x3368, 1:1 4000x4000), M at +0x68, S1 +0xC8, S2 +0xE8, **the playback
+  preview at +0x128 (3:2 1620x1080)**, the sensor area at +0x1C8. Copies:
+  *(0xB4D4) (patched by the crop), *(0xB4F4) (read by E00A020C), and the
+  FCS job's own at job + 0x20 (what the EXIF fillers get).
+* Maker-note builder **E00A8DE8** (4 callers in FCS, E0073D82 ...): copies
+  CropInfo from its 5th argument + 0xAA2 (8 bytes) and AspectInfo from +0xAAA
+  (20 bytes); it only reads that structure (up to ~+0xFC6). It is in the
+  page XPan already hooks (E00A0000): a hook passing a copy with CropInfo
+  [0, 0, 892, 892] and AspectInfo [0, 6000, 2216, 0, 0] needs no new page.
+* AFInfo2's CanonImageWidth/Height: Canon's AF converter E00FExxx logs
+  them ("[FCS] wOriginalImageWidth / Height"); source not traced yet (page
+  E00F0000, would be one more page).
+* The playback flash: Canon shows the embedded 1620x1080 preview first,
+  now scaled to the 6000x2216 EXIF size, then the decoded image. Fixing it
+  means a 65:24 preview (table +0x128 and the preview's encoder table near
+  ROM E0FD0C70), a larger change in Canon's encode path.
+
+### The AF block's image size, and where all the FCS sizes come from (ROM, 2026-11-11)
+
+* AFInfo2's CanonImageWidth/Height and AFImageWidth/Height are written by
+  E00FEDC4 (logs "[FCS] wOriginalImageWidth / Height"), from its 5th / 6th
+  arguments; its caller E00FFB72 (from E00FB9B8, E00FE102, E0101424) passes
+  four sizes that E00FE058 gets from **E00FDE6C(job, ..., job + 0x20, out)**:
+  the same table copy at the FCS job + 0x20 that the EXIF fillers read.
+* That copy is made by **fcsActivate** (E0075810, an FCS state handler, table
+  E0A90C70): PROP_GetMulticastProperty(PROP_DSDEFINE) and
+  memcpy(job + 0x20, data, 0x5A4). PROP_DSDEFINE is the camera-definition
+  table (ROM default E19E0068, "Canon EOS KISS M": sizes per aspect at
+  +0x48, preview +0x128, sensor area +0x1C8). fcsActivate runs when the FCS
+  module starts, before XPan's crop (4.7 s), so every FCS consumer (EXIF
+  A002/A003, the AF block, the CR3 rectangle) reads 6000 x 4000.
+* The FCS object: *(0x538C) (FCS_PostShootJob E004FD70 asserts it, [+4] is
+  its state machine). So the copy's 3:2 L height is very likely at
+  *(0x538C) + 0x20 + 0x4C.
+* *(0xB4D4) (patched by the crop) is read by E0082xxx, the capture-side
+  size selection; *(0xB4F4) by E00A020C.
+
+Proposed fix: with the crop, also patch the FCS copy's 3:2 L height (4000 ->
+2216) through ML's patch API, after checking that *(0x538C) + 0x20 starts
+with "Canon" and holds 6000 / 4000 at +0x48 / +0x4C (else refuse); undone
+with the crop. Then every FCS writer works from Canon's own data, the way it
+does for Canon's 16:9 (where CropInfo top / bottom 316 = (4000 - 3368) / 2 is
+expected to become 892). The EXIF hook becomes a no-op (it acts only on
+4000) and can be removed after the test, freeing its ROM page.
+
+Built (`0a6e15fd0b08`, not camera-tested): `fcs_size_entry()` checks
+*(0x538C) + 0x20 ("Canon", 6000 x 4000, 6000 x 3368) and `m50_crop_poll`
+adds its 3:2 L height (4000 -> 2216) as a 4th crop patch, applied and undone
+with the others; when the copy is not as expected the crop goes on without
+it. XPan > 65:24 JPEG crop help: "Save module's table: 2216 / not found",
+and the EXIF hook's count (it should stay 0 with the copy patched).
+
+Camera test (IMG_2775-2778): the 65:24 photos now carry, from Canon itself,
+ExifImageHeight 2216, AFInfo2 CanonImageWidth/Height 6000 x 2216 and
+AFImageWidth/Height 6000 x 2216, AspectInfo [0, 6000, 2216, 0, 0]; the 3:2
+photo (IMG_2778) keeps 4000 everywhere. CropInfo stays [0, 0, 0, 0]: Canon
+computes the margins only for a non-3:2 aspect (316 is not in its table),
+so 892 would need the maker-note hook (E00A8DE8, CropInfo at its 5th
+argument + 0xAA2, same ROM page as the EXIF hook). The EXIF hook no longer
+acts and can go.
+
+Decision (user, 2026-11-11): CropInfo stays as Canon writes it (0); the EXIF
+hook on E00A551C is removed (`e63d817820ba`): 9 hooks, 6 hooked ROM pages,
+CONFIG_MMU_REMAP_PAGES 7 again; build check that it does not come back.
+
+### XPan menu (2026-11-11, `60a663e074b4`, not camera-tested)
+
+* **Greyed rows:** ML draws an IT_BOOL row from its priv; Custom LUT, Live
+  LUT preview and Film grain have none (their own SET toggles), so ML drew
+  them OFF even when on. Their update functions now set the state
+  (MENU_SET_ENABLED).
+* **Layout:** cropmarks.c's rows (aspect, alignment, format, quality,
+  display, unchipped lens), then Custom LUT (Cube file, Refresh, strength,
+  Tone base, Live LUT preview) and Film grain (strength, size), then one
+  **Diagnostics** submenu with every development row: 65:24 JPEG crop
+  status, Live View band restart, Photo LUT and Grain stage statistics,
+  Canon settings, ISO reader, ISO write test, Learned settings, Save Canon
+  log, Touch probe, Exposure probe, Debug info (moved there from
+  cropmarks.c on the M50). The "Watermark - not on the M50 yet" row is gone
+  (its placeholder stays hidden). User rows have short help without
+  internal counters.
+* Build checks: those rows set their state; the development rows are only
+  inside Diagnostics; no Watermark row.
+
+### Menu, Debug info, capture format and forced settings (2026-11-11, `22c3b16d96a8`, not camera-tested)
+
+* **ISO** is read like any other setting: the PROP_ISO slave always starts 5 s
+  after boot; the ISO reader switch, its guard file and the ISO reader / ISO
+  write test rows are gone.
+* **Debug info** (now the last row of XPan's menu) gates every development
+  record and log: OFF, there is no XBOOT.LOG (the boot marks stop once ML has
+  started), no XM50.LOG, no XM50OPTS.LOG report, no Canon log dumps or hang
+  detector, no exposure / display / Hilton / AF records. The Diagnostics
+  submenu is shown only with Debug info ON. The key log was already gated.
+* **HUD LUT line** (40 px under "LUT"): the strength ("100%"), "..." while the
+  LUT loads, "!" when it cannot grade, "OFF".
+* **Capture format on the M50**: Canon's PICQ there is [size, kind, quality,
+  RAW type] (XM50OPTS.LOG: 00 01 03 03, 00 07 03 03, 00 07 03 04, 00 07 02 03,
+  00 06 03 03), not the EOS M codes, and ML's prop_request_change is off, so
+  the shared rows and the HUD FMT field did nothing (the FMT field needed
+  learned options). Now XPan builds the value: JPEG / RAW+JPEG / cRAW+JPEG,
+  Large Fine / Large Normal, always L with a JPEG, written to the PICQ
+  aliases Canon reports (m50_picq_write_now: only that layout, not while
+  busy). Capture format and JPEG size/quality use it, as does the FMT field.
+* **Forced Canon settings** (as on the EOS M): while XPan is on, in P / Tv /
+  Av / M, idle: Picture Style Neutral (0x84, Canon's length), aspect 3:2 (0,
+  only with Canon's length 4), an L format with a JPEG (RAW only becomes
+  RAW+JPEG). Style and aspect are saved and put back when XPan goes off or to
+  movie mode, if they are still XPan's values; one try per second, five per
+  change. Not yet on the M50 (layouts unknown): Neutral's contrast /
+  saturation / colour tone, ALO, HTP, colour space, lens corrections.
+
+### RAW and Film grain, the 3:2 message, LUT names (2026-11-11, `71a89dddc5b8`, not camera-tested)
+
+Camera test of `22c3b16d96a8`: no RAW format could be set (always JPEG,
+also in Canon's own menu), and the aspect ratio was not forced.
+
+* **RAW:** Film grain switches on Canon's creative-filter stage
+  (PROP_LV_CFILTER, Rough Monochrome mapped to none in Live View), and Canon
+  allows only JPEG while a creative filter is on. RAW now wins: while a RAW
+  format is chosen (or being set) Film grain pauses (`film_stage_wanted`,
+  HUD grain icon off, a note in Film grain's menu row), the filter goes off,
+  and the RAW write waits for that (up to 3 s). Canon's own menu still
+  cannot offer RAW while the grain's filter is on: choose RAW in XPan (HUD
+  FMT or Capture format).
+* **Aspect:** XPan's PROP_IMAGE_ASPECT_RATIO write had no effect, so it is
+  gone; with another aspect the HUD shows "XPan needs 3:2 / Set Canon's
+  aspect ratio to 3:2" in the picture (xpan_native_look_blocked).
+* **LUT names:** Canon's file system lists only the FAT 8.3 alias of a long
+  name (".cube" alone makes a name long), so the HUD now drops the alias's
+  "~N" as the EOS M does: IDENT~1.CUB shows as IDENT. Names longer than 6
+  characters still show their first 6.
+
+### Menu choices, the 3:2 panel background, the UI state log (2026-11-11, `94516ebf7a17`, not camera-tested)
+
+Camera test of `71a89dddc5b8`:
+
+- **Tone base and Grain size** now use ML's choice lists (`.choices`, `IT_DICE`). ML's picker shows the names, not numbers, and Fine (0) is no longer drawn as OFF. Before, Grain size had no icon type, so ML guessed `IT_PERCENT_OFF` and drew 0 as off. "Cineon log +1 EV" is now "Cineon +1EV", which fits beside the label. The "N photos" counter on the right, a development count of headroom photos, is gone.
+- **The 3:2 panel background.** `COLOR_TRANSPARENT_BLACK` (index 3) was fully transparent in ML's RGBA palette (`src/bmp.c`), so the 3:2 panel had no background on a white scene. On the M50 it is now 0xA0000000 (black, about 63% opaque), as the index looks on the older bodies.
+  - The colour is black, so straight and premultiplied alpha give the same result.
+  - ML's initial layer clear now uses `COLOR_EMPTY` (it used index 3, which mapped to the same 0 before). Without that, the whole layer would start dimmed.
+  - XPan's clears already use `COLOR_EMPTY`.
+  - ML's other `COLOR_BG` uses on the M50 (console, focus distance text, histogram) now get the same semi-transparent background as on the other bodies.
+- **The crash after playback in the Canon layout (3:2).** It is not found yet. The card's logs of that session stop before it: the boot log covers only the first 60 s, and XM50.LOG caps its Ximr and display records. With Debug info ON, XM50.LOG now gets one line per UI state change, written from a ring of 8 (`m50_log_ui`, shoot task). Each line holds gui_state, lv, ML menu, frozen, uifrozen, Canon layout state, view, Canon's GUI mode, playback, overlay mode and whether Canon's front buffer is off. This costs 256 bytes of RAM (Canon keeps 0xB2E90, margin 208512).
+
+Build checks: those two rows need a choice list, and the long Tone base name is refused. The M50's index-3 colour and ML's `COLOR_EMPTY` initial clear are checked, and the UI state log must run only with Debug info.
+
+### Canon's log at a stuck power-off (2026-11-11, `f240cf24096b`, not camera-tested)
+
+Camera test of `94516ebf7a17`, Debug info ON, XPan 3:2 in the Canon layout. The UI state log caught the session:
+
+- Eight trips from Live View to playback and back worked.
+- The ninth came back after about 5 s of photo browsing. Live View started at 70.37 s, XPan cleared its layer and froze it at 70.91 s, and then nothing more was logged (the key log stops at 70.55 s).
+- The screen went black. After the power switch was turned off the LED stayed on, and only a battery pull helped.
+
+That is the earlier menu hang's signature: Canon's power-off waits for a Live View controller that no longer answers (`[PO] ERROR LvCtrl ResTimeout`). XPan's steps at that moment were the same as in the 8 good trips, and in 3:2 XPan applies no patches.
+
+Canon's hang detector did not fire, because Live View had started (it only catches a start that never reaches the display setter). Once the picture is up, display setter calls are too rare for a "no calls" rule to tell a black screen from a normal one.
+
+New: `canon_dump_stuck_off()`. With Debug info ON, if the camera is still running 5 s after the power-off started, XPan calls Canon's `dumpf` once. Canon keeps its recent messages in RAM, so the file (LOG00N.LOG at the card root) should cover the hang before it.
+- It runs in XPan's task, both inside the power-off guard of the task loop and after the loop ends, until the power is cut.
+- It is the only card access at power-off, and it is Canon's own writer.
+- A normal power-off ends before 5 s, so it never runs then.
+
+Build checks: only this function and `canon_dump_step` call `dumpf`. This one is limited to Debug info, 5 s and once, and does not block, write properties or change Canon's log levels. The task loop's power-off guard is still checked.
+
+Test: reproduce with Debug info ON, switch off, wait 15 s, then pull the battery and bring the card.
+
+### The playback black screen: Canon's log (2026-11-11, `412f09eef302`, not camera-tested)
+
+Camera test of `f240cf24096b`: the stuck power-off saved Canon's log (LOG010.LOG, Canon clock = ML + about 2.1 s).
+
+- **XPan's side.** At ML 58.11 s you came back from playback with PLAY; Live View was on at 58.16 s. The Canon layout's clear step (state 1) followed at 58.40 s. The freeze line (state 2) never came, and the key log and the shoot task's once-a-second marks stop there too. XPan's own task stayed alive: it saved the log.
+- **Canon's side.**
+  - Live View started normally: `process_StarLiveViewApp` 60.215, `evfdevSelectPath`, `LvPoCom:Comp(4)` 60.564. The exposure task logged every 200 ms until the power-off, with no ERROR or WARN lines.
+  - Leaving playback with PLAY, Canon muted the screen (`GUILockTask TurnOn -> MuteOn`, TFT 1), then `GUILock_TurnOffDisplay` and `GUILock_EnableProhibitState` at 60.214.
+  - Canon's GUI wrote nothing after 60.296 (`guiSetTouchShutterDisableFromLV`). No `GUILock_TurnOnDisplay` and no `DisableProhibitState` followed, and the display task never got event 3 (`SetTftStatus (0)`), so the screen stayed black.
+  - PLAY at 63.94 reached Canon's event manager (`SwPlay_Button[1]`) but no GUI handler.
+  - The power-off at 66.69 saved ML's settings and then stopped.
+- **Reading.** Canon's GuiMainTask and ML's shoot_task both stopped at the same moment, about 0.3 s after Live View came back, while Live View itself kept running. A wait between those two tasks (a lock or a semaphore one holds and the other wants) fits.
+  - `DispConEmergencyStop` is not the cause: it appears at every mode change.
+  - The M50's "front buffer off" flag is an ML-only variable that Canon never reads.
+- **New: task states in Canon's log** (`m50_log_tasks`). Just before the stuck power-off dump, and the menu "Save Canon log", XPan writes one `XPT` line per task into Canon's own log with `DryosDebugMsg` (DM_MAGIC level 3, which is recorded: ML's `config_save_file` line shows up as `[FCACHE]`). No card access. Each line holds the name, state, wait type and object, saved PC/LR and up to 8 code addresses (Canon ROM or ML text) from the task's stack. A header line gives `winsys_sem`, `bmp_lock` and the current task. It only reads DryOS's task records.
+
+Build check: `m50_log_tasks` is called only from the two Canon log dumps and does not write, block or call Canon.
+
+Test: same as before. Debug info ON, playback and back in the Canon layout until the black screen, switch off, wait 15 s, battery, card.
+
+### The playback black screen: task states (2026-11-11, `d0c43db2e1aa`, not camera-tested)
+
+Camera test of `412f09eef302`: LOG011.LOG holds the `XPT` lines.
+
+- Canon's log keeps only about 60 characters, and a few values, per message, so the PC and stack part of each line was lost.
+- **What did survive.**
+  - `shoot_task` and `livev_hiprio_task` (ML) both wait with type 6 on the same object `1fa574`. `AcquireRecursiveLock` (E06D77DC) takes a kernel mutex (handle >> 1, E0572C76), so type 6 is a mutex wait here.
+  - The lock both of those ML tasks take is `bmp_lock` (`BMP_LOCK`).
+  - `GuiMainTask` waits with type 2 (an event flag) on `1f7d9c`, not on its message queue.
+- **Likely chain.**
+  - `redraw()` posts `MLEV_REDRAW`, and `_redraw_do` (zebra.c) runs in GuiMainTask. It takes `bmp_lock` and calls Canon's `dialog_redraw(LiveViewApp_dialog)` (E054F3CA, then the window redraw E054D906 / E054D3C4).
+  - The Canon layout's steps call `redraw()` right after Live View comes back from playback. That is the moment Canon rebuilds its Live View dialogs (`CreateDialogBox` 55/50/51/65) with the screen muted and turned off (`GUILock_TurnOffDisplay`, `EnableProhibitState`).
+  - If Canon's redraw then waits for an event that only its own GUI task can give, GuiMainTask never returns: the screen is never turned on, PLAY is ignored, and ML's tasks wait forever on `bmp_lock`. It is intermittent because it depends on when the redraw arrives.
+- **Confirmation round (no change in behaviour).**
+  - Short lines: `XPT id name sN wN oOBJ`. For tasks waiting on more than a sleep or their queue, and for ML's tasks, there are also `XPC id pc lr id <full task id>` and two `XPS id` lines with 8 stack code addresses.
+  - `XPM` lines hold the first 8 words of each mutex a task waits on, to show its owner.
+  - `XPR stage N for T ms` shows where ML's redraw is (zebra.c `ml_redraw_stage`): 1 `bmp_lock` held, 2 inside Canon's `dialog_redraw`, 3 back from it, 0 done.
+
+Build check: the stage marker only records, around `dialog_redraw(LiveViewApp_dialog)`.
+
+Test: as before.
+
+### Display on (2026-11-11, `2ff2f5e16469`, not camera-tested)
+
+Camera test of `d0c43db2e1aa`: the black screen came this time on leaving Canon's menu. LOG012.LOG confirms the cause.
+
+- **What the log shows.**
+  - `XPR stage 2 for 5981 ms`: ML's redraw (zebra.c `_redraw_do`, in GuiMainTask) had been inside Canon's `dialog_redraw(LiveViewApp_dialog)` for 6 s.
+  - shoot_task, livev_loprio_task, livev_hiprio_task and cls_task all wait on mutex `1fa574` (their stacks end in `AcquireRecursiveLock` E06D77DD/E06D7825). That is `bmp_lock`, held by the redraw.
+  - GuiMainTask waits forever (timeout 0) on bit 1 of the event flag `EvZicoWait` (E02787E0 → E05532DC, KerFlag). That is the "drawing done" answer from Zico, the graphics core, through `MzrmGraphic`. CtrlSrv, which serves those jobs, waits on a semaphore.
+- **When it happened.** The redraw went in at Canon 17.604 s:
+  - MENU at 17.550: Canon mutes the screen (`MuteOn`, TFT 1) and closes its menu dialogs.
+  - `START_IDLE_MODE`, then `GUILock_TurnOffDisplay` and `EnableProhibitState` at 17.559.
+  - `StartLiveViewApp` creates the new Live View dialog at 17.569; the AF frame follows at 17.575 and the level at 17.590.
+  - Canon turns the display on only once its GUI has finished. The playback hang (LOG010) had the same order.
+  - ML's redraw is an ML event handled in GuiMainTask between Canon's own messages. Its drawing job cannot finish with the display layers off, and the task that would turn them on is the one waiting. Canon itself never draws in that window.
+- **The fix: Canon's display-off flag.**
+  - `GUILock_TurnOnDisplay` / `TurnOffDisplay` (E065ADCA / E065AE48) set byte +1 of the GUILock object 0x8EB8 through E065AD8A, under GUILock's semaphore. TurnOn writes 0 (E065ADD8); TurnOff (E065AE5A) and the power-off turn-off (E065B302) write 1.
+  - On the M50, `DISPLAY_IS_ON` (consts.h, was a fixed 1) now reads that byte, the same kind of flag the older bodies use (500D/50D `fDisplayTurnOn`). ML's core then skips its display work while Canon's display is off, as it does on the other bodies.
+  - Also on the M50:
+    - `_redraw_do` does nothing with the display off, and marks the redraw as deferred; XPan's shoot-task step does it once the display is on.
+    - `refresh_yuv_from_rgb` does not push ML's layer with the display off; the push stays pending.
+    - XPan's Canon layout waits for the display before its clear and freeze steps, and the dim overlay does not start with it off.
+  - The UI state log gets `display`.
+  - Build checks: the ROM code of the flag and its three writers (check_m50_rom.py), the `DISPLAY_IS_ON` definition, and each guard.
+
+Camera test of `2ff2f5e16469`: no black screen, but Canon's menu came up blank, and only the parts Canon repainted on a key press appeared.
+- The UI log shows the display going off and back on about 200 ms after the menu opens (`display 0` → `1` with `lv 0`, guimode 3).
+- The deferred redraw then ran `_redraw_do`. With no Live View dialog to redraw it falls back to `clrscr()`, which also clears the shared RGBA layer: Canon's freshly drawn menu.
+- `b9570afb60fb`: the deferred redraw is done only back in XPan's Live View with Canon idle (`xpan_photo_ui_active()`, `GUISTATE_IDLE`, no ML menu); anywhere else it is dropped, since Canon has drawn its own screen when it turns the display on. Build check added.
+
+Test: playback, Canon's menu and back, many times in the Canon layout and in XPan's views, with Debug info ON. Check that XPan's HUD and Canon's screen come back each time. XM50.LOG's UI lines should show `display 0` only during the switches.
+
+### Video mode (2026-11-11, `2dc4e348c1b7`, not camera-tested)
+
+Camera report: in the dial's video position the XPan view still showed, though the video is not cropped. The LUT was on the video too, which the user wants to keep.
+
+- **Cause.** `is_movie_mode()` was `shooting_mode == SHOOTMODE_MOVIE` (0x14). On the M50, `shooting_mode` (PROP_SHOOTING_MODE_2) is the movie exposure mode in video, so it never matched. The mode log (`MODE:` lines in XM50.LOG, Debug info only) showed:
+
+  | Dial | `shooting_mode` | `PROP_SHOOTING_MODE` | `lv_movie_select` |
+  |---|---|---|---|
+  | Photo M | 3 | 3 | 1 |
+  | Video, manual | 3 | 0x14 | 2 |
+  | Video, auto | 0 | 0x14 | 2 |
+
+- **Fix.**
+  - On the M50, `is_movie_mode()` is `shooting_mode_custom == SHOOTMODE_MOVIE` (PROP_SHOOTING_MODE). Everything photo-only (XPan view and HUD, 65:24 band, film grain, photo LUT hook, 3:2 message, capture format) is then off in video, as on the EOS M.
+  - `m50_pasm()` is false in video, so the grain filter writer never touches Canon's video filters.
+- **The LUT on video.** It came from the Live LUT library: Canon's style tables graded, used by Live View and so by the movie. In video it now follows XPan's movie ON/OFF (the shared menu's movie row, `xpan.movie`, on by default), Custom LUT and the Cube file, whatever Live LUT preview says (a photo option, hidden in video).
+  - Neutral stays forced while the movie LUT is on, as the LUTs expect.
+  - The L+JPEG format forcing is photo only.
+- **Build checks**: the M50 `is_movie_mode`, `m50_pasm`, forced settings and the library rule in video; the older checks updated to these rules.
+
+Test: video manual and auto. There should be no XPan view and the LUT should be on the movie, with XPan's menu row toggling it. Back to M, XPan's view returns.
+
+### XPan only in P, Tv, Av and M (2026-11-11, `456c2afc654b`, not camera-tested)
+
+Camera report: XPan stayed on in the fully automatic positions (scene modes, creative filters...).
+
+- **Cause.** `xpan_auto_mode()` (cropmarks.c) excluded only green Auto and A+. That is the EOS M rule, where XPan switches every other mode to M (`keep_manual_mode`, xpan-hud-controls.c).
+- **Also found.** On the M50, `keep_manual_mode` was not switched off: its `CONFIG_M50` branch held a stray copy of the key log's `#define KEY_LOG_SIZE`, and the `return` was only for the 6D. It had no visible effect, because ML's `prop_request_change` is off on the M50.
+- **Fix.**
+  - On the M50, `xpan_auto_mode()` is true outside video unless both Canon mode values (PROP_SHOOTING_MODE_2 and PROP_SHOOTING_MODE, equal in photo M) are P, Tv, Av or M.
+  - `XPAN_ACTIVE`, and with it every photo feature (view, HUD, 65:24 band, LUT hook, Live LUT, grain, forced Neutral / L, which are put back), is off in every other dial position.
+  - Video is untouched: the movie LUT keeps its own switch.
+  - `keep_manual_mode` returns on the M50 as on the 6D (physical dial).
+  - `m50_pasm()` uses the same two values.
+  - XPan's menu row warns "XPan works in P, Tv, Av and M (and its LUT in video)".
+  - Build checks added.
+
+Test: SCN, creative filters, A+: no XPan view or HUD, Canon's screen as normal. P, Tv, Av, M: XPan back. Video: no view, LUT on.
+
+### ML menu timeout (2026-11-11, `f83e397e5bbb`, not camera-tested)
+
+Camera report: ML's menu closed by itself after a few seconds.
+
+- **The UI log (Debug info ON), three opens in Live View.**
+  - The GUI mode goes 99 (0x63, `GUIMODE_ML_MENU` in Live View) → 0 exactly 6.0 s after each open (20.861 → 26.880, 28.567 → 34.562, 36.020 → 42.033), with `display 1` throughout.
+  - ML then closes its menu (`menu_ensure_canon_dialog`: Canon's dialog changed).
+  - So Canon drops the dialog ML's menu sits on. It is not the display-off flag (`DISPLAY_IS_ON`, README "Display on").
+- **Fix.** `CONFIG_MENU_TIMEOUT_FIX` for the M50 (internals.h), ML's own workaround on the EOS M, 6D, 70D, 700D, 100D and 1300D: menu.c re-requests `GUIMODE_ML_MENU` every 2 s in Live View, with the same `SetGUIRequestMode` call `piggyback_canon_menu` opens the menu with. Build check added.
+- **First on the M50:** the call is ML's standard one, but this is its first use as a repeated refresh on this body.
+
+Camera test of `f83e397e5bbb`: the menu stays open, but every 2 s pieces of Canon icons show over it.
+- Canon's log (LOG017, "Save Canon log" with ML's menu open) shows each `SetGUIRequestMode(99)` restarting Canon's Live View setting mode (`IDLEHandler START_LV_SETTING_MODE[0x100000b5]`), and with it the LV Picture Style app: `StopLiveViewPictureStyleApp` / `StartLiveViewPictureStyleApp`, `CreateDialogBox id:67`, about 6 ms after the request.
+- On the M50 Canon and ML share one RGBA layer, so its icons land on ML's menu.
+- No 6000 ms timer was found in the GUI code around it; ML's own comment on the fix says the MPU drops the dialog.
+
+`96a036ae8395`: under `FEATURE_VRAM_RGBA` the refresh starts ML's redraw flood first (`start_redraw_flood`), as `piggyback_canon_menu` does when it opens the menu on the same mode. That is five full menu redraws about 20 ms apart, then a push. Build check added.
+
+Test: open ML's menu in Live View and leave it for 30 s or more. It should stay open with no Canon icons; at most a brief flash every 2 s. Then close it normally, and open and close Canon's menu once. Keep Debug info ON.
+
 ## Next phases
 
-1. **Canon settings.** Turn on property writes for only the properties XPan
-   needs (`is_prop_allowed` already has a DIGIC 8 allow-list in
-   `platform/M50.110/property_whitelist.h`), checking each value range on the
-   camera. That brings back the HUD's value controls, the forced Neutral /
-   sRGB / L JPEG / 3:2 settings and the SET magnification.
-2. **Capture path.** A read-only probe, like the 6D one, to find where DIGIC 8
-   develops a still and where the picture-style table is loaded. That needs an
-   M50 ROM dump (`CONFIG_AUTOBACKUP_ROM` is on) and reliable capture under ML.
-3. **Live View position.** Move the picture into the band like the EOS M,
-   possibly through Canon's XIMR compositor (kitor's `Ximr_Compositor_PoC`
-   branch), or pick the band's position to match the crop.
-
-bilalfakhouri's `M50_rawvideo` branch (MMU, EDMAC copy, FPS timers, mlv_lite
-RAW video) is not merged: phase 1 needs none of it, and it overlaps
-`src/raw.c`, which the 6D port changes too. It becomes relevant for the
-capture probe and for movie features.
+See [HANDOFF-XPAN-M50.md](HANDOFF-XPAN-M50.md), "Open / next".
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| `src/xpan-m50.c` | Stand-ins for the stages not ported, XPan > Canon settings, M50 menu |
+| `src/xpan-m50.c` | The M50's own stages: HUD controls, Custom LUT, Live LUT, grain, 65:24 JPEG and live picture, touch AF, XPan menu |
+| `src/xpan-native-table.c` | Colour table conversion, 10-point (shared with the EOS M) and 17-point |
 | `src/xpan-mode.h` | M50 sensor size and Canon crop records |
 | `src/xpan-photo-hud.inc` | HUD drawing without an idle bitmap on RGBA bodies |
 | `src/xpan-hud-controls.c` | M50: INFO only, Q/SET to Canon, no mode forcing, no ROM hooks |

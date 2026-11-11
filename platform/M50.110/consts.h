@@ -81,7 +81,16 @@
  * PropID 80040083 is also not referenced anywhere.
  * GUILockTask does DISP_MuteOnOSDLineVram() and DISP_MuteOnOSDPanelVram()
  * so maybe values stored by those two combined can be used instead. */
-#define DISPLAY_IS_ON               1
+/* Canon's own "display turned off" flag (README-XPAN-M50.md "Display on"):
+ * GUILock object 0x8EB8 (literal E065AF84), byte +1, written only by
+ * E065AD8A under GUILock's semaphore: 1 by GUILock_TurnOffDisplay (E065AE5A)
+ * and GUILock_ShutDownSyncTurnOffDisplay (E065B302), 0 by
+ * GUILock_TurnOnDisplay (E065ADD8); checked by check_m50_rom.py. The same
+ * kind of flag the older bodies read (500D/50D: TurnOnDisplay's
+ * fDisplayTurnOn). Read only. While it is set Canon rebuilds its screen with
+ * the display layers off, and a GUI redraw then waits forever for the
+ * graphics core (camera tests 2026-11-11, LOG010-012: black screen). */
+#define DISPLAY_IS_ON               (!*(volatile uint8_t *)0x8EB9)
 
 /*
  * On M50 UYVY Image buffers are hardcoded to be (see VramRead e009ccd6):

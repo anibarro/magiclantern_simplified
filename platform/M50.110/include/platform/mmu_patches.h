@@ -51,13 +51,18 @@ extern int xpan_m50_area_cy(void);
 /* src/xpan-m50.c: AF box on-screen rectangle, row moved down with the band
  * in the Bottom layout. */
 extern int xpan_m50_af_box(void *out, int r1, int r2, int r3, int s0, int s1, int s2);
+/* src/xpan-m50.c: Canon's hand-over of the Hilton blocks (black level / white
+ * balance gains on the 14-bit data) to their register writers; XPan's
+ * function makes the same two calls and logs the blocks. Read only.
+ * README-XPAN-M50.md "Still processing path". */
+extern int xpan_m50_hilton(void *obwb, void *corr);
 #endif
 
 struct function_hook_patch normal_code_patches[] =
 {
 #ifdef CONFIG_XPAN
     {
-        .patch_addr = 0xe00e73bc, // still develop: load the Lucky colour table (size 0x1000)
+        .patch_addr = 0xe00e73bc, // still develop: load the Lucky colour table (Canon: size 0x1000)
         .orig_content = {0x2d, 0xe9, 0xfc, 0x41, 0x1f, 0x46, 0x15, 0x46}, // push.w {r2-r8,lr}; mov r7,r3; mov r5,r2
         .target_function_addr = (uint32_t)xpan_m50_lucky_load,
         .description = "XPan colour table"
@@ -103,6 +108,12 @@ struct function_hook_patch normal_code_patches[] =
         .orig_content = {0x2d, 0xe9, 0xfc, 0x5f, 0x04, 0x46, 0x98, 0x46}, // push.w {r2-r11,ip,lr}; mov r4,r0; mov r8,r3
         .target_function_addr = (uint32_t)xpan_m50_af_box,
         .description = "XPan AF box (Bottom)"
+    },
+    {
+        .patch_addr = 0xe08db920, // pre-develop: Hilton blocks -> register writers (E08E56F6, E08E57AA)
+        .orig_content = {0x10, 0xb5, 0x0c, 0x46, 0x08, 0xb1, 0x09, 0xf0}, // push {r4,lr}; mov r4,r1; cbz r0,+; bl E08E56F6 (first half)
+        .target_function_addr = (uint32_t)xpan_m50_hilton,
+        .description = "XPan Hilton probe"
     },
 #endif
 };
