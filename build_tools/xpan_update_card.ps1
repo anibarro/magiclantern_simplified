@@ -11,9 +11,9 @@
 #  4. The boot sector carries EOS_DEVELOP and BOOTDISK at the offsets for its
 #     file system, the exFAT boot checksum is right, and the first bytes are
 #     intact (EOScard once wrote "SCRIPT" over them on an exFAT card).
-#  5. No stray .FIR is left at the card root. The package's boot-flag
-#     installer (BOOT_M50.FIR, ML-SETUP.FIR) is for a first install from the
-#     zip, so it is never copied to the working card.
+#  The package's boot-flag installer (BOOT_M50.FIR, ML-SETUP.FIR) is for a
+#  first install from the zip, so it is never copied; a .FIR already at the
+#  card root is fine and left alone (user, 2026-11-13).
 # Each update is recorded in platform\<Cam>\xpan_builds\card-history.log.
 param(
     [Parameter(Mandatory)][ValidateSet('EOSM.202', '6D.116', 'M50.110')][string]$Cam,
@@ -82,10 +82,6 @@ if ($type -eq 'exFAT') {
 }
 "ok: boot markers and boot sector ($type)"
 
-# 5. Stray firmware files
-$fir = @(Get-ChildItem "$card\*.FIR" -ErrorAction SilentlyContinue)
-if ($fir.Count) { Fail ("remove " + ($fir.Name -join ', ') + " from the card root") }
-"ok: no .FIR at the card root"
 
 $hash = (Get-FileHash "$card\autoexec.bin").Hash.Substring(0, 12).ToLower()
 $hist = Join-Path $repo "platform\$Cam\xpan_builds"
