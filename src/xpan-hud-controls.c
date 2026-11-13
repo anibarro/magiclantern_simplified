@@ -180,6 +180,23 @@ static int key_inner(struct event *event)
         info_request++; dbg_ring[slot]|=0x20000; return 0;
     }
     if (event->param==BGMT_WHEEL_LEFT || event->param==BGMT_WHEEL_RIGHT) dbg_wheel_raw++;
+    /* Video LUT selector (xpan-photo-hud.inc): in movie mode only a tap on
+     * the box is XPan's (and its move/release), also while recording; every
+     * other touch stays Canon's. */
+    if (is_movie_mode() && !IS_FAKE(event) &&
+        (event->param==BGMT_TOUCH_1_FINGER || event->param==BGMT_TOUCH_MOVE || event->param==BGMT_UNTOUCH_1_FINGER)) {
+        extern int xpan_movie_lut_visible(void);
+        extern int xpan_movie_lut_hit(int x, int y);
+        static int lut_touch;
+        if (event->param==BGMT_TOUCH_1_FINGER) {
+            int x,y,h=xpan_movie_lut_visible() && touch_point(event,&x,&y) ? xpan_movie_lut_hit(x,y) : 0;
+            lut_touch=h!=0;
+            if (h) { xpan_native_look_step_cube(h); return 0; }
+            return 1;
+        }
+        if (lut_touch) { if (event->param==BGMT_UNTOUCH_1_FINGER) lut_touch=0; return 0; }
+        return 1;
+    }
     /* Movie mode, XPan ON, not recording: short Q/SET toggles Canon's 1:1
      * movie crop mode (1920x1080 from the sensor centre, ~3x). Held 500 ms
      * = Canon's Q screen. Same press/release handling as the photo zoom. */

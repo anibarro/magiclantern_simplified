@@ -709,6 +709,7 @@ static struct menu_entry xpan_photo_menu[] = {
 
             /* --- Film grain --- */
             MENU_PLACEHOLDER("Film grain"),   /* submenu: strength, type, size */
+            MENU_PLACEHOLDER("Halation"),     /* submenu: strength (xpan-film-grain.c) */
             MENU_PLACEHOLDER("Watermark"),    /* submenu: colour, position, size, LUT name */
             /* --- Display --- */
             {

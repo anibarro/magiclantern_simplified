@@ -440,10 +440,59 @@ static int xpan_loading_photo_area(int hud_y, int *top, int *bottom)
     return 1;
 }
 int xpan_movie_enabled(void);   /* cropmarks.c: XPan ON/OFF in movie mode */
+/* Video LUT selector (README-XPAN.md "Video LUT selector", as on the M50):
+ * movie mode has no XPan HUD, so a "<  NAME  >" box sits above Canon's
+ * setting bar; a tap on its left third picks the previous LUT, anywhere
+ * else on it the next one, also while recording (xpan-hud-controls.c). The
+ * name is the HUD's (xpan_native_look_hud_label: RAM only, no card access). */
+int xpan_native_look_movie_lut_shown(void);
+static struct { short x,y,w,h; } xpan_movie_lut_drawn;
+#define XPAN_MOVIE_LUT_Y 366
+#define XPAN_MOVIE_LUT_H 46          /* bottom at 412, above Canon's setting bar */
+#define XPAN_MOVIE_LUT_PAD 18
+int xpan_movie_lut_visible(void)
+{
+    return is_movie_mode() && xpan_movie_enabled() && lv && !gui_menu_shown() && !PLAY_OR_QR_MODE &&
+        gui_state==GUISTATE_IDLE && xpan_native_look_movie_lut_shown();
+}
+int xpan_movie_lut_hit(int x, int y)
+{
+    int bx=xpan_movie_lut_drawn.x, by=xpan_movie_lut_drawn.y, bw=xpan_movie_lut_drawn.w, bh=xpan_movie_lut_drawn.h;
+    if (!bw || x<bx || x>=bx+bw || y<by-8 || y>=by+bh+8) return 0;   /* 8 px of slack for a finger */
+    return x<bx+bw/3 ? -1 : 1;
+}
+static void xpan_movie_lut_erase(void)
+{
+    if (!xpan_movie_lut_drawn.w) return;
+    bmp_fill(COLOR_EMPTY,xpan_movie_lut_drawn.x,xpan_movie_lut_drawn.y,xpan_movie_lut_drawn.w,xpan_movie_lut_drawn.h);
+    xpan_movie_lut_drawn.w=0;
+}
+static void xpan_movie_lut_draw(int hidden)
+{
+    static char last[48];
+    static int last_ms;
+    if (hidden || !xpan_movie_lut_visible()) { xpan_movie_lut_erase(); last[0]=0; return; }
+    char name[40], state[16], text[48];
+    xpan_native_look_hud_label(name,sizeof(name),state,sizeof(state));
+    snprintf(text,sizeof(text),"<  %s  >",name);
+    if (xpan_movie_lut_drawn.w && !strcmp(text,last) && get_ms_clock()-last_ms<500) return;
+    last_ms=get_ms_clock();
+    /* +1: xpan_hud_text keeps 1 px for the bold stroke (else it shrinks the name) */
+    int tw=bmp_string_width(FONT_LARGE,text)+1;
+    int w=MIN(700,tw+2*XPAN_MOVIE_LUT_PAD);
+    if (xpan_movie_lut_drawn.w && xpan_movie_lut_drawn.w!=w) xpan_movie_lut_erase();
+    int x=360-w/2, y=XPAN_MOVIE_LUT_Y, color=xpan_photo_theme_color();
+    bmp_fill(COLOR_TRANSPARENT_BLACK,x,y,w,XPAN_MOVIE_LUT_H);
+    bmp_draw_rect(color,x,y,w-1,XPAN_MOVIE_LUT_H-1);
+    xpan_hud_text(x+XPAN_MOVIE_LUT_PAD,y+5,w-2*XPAN_MOVIE_LUT_PAD,36,FONT_LARGE,COLOR_WHITE,text);
+    xpan_movie_lut_drawn.x=x; xpan_movie_lut_drawn.y=y; xpan_movie_lut_drawn.w=w; xpan_movie_lut_drawn.h=XPAN_MOVIE_LUT_H;
+    snprintf(last,sizeof(last),"%s",text);
+}
 /* Movie mode has no XPan HUD: called from ML's Live View info loop. Redrawn
  * every half second, because Canon's movie screen can paint over it. */
 void xpan_movie_loading_draw(void)
 {
+    xpan_movie_lut_draw(xpan_loading_drawn.w!=0);   /* under the loading box: hidden */
     static int last_ms;
     int want=is_movie_mode() && xpan_movie_enabled() && lv && !gui_menu_shown() &&
         (xpan_native_look_loading() || xpan_native_look_blocked());

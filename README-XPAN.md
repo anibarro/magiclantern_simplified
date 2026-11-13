@@ -210,3 +210,16 @@ behind `CONFIG_XPAN`. Other cameras are unaffected (`CONFIG_EOSM`).
 | `src/xpan-native-jpeg.c` | 65:24 crop of Canon's JPEG encoder and JPEG/CR2 metadata |
 | `src/xpan-film-grain.c` | film grain through Canon's grain engine, watermark blend |
 | `src/property.c`, `src/propvalues.c`, `src/shoot.c`, `src/gui-common.c`, `src/tweaks.c`, `src/zebra.c`, ... | small hooks: property allow-list, key routing, display filter, 1:1 movie crop |
+
+## Halation (2026-11-13, not camera-tested on the EOS M)
+
+XPan > **Halation** (right below Film grain), SET: ON/OFF, PLAY: **Strength** 1-100 % (default 50; 70 % = the prototype's strength 1.0). A red-orange glow around strong highlights, as on film without an anti-halation layer; the highlight itself stays white, nothing under the threshold changes. Saved JPEG only, with XPan on, in photo mode.
+
+* Same pixel code as the M50 (`src/xpan-halation.inc`, camera-tested there); `build_tools/xpan_halation_test.c` runs it on the host at every build (`build_xpan.sh`), `build_tools/xpan_halation_proto.py` is the offline prototype.
+* EOS M: in Canon's capture hook on the finished YUV image, the same descriptor checks as the Film grain, before the grain and the watermark (both go over the glow), only on the rows the JPEG keeps (65:24: the 1920-row crop). One task, in place on the uncached buffer, like `film_apply`: histogram of every 8th row -> white, 1/16 key map, blur, then the glow.
+* Memory: heap only while Halation is ON (about 280 KB in three blocks).
+* The menu help shows the last photo's time, white and share of pixels changed. The time per photo on the EOS M is not measured yet.
+
+## Video LUT selector (2026-11-13, not camera-tested on the EOS M)
+
+As on the M50: in movie mode with XPan ON, Custom LUT on and two or more LUTs, a "<  NAME  >" box sits above Canon's setting bar (y 366-412, centred, sized to the name in the large font). A tap on its left third picks the previous LUT, anywhere else on it the next one, also while recording; the LUT then loads as from the photo HUD (`xpan_native_look_step_cube`). Only a tap on the box (and its move/release) is XPan's; every other touch stays Canon's. Hidden under the "Loading..." box, in menus and dialogs. Whether a LUT change while recording shows a short glitch in the clip is not tested yet.

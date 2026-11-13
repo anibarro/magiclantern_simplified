@@ -229,6 +229,8 @@ int xpan_native_look_photo_lut(char *name, unsigned size)
     xpan_cube_display_name(name);
     return name[0]!=0;
 }
+/* Video LUT selector (xpan-photo-hud.inc): Custom LUT on, two or more files. */
+int xpan_native_look_movie_lut_shown(void) { return selected_look==3 && xpan_native_cube_file_count()>1; }
 static int workflow_menu_can_change(void)
 {
     return !lens_info.job_state && !get_halfshutter_pressed() && look_state!=2;

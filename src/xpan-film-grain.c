@@ -106,6 +106,96 @@ static int idle(void)
 {
     return !busy && !lens_info.job_state && !get_halfshutter_pressed() && !ml_shutdown_requested;
 }
+
+/* ---------------------------------------------------------------------------
+ * Halation (README-XPAN.md "Halation"): a red-orange glow around strong
+ * highlights, as on film without an anti-halation layer. The pixel code is
+ * src/xpan-halation.inc, the same as the M50's (host test
+ * build_tools/xpan_halation_test.c). Here it runs in Canon's capture hook on
+ * the finished YUV image (the same descriptor checks as the Film grain),
+ * before the grain and the watermark, only on the rows the JPEG keeps
+ * (65:24: the 1920-row crop). One task, in place, uncached as film_apply.
+ * Buffers (heap, about 284 KB) only while Halation is ON.
+ * --------------------------------------------------------------------------- */
+#include "math.h"
+#include "xpan-halation.inc"
+static CONFIG_INT("xpan.film.halation",halation_on,0);
+static CONFIG_INT("xpan.film.halation.strength",halation_strength,50);
+int xpan_halation_enabled(void) { return halation_on && halation_strength>0; }
+struct hal_rows { uint16_t ri[HAL_MW+8], rt[HAL_TW+8]; };
+static struct hal_job hal_job;
+static void *hal_raw[3];
+static struct hal_rows *hal_rows;
+static int hal_ready, hal_pct=-1;
+static unsigned hal_applied, hal_skipped, hal_us, hal_white, hal_permille;
+static struct card_info *hal_last_card;
+static unsigned hal_last_file=0xffffffffu, hal_last_folder=0xffffffffu;
+static const char *hal_status="OFF";
+static void hal_free(void)
+{
+    for (int i=0;i<3;i++) { if (hal_raw[i]) free(hal_raw[i]); hal_raw[i]=0; }
+    hal_job.acc=0; hal_job.tail=0; hal_job.t=0; hal_rows=0; hal_ready=0;
+}
+static void *hal_align(void *p) { return (void *)(((uintptr_t)p+31u)&~(uintptr_t)31u); }
+/* Idle task (xpan_film_grain_poll): buffers and tables while ON. Never while
+ * the hook runs (busy). */
+static void hal_poll(void)
+{
+    int want=xpan_halation_enabled() && xpan_photo_enabled() && !is_movie_mode(), pct=COERCE(halation_strength,1,100);
+    if (!want) { if (hal_raw[0]) hal_free(); hal_pct=-1; hal_status="OFF"; return; }
+    if (hal_ready && pct==hal_pct) return;
+    if (!hal_raw[0]) {
+        const unsigned sizes[3]={HAL_STRIDE*HAL_MH*2u,HAL_TSTRIDE*HAL_TH*2u,(unsigned)sizeof(struct hal_tables)+(unsigned)sizeof(struct hal_rows)+32u};
+        for (int i=0;i<3;i++) hal_raw[i]=malloc(sizes[i]+32u);
+        if (!hal_raw[0] || !hal_raw[1] || !hal_raw[2]) { hal_free(); hal_status="No memory for halation"; return; }
+        hal_job.acc=hal_align(hal_raw[0]); hal_job.tail=hal_align(hal_raw[1]);
+        hal_job.t=hal_align(hal_raw[2]);
+        hal_rows=hal_align((uint8_t *)hal_job.t+sizeof(struct hal_tables));
+        hal_tables_init(hal_job.t);
+    }
+    hal_set_strength(&hal_job,pct); hal_pct=pct;
+    hal_ready=1; hal_status="Ready; halation on saved JPEG";
+}
+/* Capture hook: the image's rows [top, top+rows) at address, in place. */
+static void hal_apply(unsigned address,unsigned top,unsigned rows)
+{
+    const unsigned pitch=WIDTH/2u;
+    uint32_t *img=(uint32_t *)address+top*pitch;
+    hal_job_size(&hal_job,WIDTH,rows);
+    memset(hal_job.t->hist,0,sizeof(hal_job.t->hist));
+    for (unsigned y=0;y<rows;y+=8) hal_hist_row(hal_job.t->hist[0],img+y*pitch,WIDTH);
+    hal_set_white(&hal_job);
+    memset(hal_job.acc,0,HAL_STRIDE*hal_job.mh*2u);
+    for (unsigned y=0;y<rows;y++) hal_acc_row(&hal_job,img+y*pitch,y);
+    hal_blur(&hal_job);
+    unsigned changed=0;
+    for (unsigned y=0;y<rows;y++) {
+        hal_row_prep(&hal_job,y,hal_rows->ri,hal_rows->rt);
+        changed+=hal_row(&hal_job,img+y*pitch,img+y*pitch,hal_rows->ri,hal_rows->rt);   /* in place: each word read before it is written */
+    }
+    hal_white=hal_job.white; hal_permille=changed*1000u/MAX(pitch*rows,1u);
+}
+static void hal_capture_hook(uint32_t *regs,uint32_t pc)
+{
+    if (!xpan_halation_enabled() || !hal_ready || !xpan_photo_enabled() || is_movie_mode() ||
+        ml_shutdown_requested || pc!=CAPTURE_SITE || !xpan_native_jpeg_is_job(regs[7])) return;
+    const volatile uint32_t *source=(const volatile uint32_t *)regs[7];
+    if (source[0x44/4]!=8) return;              /* final JPEG only, not the RAW preview */
+    struct card_info *card=get_shooting_card();
+    if (!card || (hal_last_card==card && hal_last_file==(unsigned)card->file_number &&
+        hal_last_folder==(unsigned)card->folder_number)) return;
+    uint32_t address=source[0x58/4], physical=address&~0x40000000u;
+    if (busy || source[0]!=0xff90f600 || source[1]!=0x26 || source[2]!=0xff9125a8 ||
+        source[0x38/4]!=0x1440ffff || source[0x3c/4]!=3456 || source[0x40/4]!=0 ||
+        (address&0xf0000000u)!=0x40000000u || (physical&127) || physical<0x08000000 ||
+        !ram_span(address,WIDTH*3456*2)) { hal_skipped++; hal_status="Halation skipped"; return; }
+    unsigned started=(uint32_t)get_us_clock(); busy=1;
+    unsigned panoramic=!!xpan_photo_is_panoramic();
+    hal_apply(address,panoramic ? PANORAMIC_CROP_TOP:0,panoramic ? PANORAMIC_CROP_ROWS:FULL_ROWS);
+    hal_us=(uint32_t)get_us_clock()-started; busy=0;
+    hal_last_card=card; hal_last_file=card->file_number; hal_last_folder=card->folder_number;
+    hal_applied++; hal_status="Ready; last JPEG with halation";
+}
 static int map_valid(void)
 {
     /* This call site follows Canon's YUV-ready semaphore, but precedes the
@@ -1039,6 +1129,7 @@ static void wm_capture_hook(uint32_t *regs,uint32_t pc)
 /* One Canon hook: grain first (it may be OFF), then the watermark on top. */
 static void capture_hook(uint32_t *regs,uint32_t *stack,uint32_t pc)
 {
+    hal_capture_hook(regs,pc);              /* the glow first: grain and logo go over it */
     grain_capture_hook(regs,stack,pc);      /* may already have placed the logo */
     if (!xpan_watermark_enabled() || !wm_ready || pc!=CAPTURE_SITE || !xpan_native_jpeg_is_job(regs[7])) return;
     struct card_info *card=get_shooting_card();
@@ -1115,6 +1206,14 @@ static MENU_UPDATE_FUNC(display_grain)
     MENU_SET_HELP("SET: ON/OFF, PLAY: options. Saved JPEG only; Canon Creative Filters must be OFF. %s",status);
     if (film_grain && !ready) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",status);
 }
+static MENU_UPDATE_FUNC(display_halation)
+{
+    MENU_SET_ENABLED(halation_on);
+    MENU_SET_VALUE("%s",halation_on ? "ON":"OFF");
+    MENU_SET_HELP("Red-orange glow around strong highlights on the saved JPEG. %s. Last %d ms, white %d, %d.%d%% changed.",
+        hal_status,(int)(hal_us/1000),(int)hal_white,(int)(hal_permille/10),(int)(hal_permille%10));
+    if (halation_on && !hal_ready) MENU_SET_WARNING(MENU_WARN_ADVICE,"%s",hal_status);
+}
 static MENU_UPDATE_FUNC(display_strength)
 {
     MENU_SET_VALUE("%d%s",COERCE(grain_strength,1,100),"%");
@@ -1172,6 +1271,14 @@ static struct menu_entry entries[]={
           .help="Film grain size." },
         MENU_EOL
       } },
+    { .name="Halation",.priv=&halation_on,.max=1,.update=display_halation,
+      .select_Q=menu_open_submenu,
+      .help="Film halation on the saved JPEG. SET: ON/OFF, PLAY: strength.",
+      .children=(struct menu_entry[]) {
+        { .name="Strength",.priv=&halation_strength,.min=1,.max=100,.unit=UNIT_PERCENT,
+          .help="Glow amount: 30 subtle, 50 medium, 70 strong, 100 very strong." },
+        MENU_EOL
+      } },
     { .name="Watermark",.priv=&wm_enabled,.max=1,.select=select_watermark,.update=display_watermark,
       .select_Q=menu_open_submenu,
       .help="XPan logo in a corner of the saved JPEG, optionally with the LUT name.",
@@ -1218,6 +1325,9 @@ void xpan_film_grain_poll(struct card_info *card)
             epoch++;
         }
     }
+    /* Halation: the same capture hook, with or without the grain. */
+    hal_poll();
+    if (hal_ready && !install()) hal_status="Cannot install JPEG hook";
     /* Watermark: needs the same capture hook even with grain OFF. */
     if (xpan_watermark_enabled() && xpan_photo_enabled() && !is_movie_mode()) {
         if (wm_load(card) && !install()) wm_status="Cannot install JPEG hook";

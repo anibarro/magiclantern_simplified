@@ -6,6 +6,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 B=${B:-build_xpan}
+# Halation pixel code (src/xpan-halation.inc) on the host first.
+HT=$(mktemp)
+gcc -std=gnu99 -O2 -Wall -Werror -o "$HT" build_tools/xpan_halation_test.c -lm
+"$HT" selftest || { rm -f "$HT"; echo "HALATION HOST TEST FAILED"; exit 1; }
+rm -f "$HT"
 LOG=platform/EOSM.202/$B.log
 make -C platform/EOSM.202 -j"$(nproc)" BUILD_DIR=$B ZIP_DIR=$B/zip CONFIG_QEMU=n XPAN=y \
   ${ARM_BINPATH:+ARM_BINPATH=$ARM_BINPATH} 2>&1 | tee "$LOG"
