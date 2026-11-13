@@ -1025,6 +1025,32 @@ static void keep_clean_display(unsigned mask)
     if (tries>=6 || get_halfshutter_pressed() || lens_info.job_state || get_ms_clock()-last_ms<500) return;
     tries++; last_ms=get_ms_clock();
     fake_simple_button(BGMT_INFO);
+#elif defined(CONFIG_M50)
+    /* M50 (README-XPAN-M50.md "Clean Canon screen"): Canon's INFO screens
+     * set while XPan was off (the settings-only one has no touch AF) do not
+     * survive into XPan's view: INFO presses through Canon's own button path
+     * (fake_simple_button: Canon's GUI queue, as the tested fake MENU) until
+     * Canon is in mode 3, the clean screen ML draws on. The next press only
+     * once Canon has changed its mode (1 s without a change counts as a
+     * try). Not in XPan's Canon layout, which shows Canon's own screen. If 6
+     * presses never reach mode 3, Canon's clean screen is switched off in
+     * its INFO settings: say so once. */
+    static int tries,from=-1,warned;
+    static uint32_t press_ms;
+    if (!lv || mask || xpan_photo_canon_layout() || mode==3) {
+        if (mode==3 || !lv) { tries=0; warned=0; }
+        from=-1;
+        return;
+    }
+    if (from>=0 && mode==from && get_ms_clock()-press_ms<1000) return;   /* Canon not done yet */
+    from=-1;
+    if (tries>=6) {
+        if (!warned) { warned=1; NotifyBox(4000,"XPan: Canon's clean Live View screen\nis off in Canon's INFO display settings"); }
+        return;
+    }
+    if (get_halfshutter_pressed() || lens_info.job_state) return;
+    tries++; from=mode; press_ms=get_ms_clock();
+    fake_simple_button(BGMT_INFO);
 #endif
 }
 

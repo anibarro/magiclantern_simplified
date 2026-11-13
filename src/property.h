@@ -135,6 +135,10 @@
     #define DRIVE_CONTINUOUS 5
     #define DRIVE_SILENT 0x13
     #define DRIVE_SILENT_CONTINUOUS 0x14
+#elif defined(CONFIG_M50)
+    /* As the M50 reports them (XPan, ML/SETTINGS/XM50OPTS.BIN 2026-11-08). */
+    #define DRIVE_HISPEED_CONTINUOUS 4
+    #define DRIVE_CONTINUOUS 5
 #elif defined(CONFIG_6D)
     #define DRIVE_CONTINUOUS 1
     #define DRIVE_SILENT 0x13

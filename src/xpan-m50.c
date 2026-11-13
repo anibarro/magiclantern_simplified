@@ -6,7 +6,7 @@
  * research log is README-XPAN-M50.md):
  *
  *  - Canon settings from the HUD: ISO, shutter, aperture (checked writers)
- *    and EV, WB, drive, metering, format (only values learned from Canon).
+ *    and EV, WB, drive, metering, format (only Canon's own values).
  *  - Custom LUT on the saved JPEG (Canon's colour table for the shot, through
  *    the colour-table hook) and the Live LUT preview (Canon's style library).
  *  - Film grain in Canon's own creative-filter grain stage.
@@ -161,6 +161,7 @@ static volatile unsigned dyn_count;
  * "XPan menu"): nothing is recorded or written otherwise. */
 extern int ml_started;                      /* init.c */
 static int m50_dbg(void) { return xpan_photo_debug_enabled(); }
+void m50_boot_mark(int id, int value);      /* boot log, below */
 static void expo_add(uint32_t prop, uint32_t len, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
     if (!m50_dbg()) return;
@@ -365,114 +366,74 @@ static uint32_t m50_av_step(int delta)
 }
 
 /* ------------------------------------------------------------------ */
-/* Learned settings: EV, WB, drive, metering, file format.            */
+/* EV, WB, drive and metering: Canon's own values.                     */
 
-/* README-XPAN-M50.md, "Controls, step 6". Their M50 encodings are not
- * logged yet, and a wrong value written to a Canon property can corrupt
- * the settings Canon saves. So XPan writes only what Canon itself wrote:
- * whenever Canon reports a change of one of these settings (from its own
- * screen, Q menu or buttons), XPan waits until the setting's properties have
- * been quiet for 400 ms and records their exact bytes and lengths together
- * as one option. Selecting the field on the HUD then steps through the
- * recorded options only, writing those bytes back with Canon's
- * _prop_request_change, from XPan's task, as for ISO. EV is kept in numeric
- * order and stops at both ends; the others cycle in the order Canon gave them.
- * The options are saved in ML/SETTINGS/XM50OPTS.BIN, so each setting has to
- * be cycled through Canon's screen once.
- *
- * Second camera test (2026-11-08, XM50OPTS.BIN from the card):
- * - EV: PROP_AE is 4 bytes with the compensation in byte 1, in thirds of a
- *   stop (byte 0 always 0): -9..+9 = -3..+3 EV. XPan sorted by byte 0, so
- *   the order was the learning order, and 16 slots could not hold all 19
- *   values. ML's lens_info.ae reads byte 0, so the HUD always showed 0.0 EV.
- *   Now: sorted by bytes 0-1 as a signed 16-bit value, 24 slots, and the HUD
- *   shows m50_ev_thirds().
- * - FORMAT: nothing was learned. Not all three PICQ properties report on the
- *   M50 and XPan waited for all three. Now an option holds the ones that did
- *   report (the others are stored empty and never written). The M50 sets RAW
- *   and JPEG separately (RAW "-" / RAW / cRAW under INFO), so the field steps
- *   JPG -> RAW+JPG -> cRAW+JPG through the learned options that keep the
- *   current JPEG. Every report is logged to ML/LOGS/XM50OPTS.LOG; the third
- *   test's log gave the M50 PICQ layout (M50_PICQ_KIND below), which is not
- *   the EOS M one. */
-#define M50_OPT_PROPS 3
-#define M50_OPT_MAX 24
-#define M50_OPT_MAX_V1 16
-#define M50_OPT_BYTES 16
-struct m50_prop_val { uint8_t len; uint8_t b[M50_OPT_BYTES]; };
+/* README-XPAN-M50.md "Controls: Canon's values". The values Canon itself
+ * reported on the M50, recorded by the earlier "learned settings"
+ * (ML/SETTINGS/XM50OPTS.BIN and ML/LOGS/XM50OPTS.LOG, 2026-11-08...12):
+ * every property is one 4-byte little-endian word.
+ *   EV (PROP_AE): byte 1 = compensation in thirds of a stop, -9..+9 (bytes
+ *     0, 2 and 3 were 0 in every report; XPan keeps Canon's).
+ *   WB (PROP_WB_MODE_LV and _PH, the same value): ML's WB_* values; seen
+ *     0, 1, 2, 3, 4, 8, 9 (flash and custom were never set, so not offered).
+ *   Drive (PROP_DRIVE): ML's DRIVE_* values; seen 0, 4, 5, 0x10, 0x11, 7.
+ *   Metering (PROP_METERING_MODE): seen 3 evaluative, 4 partial, 1 spot,
+ *     5 centre-weighted.
+ * WB as on the EOS M (xpan-hud-controls.c step_wb / kelvin_toggle): the
+ * dial steps the presets up to Kelvin; in Kelvin it changes the
+ * temperature (ML's kelvin_toggle steps: 100 K, 500 K above 7000 K,
+ * wrapping), within Canon's M50 range 2500..10000 K; a tap on the selected
+ * WB field steps to the next preset, which is how Kelvin is left. Kelvin is
+ * PROP_WB_KELVIN_LV and _PH (one 4-byte word, as ML's lens_set_kelvin
+ * writes it), written only while Canon reports a Kelvin value in range.
+ * The HUD steps through these in Canon's own screen order; XPan's task
+ * writes the chosen one with Canon's _prop_request_change, not while
+ * half-pressed, busy or recording. The current value comes from ML's own
+ * property handlers (lens_info.wb_mode, drive_mode, metering_mode) and, for
+ * EV, from PROP_AE's byte 1 (ML's lens_info.ae reads byte 0). */
+static const int m50_wb_vals[]={WB_AUTO,WB_SUNNY,WB_SHADE,WB_CLOUDY,WB_TUNGSTEN,WB_FLUORESCENT,WB_KELVIN};
+static const int m50_drive_vals[]={DRIVE_SINGLE,DRIVE_HISPEED_CONTINUOUS,DRIVE_CONTINUOUS,DRIVE_SELFTIMER_REMOTE,DRIVE_SELFTIMER_2SEC,DRIVE_SELFTIMER_CONTINUOUS};
+static const int m50_meter_vals[]={3,4,1,5};
+#define M50_EV_MIN (-9)
+#define M50_EV_MAX 9
+#define M50_KELVIN_MIN 2500
+#define M50_KELVIN_MAX 10000
 struct m50_ctl {
-    int field; const char *name; int nprops; unsigned props[M50_OPT_PROPS]; int numeric; int format;
-    struct m50_prop_val cur[M50_OPT_PROPS];     /* last reported by Canon */
-    volatile uint32_t changed_ms; volatile int dirty;
-    volatile uint32_t seq;                       /* seqlock for cur[]: odd while PropMgr writes */
-    int nopts;
-    struct m50_prop_val opts[M50_OPT_MAX][M50_OPT_PROPS];
-    int target; uint32_t target_ms;              /* last option requested */
-    volatile int write_req;                      /* option index + 1 */
-    unsigned writes, refused, too_long;
+    int field; const char *name; const int *vals; int nvals; int numeric; int format;
+    int target; uint32_t target_ms;              /* last value requested */
+    volatile int write_req;                      /* 1: write target */
+    int kelvin; uint32_t kelvin_ms; volatile int kelvin_req;   /* WB in Kelvin: temperature to write */
+    unsigned writes, refused;
 };
 static struct m50_ctl m50_ctls[]={
-    { .field=XPAN_HUD_EV,     .name="EV",     .nprops=1, .props={PROP_AE}, .numeric=1 },
-    { .field=XPAN_HUD_WB,     .name="WB",     .nprops=2, .props={PROP_WB_MODE_LV,PROP_WB_MODE_PH} },
-    { .field=XPAN_HUD_DRIVE,  .name="DRIVE",  .nprops=1, .props={PROP_DRIVE} },
-    { .field=XPAN_HUD_METER,  .name="METER",  .nprops=1, .props={PROP_METERING_MODE} },
-    { .field=XPAN_HUD_FORMAT, .name="FORMAT", .nprops=3, .props={PROP_PIC_QUALITY,PROP_PIC_QUALITY2,PROP_PIC_QUALITY3}, .format=1 },
+    { .field=XPAN_HUD_EV,     .name="EV",     .numeric=1 },
+    { .field=XPAN_HUD_WB,     .name="WB",     .vals=m50_wb_vals,    .nvals=COUNT(m50_wb_vals) },
+    { .field=XPAN_HUD_DRIVE,  .name="DRIVE",  .vals=m50_drive_vals, .nvals=COUNT(m50_drive_vals) },
+    { .field=XPAN_HUD_METER,  .name="METER",  .vals=m50_meter_vals, .nvals=COUNT(m50_meter_vals) },
+    { .field=XPAN_HUD_FORMAT, .name="FORMAT", .format=1 },
 };
-static volatile int m50_opts_dirty;     /* options changed: save the file */
-static int m50_opts_loaded;
-#define M50_OPTS_FILE "ML/SETTINGS/XM50OPTS.BIN"
-
 static struct m50_ctl *m50_ctl_for_field(int field)
 {
     for (unsigned i=0;i<COUNT(m50_ctls);i++) if (m50_ctls[i].field==field) return &m50_ctls[i];
     return 0;
 }
-/* Report log: every report of these properties and every learned option,
- * appended to ML/LOGS/XM50OPTS.LOG by XPan's task. */
-struct m50_rep { uint32_t ms, prop; uint8_t len, b[8]; };
-#define M50_REPS 64
-static struct m50_rep m50_reps[M50_REPS];
-static volatile unsigned m50_rep_head, m50_rep_saved;
-static void m50_rep_add(uint32_t prop, unsigned len, const void *data)
+/* PROP_AE as Canon reports it (PropMgr writes, XPan's task reads one word). */
+static volatile uint32_t m50_ae_word;
+static volatile int m50_ae_known;
+static void m50_ae_prop(unsigned property, void *token, void *data, unsigned len)
 {
-    uint32_t old=cli();
-    struct m50_rep *r=&m50_reps[m50_rep_head%M50_REPS];
-    r->ms=get_ms_clock(); r->prop=prop; r->len=len;
-    memset(r->b,0,sizeof(r->b));
-    if (data) memcpy(r->b,data,MIN(len,sizeof(r->b)));
-    m50_rep_head++;
-    sei(old);
+    (void)property; (void)token;
+    if (data && len==4) { m50_ae_word=*(const uint32_t *)data; m50_ae_known=1; }
 }
-/* Property handler (PropMgr task): only copies Canon's bytes. */
-static void m50_ctl_prop(unsigned property, void *token, void *data, unsigned len)
+REGISTER_PROP_HANDLER_EX(PROP_AE, m50_ae_prop, 0);
+/* Canon's current value of a control. */
+static int m50_ctl_now(const struct m50_ctl *c)
 {
-    (void)token;
-    m50_rep_add(property,len,len ? data:0);
-    for (unsigned i=0;i<COUNT(m50_ctls);i++) {
-        struct m50_ctl *c=&m50_ctls[i];
-        for (int p=0;p<c->nprops;p++) {
-            if (c->props[p]!=property) continue;
-            if (!data || !len || len>M50_OPT_BYTES) { c->too_long++; continue; }
-            /* Seqlock (review 2026-11-09): cli() masks one core only and
-             * the XPan task may run on the other. */
-            c->seq++;
-            asm volatile("dmb" ::: "memory");
-            c->cur[p].len=len; memcpy(c->cur[p].b,data,len);
-            c->changed_ms=get_ms_clock();
-            asm volatile("dmb" ::: "memory");
-            c->seq++;
-            c->dirty=1;
-        }
-    }
+    if (c->field==XPAN_HUD_WB) return lens_info.wb_mode;
+    if (c->field==XPAN_HUD_DRIVE) return drive_mode;
+    if (c->field==XPAN_HUD_METER) return metering_mode;
+    return (int8_t)((m50_ae_word>>8)&0xFF);      /* EV thirds */
 }
-REGISTER_PROP_HANDLER_EX(PROP_AE, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_WB_MODE_LV, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_WB_MODE_PH, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_DRIVE, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_METERING_MODE, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY2, m50_ctl_prop, 0);
-REGISTER_PROP_HANDLER_EX(PROP_PIC_QUALITY3, m50_ctl_prop, 0);
 
 /* Creative filter properties (hardware grain study, read-only): Canon's
  * property table E0F1E510 has PROP_LV_CFILTER = 0x8004004F (40 bytes: filter
@@ -616,67 +577,6 @@ static void m50_cgrain_write_now(void)
     cgrain_writes++; cgrain_why="";
 }
 
-static int m50_val_eq(const struct m50_prop_val *a, const struct m50_prop_val *b)
-{
-    return a->len==b->len && !memcmp(a->b,b->b,a->len);
-}
-static int m50_opt_eq(const struct m50_ctl *c, const struct m50_prop_val *a, const struct m50_prop_val *b)
-{
-    for (int p=0;p<c->nprops;p++) if (!m50_val_eq(&a[p],&b[p])) return 0;
-    return 1;
-}
-static int m50_opt_find(const struct m50_ctl *c, const struct m50_prop_val *v)
-{
-    for (int i=0;i<c->nopts;i++) if (m50_opt_eq(c,c->opts[i],v)) return i;
-    return -1;
-}
-/* EV sort key: bytes 0-1 as a signed 16-bit value (the M50 keeps the
- * compensation in byte 1; byte 0 has always been 0). */
-static int m50_ev_of(const struct m50_prop_val *v)
-{
-    return v[0].len>=2 ? (int16_t)(v[0].b[0] | (v[0].b[1]<<8)) : v[0].len ? (int8_t)v[0].b[0] : 0;
-}
-
-/* XPan task: record a settled, complete Canon state as an option. */
-static void m50_ctl_learn(void)
-{
-    for (unsigned i=0;i<COUNT(m50_ctls);i++) {
-        struct m50_ctl *c=&m50_ctls[i];
-        if (!c->dirty || get_ms_clock()-c->changed_ms<400) continue;
-        struct m50_prop_val snap[M50_OPT_PROPS];
-        c->dirty=0;                             /* a later report sets it again */
-        asm volatile("dmb" ::: "memory");
-        int consistent=0;
-        for (int tries=0;tries<8 && !consistent;tries++) {
-            uint32_t s1=c->seq;
-            asm volatile("dmb" ::: "memory");
-            memcpy(snap,c->cur,sizeof(snap));
-            asm volatile("dmb" ::: "memory");
-            consistent=!(s1&1) && s1==c->seq;
-        }
-        if (!consistent) { c->dirty=1; continue; } /* PropMgr busy: next pass */
-        /* Only the properties Canon reported (not all three PICQ aliases
-         * report on the M50). */
-        int reported=0;
-        for (int p=0;p<c->nprops;p++) if (snap[p].len) reported++;
-        if (!reported || m50_opt_find(c,snap)>=0 || c->nopts>=M50_OPT_MAX) continue;
-        int at=c->nopts;
-        if (c->numeric) while (at>0 && m50_ev_of(c->opts[at-1])>m50_ev_of(snap)) at--;
-        for (int k=c->nopts;k>at;k--) memcpy(c->opts[k],c->opts[k-1],sizeof(c->opts[0]));
-        memcpy(c->opts[at],snap,sizeof(c->opts[0]));
-        c->nopts++;
-        m50_opts_dirty=1;
-        uint8_t info[2]={(uint8_t)i,(uint8_t)at};
-        m50_rep_add(0,2,info);                  /* "learned" line in the log */
-    }
-}
-
-/* FORMAT: the PICQ value of an option (first property that reported). */
-static int m50_fmt_picq(const struct m50_prop_val *v, uint32_t *q)
-{
-    for (int p=0;p<M50_OPT_PROPS;p++) if (v[p].len>=4) { memcpy(q,v[p].b,4); return 1; }
-    return 0;
-}
 /* M50 PICQ layout (XM50OPTS.LOG, 2026-11-09; PROP_PIC_QUALITY and _2
  * report the same 4 bytes, _3 never reports):
  *   byte 0: 0 (JPEG size L; never changed in the test)
@@ -689,28 +589,6 @@ static int m50_fmt_picq(const struct m50_prop_val *v, uint32_t *q)
 #define M50_PICQ_JPEG(q)   ((q)&0x00FF00FF)      /* size and quality */
 static int m50_fmt_has_jpeg(uint32_t q) { return M50_PICQ_KIND(q)&1; }
 static int m50_fmt_has_raw(uint32_t q) { return (M50_PICQ_KIND(q)&6)!=0; }
-/* Order on the HUD: JPG, RAW+JPG, cRAW+JPG. */
-static int m50_fmt_rank(uint32_t q) { return !m50_fmt_has_raw(q) ? 0 : (q>>24)==4 ? 1 : 2; }
-/* FORMAT step: among the learned options that keep a JPEG of the current
- * size and quality (RAW only is never chosen: XPan needs the JPEG), the
- * next one in HUD order. -1: fewer than two such options learned yet. */
-static int m50_fmt_step(const struct m50_ctl *c, const struct m50_prop_val *from, int delta)
-{
-    uint32_t q;
-    if (!m50_fmt_picq(from,&q)) return -1;
-    int list[M50_OPT_MAX], n=0, at=-1;
-    for (int rank=0;rank<3;rank++)
-        for (int i=0;i<c->nopts;i++) {
-            uint32_t o;
-            if (!m50_fmt_picq(c->opts[i],&o) || !m50_fmt_has_jpeg(o)) continue;
-            if (M50_PICQ_JPEG(o)!=M50_PICQ_JPEG(q) || m50_fmt_rank(o)!=rank) continue;
-            if (m50_opt_eq(c,c->opts[i],from)) at=n;
-            list[n++]=i;
-        }
-    if (n<2) return -1;
-    if (at<0) return list[0];
-    return list[(at+n+(delta>0 ? 1:-1))%n];
-}
 /* HUD FMT label from Canon's current PICQ (CONFIG_M50 in xpan-photo-hud.inc). */
 const char *m50_format_label(void)
 {
@@ -728,8 +606,7 @@ const char *m50_format_label(void)
 
 int m50_ev_thirds(void)
 {
-    const struct m50_prop_val *v=&m50_ctls[0].cur[0];
-    return v->len>=2 ? (int8_t)v->b[1] : 0;
+    return m50_ae_known ? (int8_t)((m50_ae_word>>8)&0xFF) : 0;
 }
 
 /* Capture format and JPEG quality (README "Capture format on the M50"):
@@ -845,7 +722,7 @@ static void m50_force_step(void)
     if (on) {
         if (ps_known && ps!=0x84) {
             if (!force_style.saved) { force_style.saved=1; force_style.v=ps; force_style.tries=0; }
-            if (m50_force_try(&force_style,0)) { uint32_t v=0x84; _prop_request_change(PROP_PICTURE_STYLE,&v,lutp_ps_len); }
+            if (m50_force_try(&force_style,0)) { uint32_t v=0x84; _prop_request_change(PROP_PICTURE_STYLE,&v,lutp_ps_len); m50_boot_mark(78,4); }
         } else if (ps==0x84) force_style.tries=0;
         if (!movie && m50_picq_known() && !picq_write_req) {
             uint32_t q=(uint32_t)pic_quality, kind=M50_PICQ_KIND(q);
@@ -854,6 +731,7 @@ static void m50_force_step(void)
                 if (get_ms_clock()-last_ms>=1000) {
                     last_ms=get_ms_clock();
                     m50_picq_request(m50_picq_make(kind==0x06 ? 1+((q>>24)==3) : m50_picq_format(q),((q>>16)&0xFF)!=2,q));
+                    m50_boot_mark(78,5);
                 }
             }
         }
@@ -870,138 +748,95 @@ static void m50_force_step(void)
 }
 
 /* GUI task or the dial filter: only queue the step (no card or property
- * access here). */
+ * access here). EV stops at both ends; the others cycle. */
+static int m50_kelvin_ok(int k) { return k>=M50_KELVIN_MIN && k<=M50_KELVIN_MAX; }
+/* ML's kelvin_toggle step (shoot.c), in Canon's M50 range. */
+static int m50_kelvin_step(int k, int sign)
+{
+    int step=100;
+    if (k+sign*step>7000) step*=5;
+    k=(k/step)*step;
+    return M50_KELVIN_MIN+MOD(k-M50_KELVIN_MIN+sign*step,M50_KELVIN_MAX-M50_KELVIN_MIN+step);
+}
 static void m50_ctl_step(struct m50_ctl *c, int delta)
 {
-    if (c->format) { m50_picq_step_format(delta); return; }   /* built, not learned */
-    if (c->nopts<2) { c->refused++; return; }
-    int recent=get_ms_clock()-c->target_ms<600 && c->target<c->nopts;
-    int i=recent ? c->target : m50_opt_find(c,c->cur);
-    if (i<0) {                                   /* current state not recorded */
-        if (!c->numeric) i=0;
-        else { int ev=m50_ev_of(c->cur); i=0; while (i<c->nopts-1 && m50_ev_of(c->opts[i])<ev) i++; }
-    } else if (c->numeric) i=MAX(0,MIN(c->nopts-1,i+(delta>0 ? 1:-1)));
-    else i=(i+c->nopts+(delta>0 ? 1:-1))%c->nopts;
-    c->target=i; c->target_ms=get_ms_clock();
-    c->write_req=i+1;
+    if (c->format) { m50_picq_step_format(delta); return; }
+    int recent=get_ms_clock()-c->target_ms<600;
+    if (c->field==XPAN_HUD_WB && (recent ? c->target : m50_ctl_now(c))==WB_KELVIN) {
+        /* Quick clicks go on from the last request (Canon reports later). */
+        int k=get_ms_clock()-c->kelvin_ms<600 ? c->kelvin : (int)lens_info.kelvin;
+        if (!m50_kelvin_ok(k)) { c->refused++; return; }
+        c->kelvin=m50_kelvin_step(k,delta>0 ? 1:-1); c->kelvin_ms=get_ms_clock(); c->kelvin_req=1;
+        c->target=WB_KELVIN; c->target_ms=get_ms_clock();
+        c->write_req=1;
+        return;
+    }
+    int now=recent ? c->target : m50_ctl_now(c);
+    int next;
+    if (c->numeric) {
+        if (!m50_ae_known) { c->refused++; return; }
+        next=COERCE(now+(delta>0 ? 1:-1),M50_EV_MIN,M50_EV_MAX);
+    } else {
+        int i=0;
+        while (i<c->nvals && c->vals[i]!=now) i++;
+        next=c->vals[i<c->nvals ? (i+c->nvals+(delta>0 ? 1:-1))%c->nvals : 0];
+    }
+    c->target=next; c->target_ms=get_ms_clock();
+    c->write_req=1;
 }
 
-/* XPan task: write a queued option, prop by prop, only where Canon's
- * current bytes differ. Not while half-pressed or while Canon is busy. */
+/* Tap on the selected WB field: the next preset (from Kelvin: Auto). */
+static void m50_wb_next_preset(void)
+{
+    struct m50_ctl *c=m50_ctl_for_field(XPAN_HUD_WB);
+    int recent=get_ms_clock()-c->target_ms<600, now=recent ? c->target : m50_ctl_now(c), i=0;
+    while (i<c->nvals && c->vals[i]!=now) i++;
+    c->target=c->vals[i<c->nvals ? (i+1)%c->nvals : 0]; c->target_ms=get_ms_clock();
+    c->kelvin_req=0;
+    c->write_req=1;
+}
+
+/* XPan task: write a queued value where Canon's differs. Not while
+ * half-pressed or while Canon is busy. Only the values listed above (EV:
+ * byte 1 of Canon's own PROP_AE word, in range). */
 static void m50_ctl_write_now(void)
 {
     extern void _prop_request_change(unsigned property, const void *addr, size_t len);
     for (unsigned i=0;i<COUNT(m50_ctls);i++) {
         struct m50_ctl *c=&m50_ctls[i];
-        int r=c->write_req;
-        if (!r) continue;
+        if (!c->write_req) continue;
         c->write_req=0;
-        int idx=r-1;
-        if (idx>=c->nopts || get_halfshutter_pressed() || lens_info.job_state || RECORDING) { c->refused++; continue; }
-        for (int p=0;p<c->nprops;p++) {
-            const struct m50_prop_val *v=&c->opts[idx][p];
-            if (!v->len || v->len>M50_OPT_BYTES) continue;
-            if (m50_val_eq(v,&c->cur[p])) continue;
-            uint8_t buf[M50_OPT_BYTES];
-            memcpy(buf,v->b,v->len);
-            _prop_request_change(c->props[p],buf,v->len);
+        if (c->format) continue;
+        if (get_halfshutter_pressed() || lens_info.job_state || RECORDING) { c->refused++; continue; }
+        int v=c->target, ok=c->numeric ? v>=M50_EV_MIN && v<=M50_EV_MAX && m50_ae_known : 0;
+        for (int k=0;!c->numeric && k<c->nvals;k++) if (c->vals[k]==v) ok=1;
+        if (!ok) { c->refused++; continue; }
+        if (c->field==XPAN_HUD_WB && v==WB_KELVIN && c->kelvin_req) {
+            /* Kelvin: as ML's lens_set_kelvin (mode, then the temperature). */
+            int k=c->kelvin;
+            c->kelvin_req=0;
+            if (!m50_kelvin_ok(k) || !m50_kelvin_ok((int)lens_info.kelvin)) { c->refused++; continue; }
+            uint32_t w=(uint32_t)WB_KELVIN, kw=(uint32_t)k;
+            if (m50_ctl_now(c)!=WB_KELVIN) { _prop_request_change(PROP_WB_MODE_LV,&w,4); _prop_request_change(PROP_WB_MODE_PH,&w,4); }
+            if (k!=(int)lens_info.kelvin) { _prop_request_change(PROP_WB_KELVIN_LV,&kw,4); _prop_request_change(PROP_WB_KELVIN_PH,&kw,4); }
             c->writes++;
+            continue;
         }
-    }
-}
-
-/* ML/SETTINGS/XM50OPTS.BIN: "XO1", then per control its property ids and
- * options. Loaded once, kept only if every id and length matches. */
-static void m50_opts_save(void)
-{
-    FILE *f=FIO_CreateFile(M50_OPTS_FILE);
-    if (!f) return;
-    FIO_WriteFile(f,"XO2",4);
-    for (unsigned i=0;i<COUNT(m50_ctls);i++) {
-        struct m50_ctl *c=&m50_ctls[i];
-        FIO_WriteFile(f,c->props,sizeof(c->props));
-        FIO_WriteFile(f,&c->nopts,sizeof(c->nopts));
-        FIO_WriteFile(f,c->opts,sizeof(c->opts));
-    }
-    FIO_CloseFile(f);
-}
-static void m50_opts_load(void)
-{
-    m50_opts_loaded=1;
-    FILE *f=FIO_OpenFile(M50_OPTS_FILE,O_RDONLY|O_SYNC);
-    if (!f) return;
-    char magic[4];
-    int ok=FIO_ReadFile(f,magic,4)==4 && (!memcmp(magic,"XO1",4) || !memcmp(magic,"XO2",4));
-    /* XO1 (first build): 16 options per setting. */
-    int max=ok && magic[2]=='1' ? M50_OPT_MAX_V1 : M50_OPT_MAX;
-    for (unsigned i=0;ok && i<COUNT(m50_ctls);i++) {
-        struct m50_ctl *c=&m50_ctls[i];
-        unsigned props[M50_OPT_PROPS]; int n;
-        static struct m50_prop_val opts[M50_OPT_MAX][M50_OPT_PROPS];
-        int size=max*sizeof(opts[0]);
-        if (FIO_ReadFile(f,props,sizeof(props))!=sizeof(props) || memcmp(props,c->props,sizeof(props)) ||
-            FIO_ReadFile(f,&n,sizeof(n))!=sizeof(n) || n<0 || n>max ||
-            FIO_ReadFile(f,opts,size)!=size) { ok=0; break; }
-        for (int k=0;k<n;k++) {
-            int reported=0;
-            for (int p=0;p<M50_OPT_PROPS;p++) {
-                if (opts[k][p].len>M50_OPT_BYTES || (p>=c->nprops && opts[k][p].len)) ok=0;
-                if (opts[k][p].len) reported++;
-            }
-            if (!reported) ok=0;
+        if (v==m50_ctl_now(c)) continue;
+        uint32_t w;
+        if (c->field==XPAN_HUD_EV) {
+            w=(m50_ae_word&~0xFF00u)|((uint32_t)(uint8_t)(int8_t)v<<8);
+            _prop_request_change(PROP_AE,&w,4);
+        } else if (c->field==XPAN_HUD_WB) {
+            w=(uint32_t)v;
+            _prop_request_change(PROP_WB_MODE_LV,&w,4);
+            _prop_request_change(PROP_WB_MODE_PH,&w,4);
+        } else {
+            w=(uint32_t)v;
+            _prop_request_change(c->field==XPAN_HUD_DRIVE ? PROP_DRIVE : PROP_METERING_MODE,&w,4);
         }
-        if (!ok) break;
-        /* Merge: what was learned this session (boot replay) stays. */
-        for (int k=0;k<n && c->nopts<M50_OPT_MAX;k++) {
-            if (m50_opt_find(c,opts[k])>=0) continue;
-            int at=c->nopts;
-            if (c->numeric) while (at>0 && m50_ev_of(c->opts[at-1])>m50_ev_of(opts[k])) at--;
-            for (int j=c->nopts;j>at;j--) memcpy(c->opts[j],c->opts[j-1],sizeof(c->opts[0]));
-            memcpy(c->opts[at],opts[k],sizeof(c->opts[0]));
-            c->nopts++;
-        }
+        c->writes++;
     }
-    FIO_CloseFile(f);
-}
-
-/* XPan task: append new reports to ML/LOGS/XM50OPTS.LOG. */
-static void m50_rep_save(void)
-{
-    unsigned head=m50_rep_head, first=m50_rep_saved;
-    if (head==first) return;
-    if (head-first>M50_REPS) first=head-M50_REPS;
-    FILE *f=FIO_OpenFile("ML/LOGS/XM50OPTS.LOG",O_RDWR|O_SYNC);
-    if (f) FIO_SeekSkipFile(f,0,SEEK_END);
-    else f=FIO_CreateFile("ML/LOGS/XM50OPTS.LOG");
-    if (!f) return;
-    char line[128];
-    for (unsigned i=first;i<head;i++) {
-        struct m50_rep r=m50_reps[i%M50_REPS];
-        int n;
-        if (!r.prop)
-            n=snprintf(line,sizeof(line),"%8d learned %s option %d\n",(int)r.ms,
-                r.b[0]<COUNT(m50_ctls) ? m50_ctls[r.b[0]].name:"?",(int)r.b[1]);
-        else
-            n=snprintf(line,sizeof(line),"%8d prop 0x%x len %d: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                (int)r.ms,(unsigned)r.prop,(int)r.len,r.b[0],r.b[1],r.b[2],r.b[3],r.b[4],r.b[5],r.b[6],r.b[7]);
-        FIO_WriteFile(f,line,n);
-    }
-    FIO_CloseFile(f);
-    m50_rep_saved=head;
-}
-
-static MENU_SELECT_FUNC(opts_forget_select)
-{
-    (void)priv; (void)delta;
-    for (unsigned i=0;i<COUNT(m50_ctls);i++) { m50_ctls[i].nopts=0; m50_ctls[i].dirty=1; }
-    m50_opts_dirty=1;
-}
-static MENU_UPDATE_FUNC(opts_display)
-{
-    MENU_SET_VALUE("EV %d WB %d DRV %d MTR %d FMT %d",m50_ctls[0].nopts,m50_ctls[1].nopts,
-        m50_ctls[2].nopts,m50_ctls[3].nopts,m50_ctls[4].nopts);
-    MENU_SET_HELP("Values XPan may write, learned from Canon. Change a setting in Canon's screen to teach it. SET: forget all. Writes %d/%d/%d/%d/%d.",
-        m50_ctls[0].writes,m50_ctls[1].writes,m50_ctls[2].writes,m50_ctls[3].writes,m50_ctls[4].writes);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1066,6 +901,11 @@ static void m50_lut_step(int delta)
     m50_lut_saved=(int)m50_lut_hash(m50_lut_names[m50_lut_index]);
     m50_lut_step_ms=get_ms_clock();
 }
+/* Video LUT selector (README "Video LUT selector"): movie mode has no XPan
+ * HUD, so xpan-photo-hud.inc draws a small "< LUT >" box above Canon's
+ * setting bar; a tap on its left third picks the previous LUT, anywhere
+ * else on it the next one (also while recording, as in the photo modes).
+ * The LUT loads and grades Canon's library exactly as from the HUD. */
 
 /* ------------------------------------------------------------------ */
 /* Custom LUT on the JPEG, step 1: Canon's 10-point colour table       */
@@ -1081,6 +921,13 @@ static void m50_lut_step(int delta)
  * written through the cache, cleaned to RAM, and passed by its uncached
  * alias. The M50's 17-point grid: m50_grid17, below. */
 static CONFIG_INT("xpan.m50.look", m50_look_on, 1);
+extern int xpan_movie_enabled(void);
+int xpan_m50_movie_lut_visible(void)
+{
+    return is_movie_mode() && xpan_movie_enabled() && lv && !gui_menu_shown() && !PLAY_OR_QR_MODE &&
+        gui_state==GUISTATE_IDLE && m50_look_on && m50_lut_count>1;
+}
+const char *xpan_m50_movie_lut_name(void) { return m50_lut_name(); }
 static CONFIG_INT("xpan.m50.strength", m50_look_strength, 100);   /* percent */
 static uint16_t *m50_cube_rgb;
 static unsigned m50_cube_cap;
@@ -1214,20 +1061,49 @@ static int m50_cube_load(void)
  * the same conversion. With it, IDENT shows the Cineon base.
  *   1 Cineon log: ML/XPAN/CINLV.cube, Canon's normal render (the EOS M's
  *     calibration, a first approximation for the M50).
- *   2 Cineon log +1 EV: ML/XPAN/CIN1EV.cube, the M50's own base for Canon's
- *     render with the white balance gains 1 EV lower (highlight headroom,
- *     xpan_m50_hilton below): fitted on the M50 (build_tools/
- *     xpan_m50_cin1ev.py, README "M50 tone base for the headroom").
- * A photo gets CIN1EV only if its gains really were lowered (hil_shot_lowered,
- * set by the pre-develop of the same photo); any other photo gets CINLV. */
-static CONFIG_INT("xpan.m50.tone", m50_tone_cineon, 1);   /* 0 Canon Neutral, 1 Cineon, 2 Cineon +1 EV */
+ *   2 XPan Cineon: below.
+ */
+static CONFIG_INT("xpan.m50.tone", m50_tone_cineon, 1);   /* 0 Canon Neutral, 1 Cineon log, 2 XPan Cineon */
 struct m50_basefile { const char *name, *alias; uint16_t *rgb; struct xpan_lut lut; volatile int valid; int tried; char status[48]; };
-static struct m50_basefile m50_bases[2]={
+static struct m50_basefile m50_bases[1]={
     { "CINLV.cube",  "CINLV~1.CUB",  0, {0}, 0, 0, "CINLV.cube not loaded" },
-    { "CIN1EV.cube", "CIN1EV~1.CUB", 0, {0}, 0, 0, "CIN1EV.cube not loaded" },
 };
-static volatile int hil_shot_lowered;           /* this photo's gains are 1 EV lower (Hilton hook) */
-static volatile unsigned hr_without_base;       /* gains lowered but the photo got no CIN1EV (should stay 0) */
+/* Tone base 2, "XPan Cineon" (README "XPan Cineon from Canon's curve"):
+ * Canon's own render, with its contrast-0 curve B written by the David hook
+ * (the style's contrast has no effect), mapped to Cineon in the colour table
+ * by the M50's own base, fitted on Canon's render (build_tools/
+ * xpan_m50_cin1ev.py, XPAN_RENDER0=1). The camera builds that base itself
+ * (m50_cin0_build) from its 17 grey nodes, with the Shoulder knee / slope
+ * row (build_tools/xpan_m50_bcurve.py --cin0; build_xpan.sh checks it). */
+#define M50_TONE_XCIN 2
+static int m50_table_base(void) { return m50_tone_cineon==1; }
+/* A photo needs a base in the table (else it keeps Canon's table). */
+static int m50_needs_base(void) { return m50_table_base() || m50_tone_cineon==M50_TONE_XCIN; }
+static CONFIG_INT("xpan.m50.knee", m50_knee, 3);     /* shoulder start: 60/70/80/90 % of white (user's pick: 90 %) */
+static CONFIG_INT("xpan.m50.slope", m50_slope, 1);   /* compression at white: 0/25/50/75/100 % (user's pick: 25 %) */
+static volatile int m50_shot_graded;            /* this shot's colour table graded by XPan (colour-table hook) */
+/* This shot got the XPan Cineon base (colour-table hook, which runs before
+ * the David hook): the David hook writes Canon's contrast-0 curve B. */
+static volatile int m50_shot_b0;
+static const uint16_t m50_cin0_nodes[4][5][17]={
+ {{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45913,47775},{6086,14535,18743,21497,23929,25930,27850,29660,31458,33203,34956,36719,38327,39765,41830,44241,45660},{6086,14535,18743,21497,23929,25930,27850,29660,31457,33167,34834,36453,37875,39099,40769,42573,43551},{6086,14535,18743,21497,23929,25930,27850,29660,31456,33132,34712,36187,37423,38433,39710,40909,41447},{6086,14535,18743,21497,23929,25930,27850,29660,31455,33097,34591,35921,36971,37768,38653,39250,39351}},
+ {{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45913,47775},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36956,38655,40163,42305,44769,46198},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36926,38530,39893,41718,43627,44624},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36896,38405,39623,41131,42487,43053},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36866,38280,39353,40545,41349,41486}},
+ {{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45913,47775},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40418,42713,45281,46728},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40403,42533,44649,45682},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40388,42353,44018,44637},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40373,42173,43388,43594}},
+ {{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45913,47775},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45753,47253},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45593,46731},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45433,46209},{6086,14535,18743,21497,23929,25930,27850,29660,31459,33238,35078,36985,38780,40433,42893,45273,45688}},
+};
+/* The XPan Cineon base: 17-point, the same node row for R, G and B (Canon's
+ * Neutral grey axis maps each channel alike). Built by XPan's task under
+ * the colour-table lock, so a photo never gets a half-built table. */
+static struct { uint16_t *rgb; struct xpan_lut lut; volatile int valid; volatile int key; } m50_cin0;
+static int m50_cin0_key(void) { return 1+COERCE(m50_knee,0,3)*8+COERCE(m50_slope,0,4); }
+/* The photo's tone base in the colour table: CINLV for the Cineon log
+ * bases, the XPan Cineon base for XPan Cineon, none otherwise. */
+static const struct xpan_lut *m50_photo_base(void)
+{
+    if (m50_table_base()) return m50_bases[0].valid ? &m50_bases[0].lut : 0;
+    if (m50_tone_cineon==M50_TONE_XCIN) return m50_cin0.valid && m50_cin0.key==m50_cin0_key() ? &m50_cin0.lut : 0;
+    return 0;
+}
 static void m50_base_load(struct m50_basefile *bf)
 {
     bf->tried=1;
@@ -1265,11 +1141,33 @@ static void m50_base_load(struct m50_basefile *bf)
     asm volatile("dmb" ::: "memory");
     bf->valid=1;
 }
+/* XPan task: the XPan Cineon base for the current Shoulder knee / slope,
+ * when they changed (a few thousand stores; heap at first use). */
+static void m50_cin0_build(void)
+{
+    if (!m50_look_on || m50_tone_cineon!=M50_TONE_XCIN) return;
+    int key=m50_cin0_key();
+    if (m50_cin0.valid && m50_cin0.key==key) return;
+    if (!m50_cin0.rgb) m50_cin0.rgb=malloc(17u*17u*17u*3u*sizeof(uint16_t));
+    if (!m50_cin0.rgb || !m50_look_lock || take_semaphore(m50_look_lock,200)) return;     /* 0 = taken */
+    m50_cin0.valid=0;
+    asm volatile("dmb" ::: "memory");
+    const uint16_t *n=m50_cin0_nodes[COERCE(m50_knee,0,3)][COERCE(m50_slope,0,4)];
+    uint16_t *o=m50_cin0.rgb;
+    for (unsigned b=0;b<17;b++) for (unsigned g=0;g<17;g++) for (unsigned r=0;r<17;r++) { *o++=n[r]; *o++=n[g]; *o++=n[b]; }
+    int ok=xpan_lut_init(&m50_cin0.lut,m50_cin0.rgb,17,17u*17u*17u*3u);
+    m50_cin0.key=key;
+    asm volatile("dmb" ::: "memory");
+    m50_cin0.valid=ok;
+    give_semaphore(m50_look_lock);
+}
 /* XPan task, every 50 ms: load the selected LUT once the dial has stopped. */
 static void m50_look_poll(void)
 {
+    /* Saved by older builds: 2 was "Cineon log +1 EV" (removed), 3 XPan Cineon. */
+    if (m50_tone_cineon<0 || m50_tone_cineon>M50_TONE_XCIN) m50_tone_cineon=M50_TONE_XCIN;
     if (m50_look_on && m50_tone_cineon && !m50_bases[0].tried && m50_lut_scanned) m50_base_load(&m50_bases[0]);
-    if (m50_look_on && m50_tone_cineon==2 && !m50_bases[1].tried && m50_lut_scanned) m50_base_load(&m50_bases[1]);
+    m50_cin0_build();
     if (!m50_look_on || !m50_lut_scanned || m50_lut_count<1 || get_halfshutter_pressed()) return;
     int index=m50_lut_index;
     if ((index==m50_cube_loaded_index && m50_cube_valid) || index==m50_cube_failed_index) return;
@@ -1277,6 +1175,7 @@ static void m50_look_poll(void)
     xpan_photo_hud_force_redraw();
     if (m50_cube_load()) m50_cube_failed_index=-1;
     else m50_cube_failed_index=index;
+    m50_boot_mark(78,3);
     xpan_photo_hud_force_redraw();
 }
 static uint32_t m50_table_sum(const volatile uint32_t *t)
@@ -1311,8 +1210,8 @@ static void m50_grid17_poll(void)
         }
     }
     if (!m50_look_on || !m50_cube_valid || live_applied || get_halfshutter_pressed() || lens_info.job_state) return;
-    const struct xpan_lut *base=m50_tone_cineon ? (m50_bases[0].valid ? &m50_bases[0].lut : 0) : 0;
-    if (m50_tone_cineon && !base) return;
+    const struct xpan_lut *base=m50_photo_base();
+    if (m50_needs_base() && !base) return;
     static uint32_t src[1024];                  /* the task's own copy: built outside the lock */
     uint32_t key[6];
     if (!m50_look_lock || take_semaphore(m50_look_lock,200)) return;     /* 0 = taken */
@@ -1354,21 +1253,18 @@ static void *m50_look_apply(void *table, int *size)
     uint32_t t=(uint32_t)table;
     int readable=(t>=0x1000 && t<0x80000000) || (t>=0xE0000000 && t<0xE2000000);
     /* Cineon tone base: the LUTs expect Cineon log input. Without its base
-     * file the shot keeps Canon's table (a LUT on Neutral input is harsh).
-     * A photo whose gains were lowered by its pre-develop gets the base made
-     * for that render (the Hilton hook lowers them only when it is loaded). */
-    int lowered=hil_shot_lowered;
-    hil_shot_lowered=0;                         /* one photo */
-    const struct xpan_lut *base=lowered ? &m50_bases[1].lut :
-        m50_tone_cineon ? (m50_bases[0].valid ? &m50_bases[0].lut : 0) : 0;
+     * the shot keeps Canon's table (a LUT on Neutral input is harsh). */
+    m50_shot_graded=0;                          /* set below when XPan grades this shot */
+    m50_shot_b0=0;
+    const struct xpan_lut *base=m50_photo_base();
     /* Live LUT preview grades Canon's style library: this table is graded already. */
     int go=0;
     if (m50_look_lock && !take_semaphore_now(m50_look_lock)) {
-        go=m50_look_on && m50_cube_valid && readable && (!m50_tone_cineon || base) && !live_applied
+        go=m50_look_on && m50_cube_valid && readable && (!m50_needs_base() || base) && !live_applied
            && xpan_photo_enabled() && !is_movie_mode();   /* XPan off: Canon's colour */
         if (!go) give_semaphore(m50_look_lock);
     }
-    if (!go) { m50_look_kept++; m50_look_grid=0; if (lowered) hr_without_base++; return table; }
+    if (!go) { m50_look_kept++; m50_look_grid=0; return table; }
     uint32_t start=get_us_clock();
     struct xpan_native_cube_stats stats;
     uint32_t flags=0;
@@ -1381,7 +1277,7 @@ static void *m50_look_apply(void *table, int *size)
         if (m50_look17_cur>=0 && !memcmp(key,m50_look17_key,sizeof(key))) {
             m50_look17_handed=m50_look17_cur;
             use=UNCACHEABLE(m50_look17[m50_look17_cur]); *size=XPAN_GRID17_BYTES;
-            m50_look17_graded++; m50_look_graded++; m50_look_grid=17;
+            m50_look17_graded++; m50_look_graded++; m50_look_grid=17; m50_shot_graded=1;
         } else if (sum!=m50_src_sum) {
             memcpy(m50_src10,table,sizeof(m50_src10));     /* for the task: next photo */
             m50_src_sum=sum;
@@ -1392,8 +1288,9 @@ static void *m50_look_apply(void *table, int *size)
             m50_cube_identity,base,&stats,&flags)) {
         dcache_clean((uint32_t)m50_look_table,sizeof(m50_look_table));
         use=UNCACHEABLE(m50_look_table);
-        m50_look_graded++; m50_look_grid=10;
-    } else { m50_look_kept++; m50_look_grid=0; if (lowered) hr_without_base++; }
+        m50_look_graded++; m50_look_grid=10; m50_shot_graded=1;
+    } else { m50_look_kept++; m50_look_grid=0; }
+    m50_shot_b0=m50_shot_graded && base==&m50_cin0.lut;
     m50_look_flags=flags;
     m50_look_us=get_us_clock()-start;
     give_semaphore(m50_look_lock);
@@ -1449,20 +1346,24 @@ static MENU_UPDATE_FUNC(live_lut_display)
     MENU_SET_ENABLED(m50_live_on);
     MENU_SET_HELP("Experimental: the LUT also in Live View. %s.",live_status);
 }
-static volatile unsigned hil_lowered, hil_refused;   /* Hilton hook, below */
+/* Shoulder knee / slope: only with XPan Cineon. */
+static MENU_UPDATE_FUNC(knee_display)
+{
+    if (m50_tone_cineon!=M50_TONE_XCIN) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"Only with Tone base XPan Cineon.");
+}
 /* Tone base: ML's choice list (.choices), so the picker shows the names. */
 static MENU_UPDATE_FUNC(tone_display)
 {
-    int t=COERCE(m50_tone_cineon,0,2);
+    int t=COERCE(m50_tone_cineon,0,M50_TONE_XCIN);
     MENU_SET_ENABLED(1);
-    if (t==2) {
-        MENU_SET_HELP("+1 EV highlight headroom: Canon's gains 1 EV lower on the RAW data, then %s. %s.%s",
-            m50_bases[1].name,m50_bases[1].status,hr_without_base ? " Some photos had no base: see the log." : "");
-    } else MENU_SET_HELP("Cineon log: Canon's render mapped to Cineon (ML/XPAN/CINLV.cube) before the LUT, as XPan's LUTs expect. %s.",
+    if (t==M50_TONE_XCIN) {
+        MENU_SET_HELP("XPan Cineon: Canon's render at contrast 0 (style contrast ignored), mapped by the M50's own base. Shoulder: Knee, Slope.");
+        if (m50_live_on) MENU_SET_WARNING(MENU_WARN_ADVICE,"Live LUT preview is ON: photos come from the library (Cineon log base).");
+        return;
+    }
+    MENU_SET_HELP("Cineon log: Canon's render mapped to Cineon (ML/XPAN/CINLV.cube) before the LUT, as XPan's LUTs expect. %s.",
         m50_bases[0].status);
     if (t && !m50_bases[0].valid) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"%s: photos keep Canon's colours.",m50_bases[0].status);
-    else if (t==2 && !m50_bases[1].valid && m50_bases[1].tried) MENU_SET_WARNING(MENU_WARN_NOT_WORKING,"%s: photos without headroom.",m50_bases[1].status);
-    else if (t==2 && m50_live_on) MENU_SET_WARNING(MENU_WARN_ADVICE,"Live LUT preview is ON: photos come from the library, without headroom.");
 }
 static MENU_SELECT_FUNC(grid17_select)
 {
@@ -1701,14 +1602,10 @@ static void m50_crop_poll(void)
     }
 }
 static void grain_worker_start(void);
-static void band_restart_step(void);      /* forced Live View restart, below */
+static void band_request_step(void);      /* band changes at Canon's next frame, below */
 static void canon_dump_step(void);        /* Canon's debug log at the menu hang, below */
 static int canon_dump_stuck_off(void);    /* ... and at a stuck power-off, below */
 static void m50_log_tasks(void);          /* task states into Canon's log, below */
-/* On again (README "Forced restart through Canon's MENU button path"):
- * the freezes came from ML's patch stalls, now fixed; the restart presses
- * Canon's MENU button the way the user does. */
-#define M50_LV_RESTART 1
 
 static void xpan_m50_task(void *unused)
 {
@@ -1725,33 +1622,21 @@ static void xpan_m50_task(void *unused)
         if (!xpan_m50_card_ok()) { canon_dump_stuck_off(); continue; }
         m50_iso_write_now();
         m50_expo_write_now();
-        /* Learned settings (EV, WB, drive, metering, format) and LUT list. */
-        if (!m50_opts_loaded && get_ms_clock()-start>3000) m50_opts_load();
-        m50_ctl_learn();
+        /* EV, WB, drive, metering, format and the LUT list. The start steps
+         * wait for ML's own start (ml_started: settings, fonts and menus
+         * loaded), not a fixed time (README "Faster start"). */
         m50_ctl_write_now();
         m50_picq_write_now();
-        if (get_ms_clock()-start>3000) { static uint32_t force_ms; if (get_ms_clock()-force_ms>=200) { force_ms=get_ms_clock(); m50_force_step(); } }
-        if (get_ms_clock()-start>3000) m50_cgrain_write_now();
-        if (get_ms_clock()-start>3000) m50_crop_poll();
-        static uint32_t opts_save_ms;
-        if (m50_opts_dirty && m50_opts_loaded && get_ms_clock()-opts_save_ms>2000 && NOT_RECORDING) {
-            m50_opts_dirty=0; opts_save_ms=get_ms_clock();
-            m50_opts_save();
-        }
-        static uint32_t rep_save_ms;
-        if (m50_dbg() && m50_opts_loaded && get_ms_clock()-rep_save_ms>2000 && !get_halfshutter_pressed() && NOT_RECORDING) {
-            rep_save_ms=get_ms_clock();
-            m50_rep_save();
-        }
-        if (!m50_lut_scanned && get_ms_clock()-start>6000) { m50_lut_scan(); xpan_photo_hud_force_redraw(); }
+        if (ml_started) { static uint32_t force_ms; if (get_ms_clock()-force_ms>=200) { force_ms=get_ms_clock(); m50_force_step(); } }
+        if (ml_started) m50_cgrain_write_now();
+        if (ml_started) m50_crop_poll();
+        if (!m50_lut_scanned && ml_started) { m50_lut_scan(); m50_boot_mark(78,2); xpan_photo_hud_force_redraw(); }
         m50_log_poll();
         m50_look_poll();
         m50_grid17_poll();
         m50_live_poll();
         m50_grain_poll();
-#if M50_LV_RESTART
-        if (get_ms_clock()-start>3000) band_restart_step();
-#endif
+        if (ml_started) band_request_step();
         canon_dump_step();
         if (touch_save_request) {
             touch_save_request=0;
@@ -1858,8 +1743,9 @@ static const char *boot_mark_name(int id)
         case 77: return "setter calls in the last second: panel | EVF<<16";
         case 79: return "PROP_ICU_UILOCK (Canon's UI lock)";
         case 80: return "PROP_LV_ACTION (0 start, 1 stop)";
-        case 81: return "Canon log saved (dumpf): 1 hang, 2 menu, 3 start";
-        case 78: return "LV restart: 1 menu|2 close|3 done(+4 ok)|16 open fail|32 close fail, out<<8 mode<<12";
+        case 81: return "Canon log saved (dumpf): 1 hang, 2 menu, 3 start, 4 stale screen after Canon layout";
+        case 82: return "stale OSD send repaired by one redraw (count)";
+        case 78: return "XPan start step: 1 settings, 2 LUT list, 3 LUT loaded, 4 style write, 5 format write";
     }
     return "?";
 }
@@ -2077,11 +1963,101 @@ void xpan_m50_canon_ui_event(struct event *event, int obj0)
         canon_ui_enter();
 }
 
+/* Canon layout exit trace (README "Canon layout exit: HUD missing"), Debug
+ * info only, read only: for 3 s after XPan leaves the Canon layout, the
+ * state that decides whether XPan's HUD reaches the screen, at every step
+ * for the first 1.5 s, then at each change. Written to XM50.LOG after the
+ * 3 s (no card access during the trace). */
+struct lx_ev { uint32_t ms, a, b, c; };
+static int band_latch_mv(int k);           /* below */
+#define LX_EVS 64
+static struct lx_ev lx_ev[LX_EVS];
+static volatile unsigned lx_head, lx_saved;
+static uint32_t lx_t0, lx_until;
+/* Snapshots: Canon layout entry, exit, exit + 1.5 s. Ximr context words
+ * 48..63 (ML's RGBA layer record, RAM dump: MARV copy at +0xD8, data,
+ * format, size, Canon's MARV, flags, alpha) and one HUD row of ML's bitmap
+ * against Canon's layer (bmp.c rgb_layer_probe_row). */
+#define LX_OSD_WORDS 15
+static int cfg_ram(uint32_t a);            /* below */
+static void canon_dump_ask(void);          /* Canon's log once at a stale exit, below */
+struct lx_snap { uint32_t ms; int kind, y, n[3]; uint32_t w[16], o[LX_OSD_WORDS]; };
+#define LX_SNAPS 12
+static struct lx_snap lx_snap[LX_SNAPS];
+static volatile unsigned lx_snap_head, lx_snap_saved;
+/* Which OSD buffer is on screen (README "Canon layout exit: HUD missing",
+ * "ROM study"), read only: Ximr's LCD / EVF output address (context +0x94,
+ * +0x14); Canon's surface state 0xFC08 (refreshVrmsSurface E0528540): the
+ * buffer records +0x18 / +0x1C, the current one +0x20, each record's
+ * address (+4), m_fRefreshDisplay +0x7C; the display driver DispVCtrl
+ * (*0x8E08): its DispVramCtrlState state (state object at +8, state at its
+ * +8; 0 stores OSD switches without showing them), outputs on +0x1C8, OSD
+ * output +0x1CC, the last OSD info Canon sent +0x1D0 / +0x1D4 (the buffer's
+ * address and alpha), the OSD mute +0x30; the window system's word +0x20 of
+ * 0xFCE4 (refresh skipped while set). */
+static uint32_t lx_word(uint32_t a) { return cfg_ram(a) ? *(const volatile uint32_t *)a : 0xDEAD0000u; }
+static void lx_osd(uint32_t *o)
+{
+    const volatile uint32_t *x=(const volatile uint32_t *)XIMR_CONTEXT;
+    o[0]=x[0x94/4]; o[1]=x[0x14/4];
+    uint32_t r18=lx_word(0xFC08+0x18), r1c=lx_word(0xFC08+0x1C);
+    o[2]=r18; o[3]=r1c; o[4]=lx_word(0xFC08+0x20); o[5]=lx_word(0xFC08+0x7C);
+    o[6]=lx_word(r18+4); o[7]=lx_word(r1c+4);
+    uint32_t d=lx_word(0x8E08);
+    o[8]=lx_word(lx_word(d+8)+8);
+    o[9]=lx_word(d+0x1C8); o[10]=lx_word(d+0x1CC); o[11]=lx_word(d+0x1D0); o[12]=lx_word(d+0x1D4);
+    o[13]=lx_word(d+0x30); o[14]=lx_word(0xFCE4+0x20);
+}
+static void lx_snapshot(int kind)
+{
+    extern void rgb_layer_probe_row(int y, int n[3]);
+    extern void xpan_photo_hud_debug_snapshot(unsigned *draw_calls, int *last_y, unsigned *clipped);
+    unsigned h=lx_snap_head;
+    if (h-lx_snap_saved>=LX_SNAPS) return;
+    struct lx_snap *s=&lx_snap[h%LX_SNAPS];
+    unsigned draws=0, clipped=0; int hud_y=0;
+    xpan_photo_hud_debug_snapshot(&draws,&hud_y,&clipped);
+    s->ms=get_ms_clock(); s->kind=kind;
+    s->y=hud_y>=0 && hud_y<440 ? hud_y+40 : 400;
+    rgb_layer_probe_row(s->y,s->n);
+    const volatile uint32_t *x=(const volatile uint32_t *)XIMR_CONTEXT;
+    for (int i=0;i<16;i++) s->w[i]=x[48+i];
+    lx_osd(s->o);
+    lx_snap_head=h+1;
+}
+static void lx_sample(uint32_t now)
+{
+    extern volatile unsigned rgb_layer_pushes, rgb_layer_partial;
+    extern uint32_t ml_refresh_display_needed;
+    extern volatile int ml_refresh_frozen, ml_redraw_stage;
+    extern int zebra_should_run(void), liveview_display_idle(void), get_global_draw(void);
+    extern void xpan_photo_hud_debug_snapshot(unsigned *draw_calls, int *last_y, unsigned *clipped);
+    extern int xpan_photo_hud_is_enabled(void);
+    unsigned draws=0, clipped=0; int hud_y=0;
+    xpan_photo_hud_debug_snapshot(&draws,&hud_y,&clipped);
+    uint32_t a=(draws&0xFFFF)|((rgb_layer_pushes&0xFFFF)<<16);
+    uint32_t b=(zebra_should_run() ? 1:0)|(get_global_draw() ? 2:0)|(liveview_display_idle() ? 4:0)|(ml_refresh_frozen ? 8:0)
+        |(ml_refresh_display_needed ? 16:0)|(canon_gui_front_buffer_disabled() ? 32:0)|(clipped ? 64:0)|((canon_layout_state&3)<<7)
+        |((ml_redraw_stage&3)<<9)|((gui_state&0xF)<<12)|((LV_OVERLAYS_MODE&0xF)<<16)|((CURRENT_GUI_MODE&0xFF)<<20)|((rgb_layer_partial&0xF)<<28);
+    uint32_t c=((uint32_t)hud_y&0xFFFF)|(band_latch_mv(0) ? 1<<16:0)|(DISPLAY_IS_ON ? 1<<17:0)|(xpan_photo_hud_is_enabled() ? 1<<18:0)
+        |(canon_ui_frozen ? 1<<19:0)|(xpan_photo_canon_layout() ? 1<<20:0);
+    static uint32_t lb, lc;
+    if (now-lx_t0>=1500 && b==lb && c==lc) return;
+    lb=b; lc=c;
+    unsigned h=lx_head;
+    if (h-lx_saved>=LX_EVS) return;            /* full until written */
+    struct lx_ev *e=&lx_ev[h%LX_EVS];
+    e->ms=now-lx_t0; e->a=a; e->b=b; e->c=c;
+    lx_head=h+1;
+}
+
 /* Called from xpan_hud_controls_step (shoot task, about every 50 ms). */
 static void ui_hook_install(void);        /* dial filter, below */
 static void ui_hook_remove(int cancelled);
 static void m50_log_ui(uint32_t st);      /* XPan log, below */
 static void m50_log_mode(void);           /* XPan log, below */
+/* Stale OSD sends seen by the OSD send probe (xpan_m50_osdupd, below). */
+static volatile unsigned osd_stale;
 void xpan_m50_canon_ui_step(void)
 {
     uint32_t now=get_ms_clock();
@@ -2113,6 +2089,22 @@ void xpan_m50_canon_ui_step(void)
             if (xpan_photo_ui_active() && gui_state==GUISTATE_IDLE && !menu) { xpan_photo_hud_force_redraw(); redraw(); }
         }
     }
+    /* Stale screen after two overlapping Canon refreshes (README "Camera
+     * test of 8a8dce8ae6f3"): Canon's CtrlSrv refresh and ML's redraw in
+     * GuiMainTask, both at a Canon layout change; the later one sent the
+     * buffer it did not render. One more full refresh through Canon's own
+     * path (ML's redraw, run in GuiMainTask) renders and sends the same
+     * buffer again. Only in XPan's Live View with Canon idle; the count
+     * stays pending until then. */
+    {
+        static unsigned osd_stale_done;
+        if (osd_stale!=osd_stale_done && DISPLAY_IS_ON && xpan_photo_ui_active() && lv && !menu
+            && gui_state==GUISTATE_IDLE && !xpan_photo_canon_layout()) {
+            osd_stale_done=osd_stale;
+            if (m50_dbg()) m50_boot_mark(82,(int)osd_stale_done);
+            xpan_photo_hud_force_redraw(); redraw();
+        }
+    }
     /* Canon layout (INFO, cropmarks.c): XPan pushes its cleared layer with
      * the band lines once, then stays frozen so Canon's Live View screen and
      * touch controls show on top. ML's menu or leaving XPan Live View
@@ -2121,6 +2113,7 @@ void xpan_m50_canon_ui_step(void)
         /* Canon rebuilds its screen with the display off: wait until it is on. */
         if (!DISPLAY_IS_ON) { idle_since=0; return; }
         if (!canon_layout_state) {
+            if (m50_dbg()) lx_snapshot(0);
             canon_layout_state=1; canon_layout_ms=now;
             canon_ui_frozen=0; canon_overlay_open=0; ml_refresh_frozen=0;
             xpan_photo_hud_force_redraw(); redraw();
@@ -2134,11 +2127,25 @@ void xpan_m50_canon_ui_step(void)
         return;
     }
     if (canon_layout_state) {
+        if (m50_dbg()) { lx_t0=now; lx_until=now+3000; }
         canon_layout_state=0;
         canon_ui_frozen=0; canon_overlay_open=0; ml_refresh_frozen=0;
         xpan_photo_hud_force_redraw(); redraw();
         idle_since=0;
+        if (m50_dbg()) { lx_sample(now); lx_snapshot(1); }
         return;
+    }
+    if (m50_dbg() && lx_until && now-lx_t0<3000) {
+        static uint32_t snapped;
+        lx_sample(now);
+        if (now-lx_t0>=1500 && snapped!=lx_t0) {
+            snapped=lx_t0; lx_snapshot(2);
+            /* Canon's next refresh began (Ximr output = Canon's next buffer)
+             * but never showed it: the last buffer sent differs. */
+            uint32_t o[LX_OSD_WORDS];
+            lx_osd(o);
+            if (o[11]!=0xDEAD0000u && o[0]!=o[11]) canon_dump_ask();
+        }
     }
     int dialog=gui_state!=GUISTATE_IDLE && !menu;
     int overlay=canon_overlay_open && now-canon_overlay_ms<3000;
@@ -2199,10 +2206,9 @@ static int m50_touch_xy(struct event *event, int *x, int *y)
 
 int xpan_photo_hud_hit_test(int x, int y);   /* xpan-photo-hud.inc */
 
-/* HUD selection. Selectable: ISO, shutter, aperture (checked writers), the
- * learned settings EV, WB, drive, metering and format once two or more of
- * their values are recorded, and the LUT name once there are two or more
- * files. Tap a field: selected (underlined); the dial or UP/DOWN then step
+/* HUD selection. Selectable: ISO, shutter, aperture (checked writers), EV
+ * (once Canon has reported it), WB, drive, metering and format (Canon's own
+ * values), and the LUT name once there are two or more files. Tap a field: selected (underlined); the dial or UP/DOWN then step
  * it. Tap it again, tap anything else, leave XPan's view or wait 8 s:
  * released, and the dial is Canon's again. */
 #define M50_SELECT_IDLE_MS 8000
@@ -2247,9 +2253,10 @@ static void m50_tap(int x, int y)
         hit==XPAN_HUD_APERTURE ? (lens_info.lens_exists && last_avo && last_avmax) :
         hit==XPAN_HUD_LUT ? m50_lut_count>1 :
         hit==XPAN_HUD_FORMAT ? m50_picq_known() :   /* built from the M50 PICQ layout */
-        c ? c->nopts>=2 : 0;        /* learned settings: two or more options */
-    if (c && !c->format && c->nopts<2 && xpan_hud_controls_field_enabled(hit))
-        NotifyBox(3000,"%s: change it once in Canon's screen\nso XPan learns its values",c->name);
+        hit==XPAN_HUD_EV ? m50_ae_known : c!=0;   /* Canon's own values (above) */
+    /* WB as on the EOS M: a tap on the selected WB field steps the preset
+     * (the dial then goes on from there, or changes Kelvin). */
+    if (hit==XPAN_HUD_WB && xpan_m50_hud_field()==hit) { m50_wb_next_preset(); m50_field_ms=get_ms_clock(); xpan_photo_hud_force_redraw(); return; }
     if (known && xpan_hud_controls_field_enabled(hit) && xpan_m50_hud_field()!=hit) m50_select(hit);
     else if (xpan_m50_hud_field()>=0) m50_select(-1);
 }
@@ -2394,6 +2401,14 @@ int xpan_m50_touch_blocked(struct event *event)
     }
     if (event->param!=M50_TOUCH_DOWN) return 0;
     { int tx,ty; if (m50_touch_xy(event,&tx,&ty)) { af_tap_x=tx; af_tap_y=ty; af_tap_ms=get_ms_clock(); af_taps++; } }
+    if (xpan_m50_movie_lut_visible()) {
+        /* Video: only a tap on the LUT selector is XPan's (its release too). */
+        extern int xpan_movie_lut_hit(int x, int y);
+        int x,y,h=m50_touch_xy(event,&x,&y) ? xpan_movie_lut_hit(x,y) : 0;
+        if (h) m50_lut_step(h);
+        down_blocked=h!=0; af_tap_blocked=down_blocked;
+        return down_blocked;
+    }
     down_blocked=xpan_view_active();
     if (down_blocked) {
         int x,y;
@@ -2416,26 +2431,31 @@ int xpan_m50_touch_blocked(struct event *event)
  * develop task, Canon's ShtVfx task) and one consumer (XPan's task): the
  * producer fills the slot, then publishes the head after a barrier. Hooks
  * never print, block or touch the card. */
-struct m50_ev { uint32_t ms, a, b, c, d, x; };
+struct m50_ev { uint32_t ms, a, b, c, d, x, y; };
 #define M50_EVS 8
 struct m50_ring { struct m50_ev ev[M50_EVS]; volatile unsigned head, saved; };
 static struct m50_ring m50_photo_ring, m50_grain_ring, m50_ui_ring, m50_mode_ring;
-static void m50_ring_put(struct m50_ring *r, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t x)
+static void m50_ring_put(struct m50_ring *r, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t x, uint32_t y)
 {
     unsigned h=r->head;
     struct m50_ev *e=&r->ev[h%M50_EVS];
-    e->ms=get_ms_clock(); e->a=a; e->b=b; e->c=c; e->d=d; e->x=x;
+    e->ms=get_ms_clock(); e->a=a; e->b=b; e->c=c; e->d=d; e->x=x; e->y=y;
     asm volatile("dmb" ::: "memory");
     r->head=h+1;
 }
-/* grid: 0 Canon's table, 10 or 17 XPan's; layout: the 17-point setting. */
+/* grid: 0 Canon's table, 10 or 17 XPan's; layout: the 17-point setting.
+ * y: the shot's tone base, Shoulder knee / slope, LUT strength and the
+ * loaded LUT (index + 1 into the list, 0 none), as the hook saw them. */
 static void m50_log_photo(int grid, int layout, uint32_t us)
 {
-    m50_ring_put(&m50_photo_ring,xpan_photo_enabled(),crop_on,(uint32_t)grid|(uint32_t)layout<<8,film_stage_wanted(),us);
+    uint32_t y=(uint32_t)COERCE(m50_tone_cineon,0,15)|(uint32_t)COERCE(m50_knee,0,15)<<4|(uint32_t)COERCE(m50_slope,0,15)<<8
+        |(uint32_t)COERCE(m50_look_strength,0,255)<<12|(uint32_t)(m50_cube_valid ? COERCE(m50_cube_loaded_index+1,0,255) : 0)<<20;
+    m50_ring_put(&m50_photo_ring,xpan_photo_enabled(),crop_on,(uint32_t)grid|(uint32_t)layout<<8,film_stage_wanted(),us,y);
 }
-static void m50_log_grain(uint32_t ms, uint32_t grained, uint32_t rows, int late)
+/* hal: bit 31 halation, bit 30 grain, bits 0-7 white, 8-23 halation steps ms; permille: words changed */
+static void m50_log_grain(uint32_t ms, uint32_t grained, uint32_t rows, int late, uint32_t hal, uint32_t permille)
 {
-    m50_ring_put(&m50_grain_ring,ms,grained,rows,late,0);
+    m50_ring_put(&m50_grain_ring,ms,grained,rows,late,hal,permille);
 }
 /* Shoot task (xpan_m50_canon_ui_step), with Debug info only: each UI state
  * change (camera test 2026-11-11: a crash after playback in the Canon
@@ -2452,12 +2472,12 @@ static void m50_log_mode(void)
     uint32_t v[5]={(uint32_t)shooting_mode,(uint32_t)shooting_mode_custom,(uint32_t)ae_mode_movie,(uint32_t)shooting_type,(uint32_t)lv_movie_select};
     if (!memcmp(v,last,sizeof(v))) return;
     memcpy(last,v,sizeof(v));
-    m50_ring_put(&m50_mode_ring,v[0],v[1],v[2],v[3],v[4]);
+    m50_ring_put(&m50_mode_ring,v[0],v[1],v[2],v[3],v[4],0);
 }
 static void m50_log_ui(uint32_t st)
 {
     if (!m50_dbg()) return;
-    m50_ring_put(&m50_ui_ring,st,CURRENT_GUI_MODE,PLAY_OR_QR_MODE,LV_OVERLAYS_MODE,canon_gui_front_buffer_disabled());
+    m50_ring_put(&m50_ui_ring,st,CURRENT_GUI_MODE,PLAY_OR_QR_MODE,LV_OVERLAYS_MODE,canon_gui_front_buffer_disabled(),0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2473,12 +2493,27 @@ static void m50_log_ui(uint32_t st)
  * and its size (m50_look_apply) when Custom LUT is on and a LUT is loaded;
  * Canon's table always goes with Canon's size 0x1000. Runs in Canon's
  * develop task: no card access, no waiting. */
+/* David probe (below): a checksum of the table Canon chose for this shot,
+ * before XPan grades it. Canon loads the table (E0082C3C) before DevelopPath
+ * hands over David's blocks (E00834FC), in the same task. */
+static volatile uint32_t dav_lucky_sum, dav_lucky_addr;
+static int dav_readable(uint32_t a, unsigned bytes);
+static uint32_t dav_sum(const uint32_t *w, unsigned n)
+{
+    uint32_t h=2166136261u;
+    for (unsigned i=0;i<n;i++) h=(h^w[i])*16777619u;
+    return h;
+}
 int xpan_m50_lucky_load(void *table, int a1, int a2, int a3)
 {
     typedef void *(*ctx_fn)(void);
     typedef int (*load_fn)(void *ctx, int a1, int a2, void *table, int size, int a3);
     const ctx_fn canon_ctx=(ctx_fn)0xE081E8EF;         /* Thumb */
     const load_fn canon_load=(load_fn)0xE011E195;      /* Thumb */
+    if (m50_dbg()) {
+        dav_lucky_addr=(uint32_t)table;
+        dav_lucky_sum=dav_readable((uint32_t)table,0x1000) ? dav_sum((const uint32_t *)table,1024) : 0;
+    }
     int size;
     void *use=m50_look_apply(table,&size);
     if (use==table) size=0x1000;                    /* Canon's table: Canon's size */
@@ -2499,13 +2534,19 @@ static CONFIG_INT("xpan.film.grain.strength",grain_strength,25);
 static CONFIG_INT("xpan.film.grain.size",grain_size,1);   /* 0 fine, 1 medium, 2 coarse */
 int m50_picq_raw_wanted(void);
 int xpan_film_grain_enabled(void) { return film_grain && grain_strength>0 && !m50_picq_raw_wanted(); }
+/* Halation (README-XPAN-M50.md "Halation"): a red-orange glow around strong
+ * highlights, in the same Canon filter stage as the grain (with or without
+ * it; with both, the glow first and the grain over it, as on film). */
+static CONFIG_INT("xpan.film.halation",halation_on,0);
+static CONFIG_INT("xpan.film.halation.strength",halation_strength,50);
+static int halation_wanted(void) { return halation_on && halation_strength>0; }
 /* XPan's grain in Canon's grain stage (README "XPan's own grain in Canon's
  * filter stage"; the JPEG-task grain held ShtEncode and hung the camera). */
 #define M50_STAGE_GRAIN 1
 /* Only while XPan is on, in photo mode (as on the EOS M, xpan-film-grain.c):
  * with XPan off the camera is plain Canon (camera test 2026-11-10: photos
  * slow with XPan off, the grain was still running). */
-static int film_stage_wanted(void) { return M50_STAGE_GRAIN && film_grain && grain_strength>0 && xpan_photo_enabled() && !is_movie_mode() && !m50_picq_raw_wanted(); }
+static int film_stage_wanted(void) { return M50_STAGE_GRAIN && ((film_grain && grain_strength>0) || halation_wanted()) && xpan_photo_enabled() && !is_movie_mode() && !m50_picq_raw_wanted(); }
 /* 256, not the EOS M's 512 (camera test 2026-11-09: the camera crashed
  * after the photo was saved, even with the grain cut off at 2 s). ML gives
  * allocations of 512 KB or more from shoot_malloc, Canon's shooting pool,
@@ -2603,6 +2644,76 @@ static int film_prepare(void)
  * README "Camera test 5"): only Canon's L1 cache calls matter. */
 extern void dcache_invalidate(uint32_t addr, uint32_t size);
 extern void dcache_clean_invalidate(uint32_t addr, uint32_t size);   /* E0577834, MCR c7,c14,1 */
+
+/* Halation buffers (README "Halation"): only while Halation is ON, from the
+ * heap in four blocks well under ML's 512 KB shoot_malloc limit (comment at
+ * FILM_TEX): the 1/16 map 192000 bytes, the 1/32 map 48000, the tables
+ * about 17 KB, the two workers' row buffers about 26 KB. Built, changed and
+ * freed only under grain_lock, which the stage holds. Cache rule (the two
+ * stage workers run on both CPUs): each phase writes only its own rows of
+ * the maps (cell rows start on 32-byte lines, the halves on 32-row
+ * boundaries), and every core ends each phase by writing back and dropping
+ * every halation line it touched, so the next phase reads from RAM. */
+#include "math.h"
+#include "xpan-halation.inc"
+struct hal_rows { uint16_t ri[HAL_MW+8], rt[HAL_TW+8]; uint32_t tmp[HAL_MAX_W/2]; } __attribute__((aligned(32)));
+static struct hal_job hal_job __attribute__((aligned(32)));
+static void *hal_raw[4];                     /* allocations, for free() */
+static struct hal_rows *hal_rows;            /* [2], one per stage worker */
+static volatile int hal_ready, hal_broken;  /* broken: 1 a step was late, 2 a worker is still out (buffers kept) */
+static int hal_pct=-1;
+static char hal_status[64]="off";
+static void *hal_align(void *p) { return (void *)(((uintptr_t)p+31u)&~(uintptr_t)31u); }
+static void hal_free(void)
+{
+    for (int i=0;i<4;i++) { if (hal_raw[i]) free(hal_raw[i]); hal_raw[i]=0; }
+    hal_job.acc=0; hal_job.tail=0; hal_job.t=0; hal_rows=0;
+}
+#define HAL_ACC_BYTES   (HAL_STRIDE*HAL_MH*2u)
+#define HAL_TAIL_BYTES  (HAL_TSTRIDE*HAL_TH*2u)
+static void hal_cache_drop(void)
+{
+    dcache_clean_invalidate((uint32_t)&hal_job,sizeof(hal_job));
+    if (!hal_job.acc) return;
+    dcache_clean_invalidate((uint32_t)hal_job.acc,HAL_ACC_BYTES);
+    dcache_clean_invalidate((uint32_t)hal_job.tail,HAL_TAIL_BYTES);
+    dcache_clean_invalidate((uint32_t)hal_job.t,sizeof(struct hal_tables));
+    dcache_clean_invalidate((uint32_t)hal_rows,2*sizeof(struct hal_rows));
+}
+/* XPan task: buffers and tables while Halation is ON, freed when OFF. */
+static void hal_poll(void)
+{
+    if (hal_broken==2) { hal_ready=0; snprintf(hal_status,sizeof(hal_status),"off: a stage worker is late (restart the camera)"); return; }   /* never free: a worker may still use the buffers */
+    int want=halation_wanted() && !hal_broken, pct=COERCE(halation_strength,1,100);
+    if (want ? hal_ready && pct==hal_pct : !hal_raw[0]) return;
+    if (get_halfshutter_pressed() || !grain_lock || take_semaphore(grain_lock,1000)) return;   /* 0 = taken */
+    hal_ready=0;
+    if (!want) {
+        hal_free(); hal_pct=-1;
+        snprintf(hal_status,sizeof(hal_status),hal_broken ? "off: a halation step was late (restart the camera)" : "off");
+        give_semaphore(grain_lock);
+        return;
+    }
+    if (!hal_raw[0]) {
+        static const unsigned sizes[4]={HAL_ACC_BYTES,HAL_TAIL_BYTES,sizeof(struct hal_tables),2*sizeof(struct hal_rows)};
+        for (int i=0;i<4;i++) hal_raw[i]=malloc(sizes[i]+32u);
+        if (!hal_raw[0] || !hal_raw[1] || !hal_raw[2] || !hal_raw[3]) {
+            hal_free();
+            snprintf(hal_status,sizeof(hal_status),"no memory for the halation maps");
+            give_semaphore(grain_lock);
+            return;
+        }
+        hal_job.acc=hal_align(hal_raw[0]); hal_job.tail=hal_align(hal_raw[1]);
+        hal_job.t=hal_align(hal_raw[2]); hal_rows=hal_align(hal_raw[3]);
+        hal_tables_init(hal_job.t);
+    }
+    hal_set_strength(&hal_job,pct); hal_pct=pct;
+    hal_cache_drop();
+    snprintf(hal_status,sizeof(hal_status),"ready (strength %d%%)",pct);
+    asm volatile("dmb" ::: "memory");
+    hal_ready=1;
+    give_semaphore(grain_lock);
+}
 #define FILM_BAND_ROWS 16u                      /* 16 x 12000 bytes, whole cache lines */
 static volatile int grain_abort;                /* Canon stopped waiting: stop at the next band */
 /* Grain stage: Canon's input row to Canon's output row, every word written
@@ -2643,19 +2754,35 @@ static void film_row_copy(uint32_t *restrict dst, const uint32_t *restrict src, 
  * complete well inside Canon's 10 s stage wait. Stops writing at once if the
  * stage stopped waiting (grain_abort). Returns the rows grained. */
 #define FILM_STAGE_BUDGET_US 6000000u
-static unsigned film_stage_apply(uint32_t in, uint32_t out, unsigned width, unsigned first, unsigned rows, unsigned seed, int grain)
+/* hal: the halation glow first (worker k's row buffers), then the grain. */
+static unsigned film_stage_apply(uint32_t in, uint32_t out, unsigned width, unsigned first, unsigned rows, unsigned seed, int grain,
+                                 int hal, int k, uint32_t budget_us, unsigned *changed)
 {
     const unsigned pitch=width*2u;
     uint32_t start=get_us_clock();
     unsigned grained=0;
+    grain=grain && film_tex;
+    hal=hal && hal_rows;
+    struct hal_rows *hr=hal ? &hal_rows[k&1] : 0;
     for (unsigned y0=first;y0<rows;y0+=FILM_BAND_ROWS) {
         if (grain_abort) break;
         unsigned n=MIN(FILM_BAND_ROWS,rows-y0), bytes=n*pitch;
         uint32_t src=(uint32_t)CACHEABLE(in+y0*pitch), dst=(uint32_t)CACHEABLE(out+y0*pitch);
-        int g=grain && film_tex && get_us_clock()-start<FILM_STAGE_BUDGET_US;
+        int g=(grain || hal) && get_us_clock()-start<budget_us;
         dcache_invalidate(src,bytes);
         dcache_invalidate(dst,bytes);
-        if (g) { for (unsigned i=0;i<n;i++) film_row_copy((uint32_t *)(dst+i*pitch),(const uint32_t *)(src+i*pitch),y0+i,width,seed); grained+=n; }
+        if (g) {
+            for (unsigned i=0;i<n;i++) {
+                uint32_t *d=(uint32_t *)(dst+i*pitch);
+                const uint32_t *s=(const uint32_t *)(src+i*pitch);
+                if (hal) {
+                    hal_row_prep(&hal_job,y0+i,hr->ri,hr->rt);
+                    if (grain) { *changed+=hal_row(&hal_job,hr->tmp,s,hr->ri,hr->rt); film_row_copy(d,hr->tmp,y0+i,width,seed); }
+                    else *changed+=hal_row(&hal_job,d,s,hr->ri,hr->rt);
+                } else film_row_copy(d,s,y0+i,width,seed);
+            }
+            grained+=n;
+        }
         else memcpy((void *)dst,(const void *)src,bytes);
         dcache_clean_invalidate(dst,bytes);
         dcache_invalidate(src,bytes);
@@ -2668,17 +2795,59 @@ static volatile int grain_late;
  * Cache facts 2026-11-10: caches on, RAM inner write-back but outer (L2)
  * non-cacheable, so only the 32 KB L1 helps; the work is CPU bound and splits
  * cleanly. CPU 0 is mostly idle during the stage (ShtVfx waits blocked). */
-struct stage_part { uint32_t in, out; unsigned width, first, end, seed; volatile unsigned grained; volatile uint32_t us, cpu; struct semaphore *req, *done; };
+/* Phases (README "Halation"): the image (grain and/or glow) or one of the
+ * halation steps before it: histogram (every 8th row), white and key
+ * tables (worker 0), key map (each worker its own cell rows), blur and
+ * coding (worker 0). */
+enum { STAGE_IMAGE, HAL_HIST, HAL_KEYS, HAL_ACC, HAL_BLUR };
+struct stage_part { uint32_t in, out; unsigned width, first, end, seed; int phase, grain, hal; uint32_t budget_us;
+                    volatile unsigned grained, changed; volatile uint32_t us, cpu; struct semaphore *req, *done; };
 static struct stage_part stage_parts[2];
 static volatile int stage_workers;          /* tasks started (1 or 2) */
+/* Halation steps that read the image: Canon's input rows, through the cached
+ * alias, invalidated before and after (nothing of the image left cached). */
+static void hal_phase(struct stage_part *pt, int k)
+{
+    const unsigned pitch=pt->width*2u;
+    if (pt->phase==HAL_HIST) {
+        uint32_t *h=hal_job.t->hist[k&1];
+        memset(h,0,256*sizeof(uint32_t));
+        if (!pt->first && pt->end>=hal_job.rows) memset(hal_job.t->hist[1],0,256*sizeof(uint32_t));   /* one worker: the whole image */
+        for (unsigned y=pt->first;y<pt->end && !grain_abort;y+=8) {
+            uint32_t r=(uint32_t)CACHEABLE(pt->in+y*pitch);
+            dcache_invalidate(r,pitch);
+            hal_hist_row(h,(const uint32_t *)r,pt->width);
+            dcache_invalidate(r,pitch);
+        }
+    } else if (pt->phase==HAL_KEYS) {
+        hal_set_white(&hal_job);
+    } else if (pt->phase==HAL_ACC) {
+        unsigned c0=pt->first/HAL_CELL, c1=(pt->end+HAL_CELL-1)/HAL_CELL;
+        memset(hal_job.acc+c0*HAL_STRIDE,0,(c1-c0)*HAL_STRIDE*2u);
+        for (unsigned y0=pt->first;y0<pt->end && !grain_abort;y0+=FILM_BAND_ROWS) {
+            unsigned n=MIN(FILM_BAND_ROWS,pt->end-y0), bytes=n*pitch;
+            uint32_t src=(uint32_t)CACHEABLE(pt->in+y0*pitch);
+            dcache_invalidate(src,bytes);
+            for (unsigned i=0;i<n;i++) hal_acc_row(&hal_job,(const uint32_t *)(src+i*pitch),y0+i);
+            dcache_invalidate(src,bytes);
+        }
+    } else if (pt->phase==HAL_BLUR) {
+        hal_blur(&hal_job);
+    }
+}
 static void stage_worker(void *arg)
 {
-    struct stage_part *pt=&stage_parts[(int)(uintptr_t)arg];
+    const int k=(int)(uintptr_t)arg;
+    struct stage_part *pt=&stage_parts[k];
     while (!ml_shutdown_requested) {
         if (take_semaphore(pt->req,1000)) continue;      /* 0 = taken */
         uint32_t t0=get_us_clock();
         pt->cpu=get_cpu_id();
-        pt->grained=film_stage_apply(pt->in,pt->out,pt->width,pt->first,pt->end,pt->seed,1);
+        unsigned changed=0;
+        if (pt->phase==STAGE_IMAGE) pt->grained=film_stage_apply(pt->in,pt->out,pt->width,pt->first,pt->end,pt->seed,pt->grain,pt->hal,k,pt->budget_us,&changed);
+        else hal_phase(pt,k);
+        if (pt->hal) hal_cache_drop();
+        pt->changed=changed;
         pt->us=get_us_clock()-t0;
         give_semaphore(pt->done);
     }
@@ -2711,6 +2880,35 @@ static volatile unsigned sg_applied, sg_copied, sg_skipped;
 static volatile int sg_code;
 static volatile uint32_t sg_ms, sg_grained, sg_rows;
 #define STAGE_WAIT_MS 9000                      /* Canon's stage waits 10 s */
+#define HAL_STEPS_MS 2500                       /* the halation steps before the image, all four */
+/* Run one phase on n workers (rows split at half), wait until t0+limit_ms.
+ * 1: all done; 0: late, stopped (grain_abort) and back; -1: a worker did
+ * not come back even then. */
+static int stage_phase(int phase, int n, uint32_t in, uint32_t out, unsigned width, unsigned rows, unsigned half,
+                       uint32_t seed, int grain, int hal, uint32_t budget_us, uint32_t t0, int limit_ms)
+{
+    for (int k=0;k<n;k++) {
+        struct stage_part *pt=&stage_parts[k];
+        pt->in=in; pt->out=out; pt->width=width; pt->seed=seed; pt->phase=phase;
+        pt->grain=grain; pt->hal=hal; pt->budget_us=budget_us;
+        pt->first=k ? half:0; pt->end=(k || n==1) ? rows:half;
+        pt->grained=0; pt->changed=0; pt->us=0;
+        while (!take_semaphore_now(pt->done)) ;              /* drop a stale "done" */
+    }
+    asm volatile("dmb" ::: "memory");
+    for (int k=0;k<n;k++) give_semaphore(stage_parts[k].req);
+    int got[2]={0,0}, late=0;
+    for (int k=0;k<n;k++) {                     /* all within limit_ms in total */
+        int left=limit_ms-(int)(get_ms_clock()-t0);
+        got[k]=!take_semaphore(stage_parts[k].done,MAX(left,1));
+        if (!got[k]) late=1;
+    }
+    if (!late) return 1;
+    grain_abort=1;                              /* never expected */
+    int back=1;
+    for (int k=0;k<n;k++) if (!got[k] && take_semaphore(stage_parts[k].done,1000)) back=0;
+    return back ? 0 : -1;
+}
 static int m50_stage_grain(const uint32_t *job)
 {
     if (!film_stage_wanted()) return 0;
@@ -2723,42 +2921,64 @@ static int m50_stage_grain(const uint32_t *job)
     if (!ok || !grain_lock || !stage_workers) { sg_skipped++; sg_code=2; return 0; }
     uint32_t t0=get_ms_clock();
     int locked=!take_semaphore_now(grain_lock);   /* 0 = taken */
-    if (!locked || !film_ready) {
-        /* texture being built (settings just changed): colour, no grain */
+    int grain=locked && film_grain && grain_strength>0 && film_ready;
+    int hal=locked && halation_wanted() && hal_ready && !hal_broken && hal_fits(width,rows);
+    if (!grain && !hal) {
+        /* texture or maps being built (settings just changed): colour, no effect */
         if (locked) give_semaphore(grain_lock);
         grain_abort=0;
-        film_stage_apply(in,out,width,0,rows,0,0);
+        unsigned none=0;
+        film_stage_apply(in,out,width,0,rows,0,0,0,0,FILM_STAGE_BUDGET_US,&none);
         sg_copied++; sg_code=1; sg_grained=0; sg_rows=rows; sg_ms=get_ms_clock()-t0;
         return 1;
     }
     const int n=stage_workers;
-    const unsigned half=n==2 ? (rows/2)&~(FILM_BAND_ROWS-1) : rows;
+    /* halves on 32 rows: two 16-row map cells, so the workers' map rows never share a cache line */
+    const unsigned half=n==2 ? (rows/2)&~31u : rows;
     const uint32_t seed=get_ms_clock()*2654435761u;
     grain_abort=0;
-    for (int k=0;k<n;k++) {
-        struct stage_part *pt=&stage_parts[k];
-        pt->in=in; pt->out=out; pt->width=width; pt->seed=seed;
-        pt->first=k ? half:0; pt->end=k ? rows:half;
-        pt->grained=0; pt->us=0;
-        while (!take_semaphore_now(pt->done)) ;              /* drop a stale "done" */
+    int r=1;
+    uint32_t hal_ms=0;
+    if (hal) {
+        /* halation steps (README "Halation"), within HAL_STEPS_MS */
+        hal_job_size(&hal_job,width,rows);
+        dcache_clean_invalidate((uint32_t)&hal_job,sizeof(hal_job));
+        r=stage_phase(HAL_HIST,n,in,out,width,rows,half,seed,0,1,0,t0,HAL_STEPS_MS);
+        if (r==1) r=stage_phase(HAL_KEYS,1,in,out,width,rows,rows,seed,0,1,0,t0,HAL_STEPS_MS);
+        if (r==1) r=stage_phase(HAL_ACC,n,in,out,width,rows,half,seed,0,1,0,t0,HAL_STEPS_MS);
+        if (r==1) r=stage_phase(HAL_BLUR,1,in,out,width,rows,rows,seed,0,1,0,t0,HAL_STEPS_MS);
+        hal_ms=get_ms_clock()-t0;
+        if (r!=1) { hal=0; hal_broken=r==-1 ? 2:1; grain_late++; }   /* hal_poll says so (no printing here) */
+        if (r==-1) {
+            /* a worker is still out: copy the image here, no effect (never expected) */
+            give_semaphore(grain_lock);
+            grain_abort=0;
+            unsigned none=0;
+            film_stage_apply(in,out,width,0,rows,0,0,0,0,FILM_STAGE_BUDGET_US,&none);
+            sg_skipped++; sg_code=4; sg_grained=0; sg_rows=rows; sg_ms=get_ms_clock()-t0;
+            return 1;
+        }
+        grain_abort=0;
+        if (!grain && !hal) {
+            give_semaphore(grain_lock);
+            unsigned none=0;
+            film_stage_apply(in,out,width,0,rows,0,0,0,0,FILM_STAGE_BUDGET_US,&none);
+            sg_copied++; sg_code=5; sg_grained=0; sg_rows=rows; sg_ms=get_ms_clock()-t0;
+            return 1;
+        }
     }
-    asm volatile("dmb" ::: "memory");
-    for (int k=0;k<n;k++) give_semaphore(stage_parts[k].req);
-    int got[2]={0,0}, late=0;
-    for (int k=0;k<n;k++) {                     /* both within STAGE_WAIT_MS in total */
-        int left=STAGE_WAIT_MS-(int)(get_ms_clock()-t0);
-        got[k]=!take_semaphore(stage_parts[k].done,MAX(left,1));
-        if (!got[k]) late=1;
-    }
-    if (late) {
-        grain_abort=1;                          /* never expected: each worker caps its grain at 6 s */
-        grain_late++; sg_code=3;
-        for (int k=0;k<n;k++) if (!got[k]) take_semaphore(stage_parts[k].done,1000);
-    }
+    /* the image: the grain's 6 s budget less the halation steps */
+    uint32_t budget=FILM_STAGE_BUDGET_US-MIN(hal_ms*1000u,FILM_STAGE_BUDGET_US/2);
+    r=stage_phase(STAGE_IMAGE,n,in,out,width,rows,half,seed,grain,hal,budget,t0,STAGE_WAIT_MS);
+    int late=r!=1;
+    if (late) { grain_late++; sg_code=3; }
     give_semaphore(grain_lock);
     sg_applied++; sg_grained=stage_parts[0].grained+(n==2 ? stage_parts[1].grained:0);
     sg_rows=rows; sg_ms=get_ms_clock()-t0;
-    m50_log_grain(sg_ms,sg_grained,rows,late);
+    unsigned changed=stage_parts[0].changed+(n==2 ? stage_parts[1].changed:0);
+    m50_log_grain(sg_ms,sg_grained,rows,late,
+        hal ? 1u<<31|(uint32_t)hal_job.white|(uint32_t)MIN(hal_ms,0xFFFFu)<<8|(uint32_t)(grain ? 1u<<30:0) : (uint32_t)(grain ? 1u<<30:0),
+        changed*1000u/MAX(width/2*rows,1u));
     return 1;
 }
 
@@ -2766,6 +2986,7 @@ static int m50_stage_grain(const uint32_t *job)
 static void m50_grain_poll(void)
 {
     if (!M50_STAGE_GRAIN) return;
+    hal_poll();
     if (!film_grain || get_halfshutter_pressed()) return;
     unsigned strength=(unsigned)COERCE(grain_strength,1,100),size=(unsigned)COERCE(grain_size,0,2);
     if (!film_ready || film_strength!=strength || film_size!=size) film_prepare();
@@ -2782,13 +3003,28 @@ static MENU_UPDATE_FUNC(grain_display)
     else if (film_grain && !m50_pasm()) MENU_SET_WARNING(MENU_WARN_ADVICE,"Film grain runs in P, Tv, Av and M.");
     (void)on;
 }
+static MENU_SELECT_FUNC(halation_select) { (void)priv; (void)delta; halation_on=!halation_on; }
+static MENU_UPDATE_FUNC(halation_display)
+{
+    MENU_SET_VALUE("%s",halation_on ? "ON":"OFF");
+    MENU_SET_ENABLED(halation_on);
+    MENU_SET_HELP("Red-orange glow around strong highlights on the saved JPEG. PLAY: strength.");
+    if (halation_on && m50_picq_raw_wanted()) MENU_SET_WARNING(MENU_WARN_ADVICE,"Paused while a RAW format is chosen: Canon's filter stage allows only JPEG.");
+    else if (halation_on && !m50_pasm()) MENU_SET_WARNING(MENU_WARN_ADVICE,"Halation runs in P, Tv, Av and M.");
+    else if (halation_on && !hal_ready) MENU_SET_WARNING(MENU_WARN_ADVICE,"Halation %s.",hal_status);
+}
 static MENU_UPDATE_FUNC(grain_diag_display)
 {
     uint32_t cur[10];
     int on=cf_lv_read(cur) && cur[0]==1;
     MENU_SET_VALUE("%d photos",(int)sg_applied);
-    MENU_SET_HELP("%sCanon filter stage %s. Last %d ms, %d of %d rows grained; no grain %d, skipped %d (reason %d). %s",
-        cgrain_why,on ? "on":"off",(int)sg_ms,(int)sg_grained,(int)sg_rows,(int)sg_copied,(int)sg_skipped,(int)sg_code,grain_status);
+    MENU_SET_HELP("%sCanon filter stage %s. Last %d ms, %d of %d rows done; no effect %d, skipped %d (reason %d). Grain %s, halation %s.",
+        cgrain_why,on ? "on":"off",(int)sg_ms,(int)sg_grained,(int)sg_rows,(int)sg_copied,(int)sg_skipped,(int)sg_code,grain_status,hal_status);
+}
+static MENU_UPDATE_FUNC(video_lut_display)
+{
+    MENU_SET_VALUE("%s",live_applied ? "graded" : "Canon's");
+    MENU_SET_HELP("%s.",live_status);
 }
 static MENU_UPDATE_FUNC(look_diag_display)
 {
@@ -2935,13 +3171,18 @@ static void m50_live_poll(void)
         if (live_applied) {
             live_applied=0;                     /* the hook grades photos again */
             for (int i=0;i<lib_count;i++) lib_put(i,lib_orig+i*1024);
-            snprintf(live_status,sizeof(live_status),"Canon's %d library tables back",lib_count);
         }
+        /* Why not (Diagnostics "Video LUT", README "Video LUT status"). */
+        snprintf(live_status,sizeof(live_status),"%s, Canon's %d library tables",
+            !m50_look_on ? "Custom LUT off" : !m50_cube_valid ? "no LUT loaded" :
+            m50_tone_cineon && !m50_bases[0].valid ? m50_bases[0].status :
+            is_movie_mode() ? "XPan off in movie mode" : !m50_live_on ? "photo mode, Live LUT preview off" : "XPan off",
+            lib_count);
         return;
     }
     if (live_applied && applied_index==m50_cube_loaded_index && applied_strength==m50_look_strength &&
         (applied_tone!=0)==(m50_tone_cineon!=0) && applied_identity==m50_cube_identity) return;
-    if (!lib_find()) { if (!lib_orig) return; snprintf(live_status,sizeof(live_status),"library tables not found"); return; }
+    if (!lib_find()) { if (lib_orig) snprintf(live_status,sizeof(live_status),"library tables not found"); return; }   /* else lib_find set the reason (memory) */
     if (!m50_look_lock || take_semaphore_now(m50_look_lock)) return;   /* retry next poll */
     if (!m50_cube_valid) { give_semaphore(m50_look_lock); return; }
     const struct xpan_lut *base=m50_tone_cineon ? &m50_bases[0].lut : 0;
@@ -3047,18 +3288,15 @@ static void disp_record(struct disp_rec *r, const uint32_t *p, int a1, int a2, i
  * Split 60, Bottom 214) as the destination; even values, as in Canon's own
  * geometry tables. Canon's own block is never written.
  *
- * When: only inside Canon's transition call. Canon changes Live View
- * geometry only there: a setter call with a2 != 0 when Live View stops or
- * starts, then normal frames (a2 == 0); its own crops (16:9, 4:3, 1:1)
- * arrive that way. The first M50 placement switched on normal frames (at
- * boot, on a layout change): the next Live View stop / start then sometimes
- * never restarted (black screen, frozen Live View, no power-off) or ended in
- * Err 70. So the band is decided on a transition call and kept, unchanged,
- * for every normal frame until the next one; the first frames after the
- * hooks are installed (Live View already running since Canon's own start)
- * keep Canon's geometry until Canon's next transition (menu, playback ...).
- * A block that is not Canon's plain Live View block (magnified, another
- * mode) goes through as Canon's. */
+ * When: inside Canon's setter call only, so the geometry changes between
+ * two of Canon's frames: at Canon's transition call (a2 != 0, a Live View
+ * stop / start) and at the next frame after XPan's task asked for a change
+ * (band_request_step: power-on, layout, 65:24 / 3:2, Canon layout). The
+ * hangs once blamed on changes at normal frames came from ML's patch stall
+ * (README "Menu hang: Canon's own log"; the hang came without the band
+ * too), so no Live View restart is needed (README "Layout changes without
+ * Canon's menu"). A block that is not Canon's plain Live View block
+ * (magnified, another mode) goes through as Canon's. */
 int xpan_photo_get_preview_rect(int width, int height, int *x, int *y, int *crop_width, int *crop_height);   /* cropmarks.c */
 int xpan_photo_get_preview_frame_y(int width, int height);                                                  /* cropmarks.c */
 /* The band for the current settings: LCD rows (source s, destination d,
@@ -3091,8 +3329,10 @@ static int disp_evf_block(const uint32_t *p)
 /* Per output (0 panel, 1 EVF): the geometry in force since Canon's last
  * transition call. Written by Canon's display task only (the setter), read
  * by the touch / AF code. */
-struct band_latch { volatile int mv; int s, d, h; volatile unsigned transitions; };
+struct band_latch { volatile int mv; int s, d, h; volatile unsigned transitions; volatile int req; };
 static struct band_latch band_latch[2];
+static volatile unsigned band_frame_moves;    /* band changes at a normal frame */
+static int band_latch_mv(int k) { return band_latch[k].mv; }
 static void band_decide(struct band_latch *l, int k)
 {
     int s=0, d=0, h=0, es=0, ed=0, eh=0;
@@ -3132,13 +3372,17 @@ static void disp_gap(int k)
 static int disp_hook(int k, void *p, int a2, uint32_t q[16])
 {
     struct band_latch *l=&band_latch[k];
-    if (a2) band_decide(l,k);                   /* Canon's transition: the only place the geometry changes */
-    int blk=k ? disp_evf_block((const uint32_t *)p) : disp_lcd_block((const uint32_t *)p);
     /* Only while Canon shows Live View: quick review and playback use the
      * same block (camera test 2026-11-11: the review image sat at the band's
      * place, playback images came up stretched until Canon's next
      * transition call). */
     int lv_shown=lv && !PLAY_OR_QR_MODE;
+    /* The geometry changes only here, between two of Canon's frames: at
+     * Canon's transition call, or at the next frame after XPan's task asked
+     * (band_request_step: a layout, 65:24 / 3:2 or Canon layout change). */
+    if (a2) band_decide(l,k);
+    else if (l->req && lv_shown) { l->req=0; band_decide(l,k); band_frame_moves++; }
+    int blk=k ? disp_evf_block((const uint32_t *)p) : disp_lcd_block((const uint32_t *)p);
     int mv=blk && l->mv && lv_shown;
     if (mv) { memcpy(q,p,16*sizeof(uint32_t)); q[6]=l->s; q[8]=l->d; q[10]=l->h; }
     return mv;
@@ -3151,6 +3395,66 @@ int xpan_m50_disp_panel(void *p, int a1, int a2, int a3, int s0, int s1)
     int mv=disp_hook(0,p,a2,q);
     disp_mark(74,(const uint32_t *)p,a2,a3,mv);
     return xpan_m50_disp_panel_tramp(mv ? (void *)q : p,a1,a2,a3,s0,s1);
+}
+/* OSD send probe, read only (README "Canon layout exit: HUD missing",
+ * camera test of 3b386d43f38f). Canon's refreshVrmsSurface, E0528540, sets
+ * Ximr's output to Canon's next buffer before it takes winsys_sem, renders
+ * there, then sends PDISPOSDINFO built from Canon's next buffer again
+ * (DISP_SetUpdateOSDVram E0537E54, which ends in DV_SetUpdateOSDVram
+ * E00EF372, in the caller's task). If another refresh flipped Canon's
+ * buffers in between, the buffer sent (info word 0) is not the one rendered
+ * (Ximr context +0x94): the stale screen. This records, per send: the task,
+ * both addresses, the time; and which tasks send. E00EF372 is in the 64 KB
+ * page already hooked for the colour table (E00E73BC): no new page. Its
+ * first 8 bytes: push {r3-r5,lr}; mov r5,r0; movs r0,#40; first half of
+ * bl E055B094; the trampoline replays them (the call through r3, which the
+ * call clobbers anyway) and resumes at E00EF37C. Plain stores under cli. */
+int xpan_m50_osdupd_tramp(void *info);
+asm(
+    ".text\n.syntax unified\n.thumb\n.align 2\n"
+    ".global xpan_m50_osdupd_tramp\n.thumb_func\n"
+    "xpan_m50_osdupd_tramp:\n"
+    "    push {r3, r4, r5, lr}\n"                 /* E00EF372 */
+    "    mov r5, r0\n"                            /* E00EF374 */
+    "    movs r0, #40\n"                          /* E00EF376 */
+    "    ldr r3, 5f\n"
+    "    blx r3\n"                                /* E00EF378: bl E055B094 */
+    "    ldr.w pc, 6f\n"
+    ".align 2\n"
+    "5:  .word 0xE055B095\n"                      /* Thumb */
+    "6:  .word 0xE00EF37D\n"                      /* E00EF37C, Thumb */
+);
+#define OSD_TASKS 6
+#define OSD_EVS 16
+struct osd_ev { uint32_t ms; const char *task; uint32_t sent, out; };
+static struct { const char *name; volatile unsigned sends, bad; } osd_tasks[OSD_TASKS];
+static struct osd_ev osd_evs[OSD_EVS];          /* the bad sends and the send before each */
+static volatile unsigned osd_ev_head, osd_ev_saved, osd_names, osd_sends;
+static struct osd_ev osd_last;
+int xpan_m50_osdupd(void *info)
+{
+    const char *me=get_current_task_name();
+    uint32_t now=get_ms_clock();
+    uint32_t sent=cfg_ram((uint32_t)info) ? *(const volatile uint32_t *)info : 0;
+    uint32_t out=((const volatile uint32_t *)XIMR_CONTEXT)[0x94/4];
+    uint32_t old=cli();
+    osd_sends++;
+    int k=0;
+    while (k<OSD_TASKS && osd_tasks[k].name && osd_tasks[k].name!=me) k++;
+    if (k<OSD_TASKS && !osd_tasks[k].name) { osd_tasks[k].name=me; osd_names++; }
+    int bad=sent && sent!=out;
+    if (k<OSD_TASKS) { osd_tasks[k].sends++; if (bad) osd_tasks[k].bad++; }
+    /* The overlap's signature: a bad send right after a send from another
+     * task. Counted only; XPan's task repairs it (xpan_m50_canon_ui_step). */
+    if (bad && osd_last.task && osd_last.task!=me) osd_stale++;
+    if (bad && osd_ev_head-osd_ev_saved<=OSD_EVS-2) {
+        osd_evs[osd_ev_head%OSD_EVS]=osd_last; osd_ev_head++;
+        struct osd_ev *e=&osd_evs[osd_ev_head%OSD_EVS];
+        e->ms=now; e->task=me; e->sent=sent; e->out=out; osd_ev_head++;
+    }
+    osd_last.ms=now; osd_last.task=me; osd_last.sent=sent; osd_last.out=out;
+    sei(old);
+    return xpan_m50_osdupd_tramp(info);
 }
 int xpan_m50_disp_evf(void *p, int a1, int a2, int a3, int s0, int s1)
 {
@@ -3173,6 +3477,17 @@ static volatile uint32_t lv_start_ms;
 static volatile int lv_start_pending, canon_dump_request;
 static int canon_dumped;
 static unsigned canon_dumps;
+/* Canon layout exit with the screen stale (README "Canon layout exit: HUD
+ * missing", camera test of b0f2c6ac5e0a): Canon's log and the task states
+ * (m50_log_tasks), once per start, through the menu request's path. */
+static void canon_dump_ask(void)
+{
+    static int asked;
+    if (asked || !m50_dbg()) return;
+    asked=1;
+    m50_boot_mark(81,4);
+    canon_dump_request=1;
+}
 /* XPan task, every 50 ms. */
 /* Test of the MMU patch fix (README "Menu hang: Canon's own log"): one
  * Canon log per start, 12 s after boot, to check that ML's start no longer
@@ -3250,6 +3565,11 @@ static void m50_log_tasks(void)
     extern volatile uint32_t ml_redraw_stage_ms;
     DryosDebugMsg(DM_MAGIC,3,"XPAN tasks %d cur %s",(int)task_max,get_current_task_name());
     DryosDebugMsg(DM_MAGIC,3,"XPAN locks winsys %x bmp %x",(unsigned)winsys_sem,(unsigned)bmp_lock);
+    {
+        const volatile uint32_t *w=(const volatile uint32_t *)winsys_sem;   /* its count and waiters, read only */
+        if ((uint32_t)w>=0x1000 && (uint32_t)w<0x40000000u && !((uint32_t)w&3))
+            DryosDebugMsg(DM_MAGIC,3,"XPW %x %x %x %x %x",(unsigned)w,(unsigned)w[0],(unsigned)w[1],(unsigned)w[2],(unsigned)w[3]);
+    }
     DryosDebugMsg(DM_MAGIC,3,"XPR stage %d for %d ms",ml_redraw_stage,(int)(get_ms_clock()-ml_redraw_stage_ms));
     uint32_t mutexes[8]; int nm=0;
     for (int id=1; id<=(int)task_max && id<256; id++) {
@@ -3322,102 +3642,36 @@ static void m50_uilock_prop(unsigned property, void *token, void *data, unsigned
 REGISTER_PROP_HANDLER_EX(PROP_ICU_UILOCK, m50_uilock_prop, 0);
 REGISTER_PROP_HANDLER_EX(PROP_LV_ACTION, m50_uilock_prop, 0);
 
-/* Forced Live View restart (README "Canon's main menu breaks Live View:
- * forced restart"). The band changes only on Canon's transition call, and
- * the one Live View restart XPan can ask Canon for is its menu
- * (Canon makes the transition call when the menu closes). When the band on
- * the active output differs from the settings (power-on, a layout or
- * 65:24 / 3:2 change) for 1 s with Canon idle, XPan presses MENU through
- * Canon's own button queue (fake_simple_button: Canon's IDLEHandler then
- * does what it does for the real button), and presses it again once Canon
- * is in its menu and its Live View has stopped (no display setter call for
- * 300 ms). SetGUIRequestMode from XPan's task skipped Canon's button
- * handling and froze Live View (766c9f6c6f54). Once per change: the same
- * target is never tried twice; a step that does not come within 3 s (a
- * bound) ends the forced restarts until the next start. */
-static CONFIG_INT("xpan.m50.lv_restart", m50_lv_restart, 1);
-enum { BR_IDLE, BR_OPEN, BR_CLOSE, BR_OFF };
-static int br_state, br_k;
-static uint32_t br_ms, br_stable_ms, br_key, br_tried=0xFFFFFFFFu;
-static unsigned br_trans;
-static volatile unsigned br_done, br_failed;
-/* 1 when output k shows the band the settings want; *key names that band. */
-static int band_check(int k, uint32_t *key)
+/* Band changes (README "Layout changes without Canon's menu"). The band
+ * moves at Canon's next display frame, inside Canon's own setter call, as
+ * on the EOS M: no Live View restart, no menu. The forced restart through
+ * Canon's menu (46a84ccbd3f2) was built for the menu hang, whose cause was
+ * ML's patch stall (README "Menu hang: Canon's own log"), not the band.
+ * XPan's task only asks (band_latch.req); the display hook decides, so the
+ * geometry still changes in one place, between two of Canon's frames. */
+
+/* 1 when output k shows the band the settings want. */
+static int band_check(int k)
 {
     int s=0, d=0, h=0, es=0, ed=0, eh=0;
     int mv=band_target(&s,&d,&h,&es,&ed,&eh);
     if (k) { s=es; d=ed; h=eh; }
-    if (!mv) s=d=h=0;
-    *key=((uint32_t)k<<31)|((uint32_t)mv<<30)|((uint32_t)(s&0x3FF)<<20)|((uint32_t)(d&0x3FF)<<10)|(uint32_t)(h&0x3FF);
     const struct band_latch *l=&band_latch[k];
     return mv ? l->mv && l->s==s && l->d==d && l->h==h : !l->mv;
 }
-/* The output Canon is drawing Live View on: 0 panel, 1 EVF, -1 unclear. */
-static int band_active_output(void)
+/* XPan task, every 50 ms: only while Canon shows plain Live View and is
+ * idle (no dialog, no half-press, lens idle, not recording). */
+static void band_request_step(void)
 {
-    static unsigned last0, last1;
-    static uint32_t ms;
-    static int act=-1;
-    uint32_t now=get_ms_clock();
-    if (now-ms<500) return act;
-    unsigned c0=disp_recs[0].calls, c1=disp_recs[1].calls;
-    int p=c0!=last0, e=c1!=last1;
-    last0=c0; last1=c1; ms=now;
-    act=p && !e ? 0 : e && !p ? 1 : -1;
-    return act;
+    int idle=lv && lv_dispsize==1 && !PLAY_OR_QR_MODE && DISPLAY_IS_ON && gui_state==GUISTATE_IDLE
+        && !get_halfshutter_pressed() && !lens_info.job_state && NOT_RECORDING;
+    if (!idle) return;
+    for (int k=0;k<2;k++) if (!band_check(k)) band_latch[k].req=1;
 }
-/* XPan task, every 50 ms. */
-static void band_restart_step(void)
+static MENU_UPDATE_FUNC(band_display)
 {
-    uint32_t now=get_ms_clock();
-    static unsigned quiet_calls;
-    static uint32_t quiet_ms;
-    unsigned calls=disp_recs[0].calls+disp_recs[1].calls;
-    if (calls!=quiet_calls) { quiet_calls=calls; quiet_ms=now; }
-    if (br_state==BR_OPEN) {
-        /* In Canon's menu, Live View stopped: as when the user presses MENU again. */
-        if (MENU_MODE && !lv && now-quiet_ms>=300) {
-            br_trans=band_latch[br_k].transitions;
-            fake_simple_button(BGMT_MENU);
-            br_state=BR_CLOSE; br_ms=now;
-            m50_boot_mark(78,2|(br_k<<8));
-        } else if (now-br_ms>3000) {
-            br_state=BR_OFF; br_failed++;
-            m50_boot_mark(78,16|(br_k<<8)|((CURRENT_GUI_MODE&0xFF)<<12)|((gui_state&0xFF)<<20)|(lv ? 1<<28:0));
-        }
-        return;
-    }
-    if (br_state==BR_CLOSE) {
-        if (lv && band_latch[br_k].transitions!=br_trans) {
-            uint32_t key;
-            int ok=band_check(br_k,&key);
-            br_state=BR_IDLE; br_done++; br_stable_ms=0;
-            m50_boot_mark(78,3|(ok ? 4:0)|(br_k<<8));
-        } else if (now-br_ms>3000) {
-            br_state=BR_OFF; br_failed++;
-            m50_boot_mark(78,32|(br_k<<8));
-        }
-        return;
-    }
-    if (br_state!=BR_IDLE) return;
-    int k=band_active_output();
-    int idle=m50_lv_restart && k>=0 && lv && lv_dispsize==1 && !is_movie_mode() && xpan_photo_ui_active()
-        && gui_state==GUISTATE_IDLE && !gui_menu_shown() && !xpan_photo_canon_layout() && !canon_layout_state
-        && !canon_ui_frozen && !get_halfshutter_pressed() && !lens_info.job_state && NOT_RECORDING;
-    uint32_t key=0;
-    if (!idle || band_check(k,&key) || key==br_tried) { br_stable_ms=0; return; }
-    if (!br_stable_ms || key!=br_key) { br_key=key; br_stable_ms=now ? now:1; return; }
-    if (now-br_stable_ms<1000) return;
-    br_tried=key; br_k=k; br_stable_ms=0;
-    br_state=BR_OPEN; br_ms=now;
-    m50_boot_mark(78,1|(k<<8));
-    fake_simple_button(BGMT_MENU);
-}
-static MENU_UPDATE_FUNC(lv_restart_display)
-{
-    MENU_SET_VALUE("%s",!m50_lv_restart ? "OFF" : br_state==BR_OFF ? "stopped" : "ON");
-    MENU_SET_RINFO("%d/%d",(int)br_done,(int)br_failed);
-    MENU_SET_ENABLED(m50_lv_restart);
+    MENU_SET_VALUE("LCD %s, EVF %s",band_latch[0].mv ? "65:24":"3:2",band_latch[1].mv ? "65:24":"3:2");
+    MENU_SET_RINFO("%d/%d",(int)band_frame_moves,(int)(band_latch[0].transitions+band_latch[1].transitions));
 }
 
 /* ------------------------------------------------------------------ */
@@ -3571,101 +3825,120 @@ int xpan_m50_af_box(void *out, int r1, int r2, int r3, int s0, int s1, int s2)
 }
 
 /* ------------------------------------------------------------------ */
-/* Hilton probe (README "Still processing path: where a LUT could act   */
-/* earlier"). Read only.                                                */
+/* David probe (README "Picture style settings under XPan's LUT"). Read   */
+/* only, Debug info only.                                               */
 
-/* Canon's black level / white balance stage on the 14-bit Bayer data takes
- * its registers from two blocks of the shot's parameters: HiltonObwbReg (21
- * words: clip level, black offsets, enables, the four gains, gain shifts,
- * a third word per channel) and HiltonCorrReg (13 words). Canon's
- * E08DB920(obwb, corr) hands them to the register writers:
- *     if (obwb) E08E56F6(obwb);
- *     if (corr) return E08E57AA(corr);
- * called from the normal pre-develop (E08AF01A, through E08C7FC4) and the
- * recover pre-develop (E08B02BA, through E08C8A54), stills only.
- * XPan's function does exactly that, with Canon's own pointers, after
- * copying the two blocks for the log (one record per caller). Nothing of
- * Canon's is written; no blocking, no card, no allocation. */
-struct hil_rec { uint32_t lr; volatile unsigned calls, seq; uint32_t ms, obwb_addr, corr_addr, obwb[21], corr[13]; int stops; };
-#define HIL_CALLERS 4
-static struct hil_rec hil_recs[HIL_CALLERS];
-static volatile unsigned hil_ncallers, hil_other;
-static int hil_readable(uint32_t a)
+/* DevelopPath (E00834FC, from E008338A) hands the shot's three David
+ * blocks (DavidPictParam1 361 words, DavidPictParam2 239, DavidRelight-
+ * PictParam 40) to Canon's E00E7320(p1, p2, relight, a3, s0, s1):
+ *     E011E0A4(p1, p2, relight, a3, s0);      (the register writers)
+ *     return E011E148(s1);
+ * XPan's function makes exactly these two calls with Canon's arguments,
+ * after recording the blocks: the first photo's whole (dav_base), each
+ * later photo only the words that differ from it (a shared pool), so the
+ * log shows which words each picture style setting changes. Plus the
+ * checksum of Canon's table for the shot (xpan_m50_lucky_load). E00E7320 is
+ * in the 64 KB page already hooked for the colour table: no new page.
+ * Nothing of Canon's is written; no blocking, no card, no allocation. */
+#define DAV_N1 361
+#define DAV_N2 239
+#define DAV_NR 40
+#define DAV_WORDS (DAV_N1+DAV_N2+DAV_NR)
+#define DAV_RECS 12
+#define DAV_POOL 384
+struct dav_rec { uint32_t ms, a1, a2, ar, lucky_addr, lucky_sum, sum; unsigned first, ndiff, missed; int test; };
+static uint32_t dav_base[DAV_WORDS];
+static struct dav_rec dav_recs[DAV_RECS];
+static uint16_t dav_idx[DAV_POOL];
+static uint32_t dav_val[DAV_POOL];
+static volatile unsigned dav_head, dav_saved, dav_pool_used, dav_other;
+static int dav_readable(uint32_t a, unsigned bytes)
 {
-    return !(a&3) && ((a>=0x1000 && a<0x80000000u-0x60) || (a>=0xE0000000u && a<0xE2000000u-0x60));
+    return !(a&3) && ((a>=0x1000 && a<0x80000000u-bytes) || (a>=0xE0000000u && a<0xE2000000u-bytes));
 }
-/* Highlight headroom, calibration test (README "Highlight headroom on the
- * 14-bit data"): Canon's writer gets a copy of the shot's OBWB block with
- * the four white balance gains (words 9-12, 0x400 = 1.0) lowered by 1 or 2
- * EV, so the linear data stays below Canon's clip and the highlights reach
- * the colour table. Same white balance (all four gains alike), Canon's black
- * level and clip unchanged, Canon's block never written. Only for XPan's
- * stills, only for the layout the probe logged (white 8000..16383, enables
- * 1, gains 0x100..0xFFF, gain shifts 0). Canon's writer copies the block to
- * the hardware registers (D0435000) during the call, so the copy only has to
- * live for that call; one still develop at a time.
- * Camera test 2026-11-10 (README "Highlight headroom on the 14-bit data"):
- * -1 EV holds all the sensor's highlights. So it is part of the tone base
- * "Cineon log +1 EV", and only when that photo will get the M50's CIN1EV
- * base: the same conditions as the colour-table hook's (Custom LUT on, a LUT
- * loaded, the base loaded, no Live LUT preview, XPan's stills); the hook
- * then picks CIN1EV for this photo (hil_shot_lowered). */
-static uint32_t hil_copy[21];
-static int hil_layout_ok(const uint32_t *b)
-{
-    if (b[0]<8000 || b[0]>16383) return 0;
-    for (int k=5;k<9;k++) if (b[k]!=1) return 0;
-    for (int k=9;k<13;k++) if (b[k]<0x100 || b[k]>0xFFF) return 0;
-    for (int k=13;k<17;k++) if (b[k]) return 0;
-    return 1;
-}
-static void hil_record(const uint32_t *obwb, const uint32_t *corr, uint32_t lr, int stops)
+static void dav_record(const uint32_t *p1, const uint32_t *p2, const uint32_t *pr, int test)
 {
     if (!m50_dbg()) return;
-    unsigned n=hil_ncallers, i;
-    for (i=0;i<n && hil_recs[i].lr!=lr;i++) ;
-    if (i==n) {
-        if (n>=HIL_CALLERS) { hil_other++; return; }
-        hil_recs[n].lr=lr;
-        asm volatile("dmb" ::: "memory");
-        hil_ncallers=n+1;
+    unsigned h=dav_head;
+    if (h>=DAV_RECS) { dav_other++; return; }
+    const uint32_t *blk[3]={p1,p2,pr};
+    static const unsigned len[3]={DAV_N1,DAV_N2,DAV_NR};
+    struct dav_rec *r=&dav_recs[h];
+    r->ms=get_ms_clock(); r->a1=(uint32_t)p1; r->a2=(uint32_t)p2; r->ar=(uint32_t)pr;
+    r->lucky_addr=dav_lucky_addr; r->lucky_sum=dav_lucky_sum;
+    r->first=dav_pool_used; r->ndiff=0; r->missed=0; r->test=test;
+    uint32_t sum=2166136261u;
+    unsigned at=0, used=dav_pool_used;
+    for (int b=0;b<3;b++) {
+        int ok=blk[b] && dav_readable((uint32_t)blk[b],len[b]*4);
+        for (unsigned i=0;i<len[b];i++,at++) {
+            uint32_t v=ok ? blk[b][i] : 0;
+            sum=(sum^v)*16777619u;
+            if (!h) dav_base[at]=v;
+            else if (v!=dav_base[at]) {
+                if (used<DAV_POOL) { dav_idx[used]=(uint16_t)at; dav_val[used]=v; used++; r->ndiff++; }
+                else r->missed++;
+            }
+        }
     }
-    struct hil_rec *r=&hil_recs[i];
-    r->seq++;                                   /* odd while writing (read by XPan's task) */
+    r->sum=sum;
+    dav_pool_used=used;
     asm volatile("dmb" ::: "memory");
-    r->ms=get_ms_clock(); r->obwb_addr=(uint32_t)obwb; r->corr_addr=(uint32_t)corr; r->stops=stops;
-    int ro=hil_readable((uint32_t)obwb), rc=hil_readable((uint32_t)corr);
-    for (int k=0;k<21;k++) r->obwb[k]=ro ? obwb[k] : 0;
-    for (int k=0;k<13;k++) r->corr[k]=rc ? corr[k] : 0;
-    asm volatile("dmb" ::: "memory");
-    r->seq++;
-    r->calls++;
+    dav_head=h+1;
 }
-int xpan_m50_hilton(void *obwb, void *corr)
+/* Tone base XPan Cineon (README "XPan Cineon from Canon's curve"): Canon's
+ * writer gets a copy of Param1 with curve B (25 values after the header
+ * 800 100 100, P1 +4E8; contrast acts there) replaced by Canon's own Neutral
+ * contrast-0 curve B, as logged (build_tools/xpan_m50_bcurve.py --canonb;
+ * build_xpan.sh checks the copy), so the style's contrast has no effect and
+ * the M50 base, fitted on that render, always matches. Only on a shot whose
+ * colour table got that base (m50_shot_b0, set by the colour-table hook,
+ * which runs first), only for the logged layout (header, values 0x80..0xFFF,
+ * never falling). Canon's writer copies the block into David's registers
+ * during the call (E01A025A), so a static copy is enough; one still develop
+ * at a time. Canon's block is never written. */
+static uint32_t dav_copy[DAV_N1];
+#define DAV_CURVE_A (0x33C/4)
+#define DAV_CURVE_B (0x4E8/4)
+#define DAV_CURVE_N 25
+static volatile unsigned dav_b0_used, dav_b0_refused;
+static int dav_curve_ok(const uint32_t *p, unsigned at)
 {
-    typedef int (*set_fn)(void *block);
-    const set_fn canon_obwb=(set_fn)0xE08E56F7;        /* Thumb */
-    const set_fn canon_corr=(set_fn)0xE08E57AB;        /* Thumb */
-    const uint32_t *b=(const uint32_t *)obwb;
-    void *use=obwb;
-    int stops=0;
-    hil_shot_lowered=0;
-    if (m50_tone_cineon==2 && obwb) {
-        int base_ok=m50_look_on && m50_cube_valid && m50_bases[0].valid && m50_bases[1].valid && !live_applied;
-        if (base_ok && hil_readable((uint32_t)b) && xpan_photo_enabled() && !is_movie_mode() && hil_layout_ok(b)) {
-            stops=1;
-            for (int k=0;k<21;k++) hil_copy[k]=b[k];
-            for (int k=9;k<13;k++) hil_copy[k]=(b[k]+(1u<<(stops-1)))>>stops;
-            asm volatile("dmb" ::: "memory");
-            use=hil_copy; hil_lowered++;
-            hil_shot_lowered=1;                 /* the colour-table hook of this photo: CIN1EV */
-        } else hil_refused++;
+    if (p[at-3]!=0x800 || p[at-2]!=0x100 || p[at-1]!=0x100) return 0;
+    for (unsigned i=0;i<DAV_CURVE_N;i++) {
+        if (p[at+i]<0x80 || p[at+i]>0xFFF) return 0;
+        if (i && p[at+i]<p[at+i-1]) return 0;
     }
-    hil_record(b,(const uint32_t *)corr,(uint32_t)__builtin_return_address(0),stops);
-    int ret=(int)obwb;                                 /* Canon leaves r0 as it is without a block */
-    if (use) ret=canon_obwb(use);
-    if (corr) return canon_corr(corr);
-    return ret;
+    return 1;
+}
+static const uint16_t m50_neutral_b0[25]={0x128,0x2DE,0x3EA,0x4A2,0x529,0x593,0x5F2,0x641,0x67D,0x6B3,0x6E4,0x70D,0x730,0x753,0x770,0x788,0x7A0,0x7C6,0x7E1,0x7F6,0x808,0x808,0x808,0x808,0x808};
+static void dav_neutral(uint32_t *c, unsigned at)
+{
+    for (unsigned i=0;i<DAV_CURVE_N;i++) c[at+i]=m50_neutral_b0[i];
+}
+int xpan_m50_david(void *p1, void *p2, void *relight, int a3, int s0, int s1)
+{
+    typedef void (*write_fn)(void *p1, void *p2, void *relight, int a3, int s0);
+    typedef int (*end_fn)(int s1);
+    const write_fn canon_write=(write_fn)0xE011E0A5;   /* Thumb */
+    const end_fn canon_end=(end_fn)0xE011E149;         /* Thumb */
+    const uint32_t *b=(const uint32_t *)p1;
+    void *use=p1;
+    int b0=m50_shot_b0;                         /* one photo: set by its colour-table hook */
+    m50_shot_b0=0;
+    if (b0) {
+        if (b && dav_readable((uint32_t)b,DAV_N1*4) && xpan_photo_enabled() && !is_movie_mode()
+            && dav_curve_ok(b,DAV_CURVE_A) && dav_curve_ok(b,DAV_CURVE_B)) {
+            for (int k=0;k<DAV_N1;k++) dav_copy[k]=b[k];
+            dav_neutral(dav_copy,DAV_CURVE_B);
+            asm volatile("dmb" ::: "memory");
+            use=dav_copy;
+            dav_b0_used++;
+        } else dav_b0_refused++;
+    }
+    dav_record(b,(const uint32_t *)p2,(const uint32_t *)relight,use!=p1);   /* Canon's blocks */
+    canon_write(use,p2,relight,a3,s0);
+    return canon_end(s1);
 }
 
 /* XPan task: the log lines, written only when Canon is idle (no half-press,
@@ -3703,20 +3976,28 @@ static void m50_log_poll(void)
     int aff_new=aff_ok && memcmp(aff,aff_last,sizeof(aff));
     static unsigned taps_seen;
     int tap_new=af_taps!=taps_seen;
-    static unsigned hil_seen[HIL_CALLERS];
-    static int hil_logs;
-    int hil_new=0;
-    for (unsigned k=0;k<hil_ncallers && k<HIL_CALLERS;k++) if (hil_logs<24 && hil_recs[k].calls!=hil_seen[k]) hil_new=1;
-    if (!ximr_new && !layer_new && !photo_new && !grain_new && !ui_new && !lost_new && !disp_new && !af_new && !aff_new && !tap_new && !hil_new) return;
+    int lx_new=lx_head!=lx_saved && now-lx_t0>3500;
+    static unsigned osd_names_seen;
+    int osd_new=(osd_ev_head!=osd_ev_saved || osd_names!=osd_names_seen) && (!lx_until || now-lx_t0>3500);
+    int dav_new=dav_head!=dav_saved;
+    static char live_logged[64];
+    int live_new=strcmp(live_status,live_logged)!=0;
+    if (!ximr_new && !layer_new && !photo_new && !grain_new && !ui_new && !lost_new && !disp_new && !af_new && !aff_new && !tap_new && !lx_new && !osd_new && !dav_new && !live_new) return;
     if (get_halfshutter_pressed() || lens_info.job_state || RECORDING) return;
     if (photo_new && now-m50_photo_ring.ev[(m50_photo_ring.head-1)%M50_EVS].ms<2000) return;
     if (grain_new && now-m50_grain_ring.ev[(m50_grain_ring.head-1)%M50_EVS].ms<2000) return;
+    if (dav_new && now-dav_recs[(dav_head-1)%DAV_RECS].ms<2000) return;
     FILE *f=FIO_OpenFile("ML/LOGS/XM50.LOG",O_RDWR|O_SYNC);
     if (f) FIO_SeekSkipFile(f,0,SEEK_END);
     else f=FIO_CreateFile("ML/LOGS/XM50.LOG");
     if (!f) return;
     char line[160];
     int len;
+    if (live_new) {
+        snprintf(live_logged,sizeof(live_logged),"%s",live_status);
+        len=snprintf(line,sizeof(line),"%8d Video LUT: %s (%s mode)\n",(int)now,live_logged,is_movie_mode() ? "movie":"photo");
+        FIO_WriteFile(f,line,len);
+    }
     if (!started) {
         started=1;
         len=snprintf(line,sizeof(line),"=== start (%d ms)\n",(int)now);
@@ -3752,14 +4033,26 @@ static void m50_log_poll(void)
         len=snprintf(line,sizeof(line),"%8d photo: XPan %s, 65:24 crop %s, LUT %s, grain %s\n",(int)e->ms,
             e->a ? "on":"off",e->b ? "on":"off",lut,e->d ? "on":"off");
         FIO_WriteFile(f,line,len);
+        {
+            static const char *tones[3]={"Canon Neutral","Cineon log","XPan Cineon"};
+            static const char *knees[4]={"60%","70%","80%","90%"}, *slopes[5]={"0%","25%","50%","75%","100%"};
+            unsigned tone=e->y&15, knee=(e->y>>4)&15, slope=(e->y>>8)&15, strength=(e->y>>12)&255, cube=(e->y>>20)&255;
+            const char *name=cube && (int)cube<=m50_lut_count ? m50_lut_names[cube-1] : "none";
+            len=snprintf(line,sizeof(line),"         tone base %s, knee %s, slope %s, cube %s %d%%\n",
+                tone<3 ? tones[tone] : "?",knee<4 ? knees[knee] : "?",slope<5 ? slopes[slope] : "?",name,(int)strength);
+            FIO_WriteFile(f,line,len);
+        }
     }
     m50_photo_ring.saved=head;
     head=m50_grain_ring.head; i=m50_grain_ring.saved;
     if (head-i>M50_EVS) i=head-M50_EVS;
     for (;i<head;i++) {
         const struct m50_ev *e=&m50_grain_ring.ev[i%M50_EVS];
-        len=snprintf(line,sizeof(line),"%8d grain stage: %d ms, %d of %d rows grained%s\n",(int)e->ms,
-            (int)e->a,(int)e->b,(int)e->c,e->d ? ", LATE" : "");
+        len=snprintf(line,sizeof(line),"%8d grain stage: %d ms, %d of %d rows %s%s",(int)e->ms,
+            (int)e->a,(int)e->b,(int)e->c,(e->x>>30)&1 ? "grained" : "done",e->d ? ", LATE" : "");
+        if (e->x>>31) len+=snprintf(line+len,sizeof(line)-len,", halation: white %d, steps %d ms, %d.%d%% changed",
+            (int)(e->x&0xFF),(int)((e->x>>8)&0xFFFF),(int)(e->y/10),(int)(e->y%10));
+        len+=snprintf(line+len,sizeof(line)-len,"\n");
         FIO_WriteFile(f,line,len);
     }
     m50_grain_ring.saved=head;
@@ -3782,6 +4075,54 @@ static void m50_log_poll(void)
         FIO_WriteFile(f,line,len);
     }
     m50_mode_ring.saved=head;
+    for (unsigned j=lx_saved; lx_new && j!=lx_head; j++) {
+        const struct lx_ev *e=&lx_ev[j%LX_EVS];
+        uint32_t b=e->b, c=e->c;
+        len=snprintf(line,sizeof(line),"%8d LX +%4d: hud draws %d pushes %d partial %d | run %d draw %d idle %d frozen %d need %d frontoff %d clip %d layout %d\n",
+            (int)(lx_t0+e->ms),(int)e->ms,(int)(e->a&0xFFFF),(int)(e->a>>16),(int)(b>>28),
+            (int)(b&1),(int)((b>>1)&1),(int)((b>>2)&1),(int)((b>>3)&1),(int)((b>>4)&1),(int)((b>>5)&1),(int)((b>>6)&1),(int)((b>>7)&3));
+        FIO_WriteFile(f,line,len);
+        len=snprintf(line,sizeof(line),"         redraw %d gui %d overlays %d guimode %d | hud_y %d band %d display %d hud_on %d uifrozen %d canon_layout %d\n",
+            (int)((b>>9)&3),(int)((b>>12)&0xF),(int)((b>>16)&0xF),(int)((b>>20)&0xFF),(int)(int16_t)(c&0xFFFF),
+            (int)((c>>16)&1),(int)((c>>17)&1),(int)((c>>18)&1),(int)((c>>19)&1),(int)((c>>20)&1));
+        FIO_WriteFile(f,line,len);
+    }
+    if (lx_new) lx_saved=lx_head;
+    for (unsigned j=lx_snap_saved; lx_new && j!=lx_snap_head; j++) {
+        const struct lx_snap *s=&lx_snap[j%LX_SNAPS];
+        static const char *const kinds[]={"Canon layout entry","exit","exit+1.5s"};
+        len=snprintf(line,sizeof(line),"%8d LXS %s: row %d ML %d layer alpha %d layer==ML %d (of 720)\n",
+            (int)s->ms,kinds[s->kind<3 ? s->kind:0],s->y,s->n[0],s->n[1],s->n[2]);
+        FIO_WriteFile(f,line,len);
+        len=snprintf(line,sizeof(line),"         Ximr +c0: %x %x %x %x %x %x %x %x\n",
+            s->w[0],s->w[1],s->w[2],s->w[3],s->w[4],s->w[5],s->w[6],s->w[7]);
+        FIO_WriteFile(f,line,len);
+        len=snprintf(line,sizeof(line),"         Ximr +e0: %x %x %x %x %x %x %x %x\n",
+            s->w[8],s->w[9],s->w[10],s->w[11],s->w[12],s->w[13],s->w[14],s->w[15]);
+        FIO_WriteFile(f,line,len);
+        len=snprintf(line,sizeof(line),"         OSD out lcd %x evf %x; canon rec %x %x cur %x refresh %x; bufs %x %x\n",
+            s->o[0],s->o[1],s->o[2],s->o[3],s->o[4],s->o[5],s->o[6],s->o[7]);
+        FIO_WriteFile(f,line,len);
+        len=snprintf(line,sizeof(line),"         OSD disp state %x on %x out %x sent %x %x mute %x; winsys skip %x\n",
+            s->o[8],s->o[9],s->o[10],s->o[11],s->o[12],s->o[13],s->o[14]);
+        FIO_WriteFile(f,line,len);
+    }
+    if (lx_new) lx_snap_saved=lx_snap_head;
+    if (osd_new) {
+        osd_names_seen=osd_names;
+        for (int k=0;k<OSD_TASKS && osd_tasks[k].name;k++) {
+            len=snprintf(line,sizeof(line),"%8d OSD sends from %s: %d, rendered != sent %d (all %d)\n",
+                (int)now,osd_tasks[k].name,(int)osd_tasks[k].sends,(int)osd_tasks[k].bad,(int)osd_sends);
+            FIO_WriteFile(f,line,len);
+        }
+        for (unsigned j=osd_ev_saved; j!=osd_ev_head; j++) {
+            const struct osd_ev *e=&osd_evs[j%OSD_EVS];
+            len=snprintf(line,sizeof(line),"%8d OSD send %s: %s sent %x rendered %x\n",
+                (int)e->ms,(j-osd_ev_saved)&1 ? "BAD":"before",e->task ? e->task:"?",(unsigned)e->sent,(unsigned)e->out);
+            FIO_WriteFile(f,line,len);
+        }
+        osd_ev_saved=osd_ev_head;
+    }
     for (int k=0;k<2 && disp_new;k++) {
         struct disp_rec c;
         unsigned s1, tries=0;
@@ -3797,29 +4138,46 @@ static void m50_log_poll(void)
         len+=snprintf(line+len,sizeof(line)-len,"\n");
         FIO_WriteFile(f,line,len);
     }
-    for (unsigned k=0;k<hil_ncallers && k<HIL_CALLERS && hil_new;k++) {
-        static struct hil_rec c;                /* XPan's task only: off its 4 KB stack */
-        unsigned s1, tries=0;
-        do { s1=hil_recs[k].seq; asm volatile("dmb" ::: "memory"); c=hil_recs[k]; asm volatile("dmb" ::: "memory"); }
-        while (((s1&1) || s1!=hil_recs[k].seq) && ++tries<8);
-        if (c.calls==hil_seen[k] || hil_logs>=24) continue;
-        hil_seen[k]=c.calls; hil_logs++;
-        len=snprintf(line,sizeof(line),"%8d Hilton: caller %08x, %d calls (%d from other callers), obwb %08x corr %08x, %s\n",(int)c.ms,
-            (unsigned)c.lr,(int)c.calls,(int)hil_other,(unsigned)c.obwb_addr,(unsigned)c.corr_addr,
-            c.stops==1 ? "gains -1 EV (Cineon log +1 EV)" : "Canon's gains");
+    /* David probe: one record per photo, published by dav_head (dmb). */
+    for (unsigned j=dav_saved;dav_new && j<dav_head && j<DAV_RECS;j++) {
+        const struct dav_rec *r=&dav_recs[j];
+        len=snprintf(line,sizeof(line),"%8d David %d: p1 %08x p2 %08x rl %08x sum %08x; table %08x sum %08x; style %x; curves %s %x\n",(int)r->ms,(int)j+1,
+            (unsigned)r->a1,(unsigned)r->a2,(unsigned)r->ar,(unsigned)r->sum,(unsigned)r->lucky_addr,(unsigned)r->lucky_sum,(unsigned)lutp_ps_raw,
+            r->test ? "XPan Cineon, Canon B0" : "Canon's",0u);
         FIO_WriteFile(f,line,len);
-        for (int w=0;w<21;w+=7) {
-            len=snprintf(line,sizeof(line),"         obwb +%02x:",w*4);
-            for (int i=w;i<w+7;i++) len+=snprintf(line+len,sizeof(line)-len," %x",(unsigned)c.obwb[i]);
+        if (!j) {
+            for (int w=0;w<DAV_WORDS;w+=8) {
+                len=snprintf(line,sizeof(line),"         %s +%03x:",w<DAV_N1 ? "P1" : w<DAV_N1+DAV_N2 ? "P2" : "R ",
+                    (unsigned)(w<DAV_N1 ? w : w<DAV_N1+DAV_N2 ? w-DAV_N1 : w-DAV_N1-DAV_N2)*4);
+                /* a line never crosses a block boundary (361, 600) */
+                int end=w+8, lim=w<DAV_N1 ? DAV_N1 : w<DAV_N1+DAV_N2 ? DAV_N1+DAV_N2 : DAV_WORDS;
+                if (end>lim) end=lim;
+                for (int i=w;i<end;i++) len+=snprintf(line+len,sizeof(line)-len," %x",(unsigned)dav_base[i]);
+                len+=snprintf(line+len,sizeof(line)-len,"\n");
+                FIO_WriteFile(f,line,len);
+                if (end<w+8) w=end-8;
+            }
+            continue;
+        }
+        len=snprintf(line,sizeof(line),"         %d words differ from photo 1 (%d not kept)\n",(int)r->ndiff,(int)r->missed);
+        FIO_WriteFile(f,line,len);
+        for (unsigned d=0;d<r->ndiff;d+=4) {
+            len=snprintf(line,sizeof(line),"        ");
+            for (unsigned e=d;e<d+4 && e<r->ndiff;e++) {
+                unsigned at=dav_idx[r->first+e];
+                len+=snprintf(line+len,sizeof(line)-len," %s+%03x %x>%x",at<DAV_N1 ? "P1" : at<DAV_N1+DAV_N2 ? "P2" : "R",
+                    (unsigned)(at<DAV_N1 ? at : at<DAV_N1+DAV_N2 ? at-DAV_N1 : at-DAV_N1-DAV_N2)*4,(unsigned)dav_base[at],(unsigned)dav_val[r->first+e]);
+            }
             len+=snprintf(line+len,sizeof(line)-len,"\n");
             FIO_WriteFile(f,line,len);
         }
-        for (int w=0;w<13;w+=7) {
-            len=snprintf(line,sizeof(line),"         corr +%02x:",w*4);
-            for (int i=w;i<w+7 && i<13;i++) len+=snprintf(line+len,sizeof(line)-len," %x",(unsigned)c.corr[i]);
-            len+=snprintf(line+len,sizeof(line)-len,"\n");
+    }
+    if (dav_new) {
+        if (dav_head>=DAV_RECS && dav_other) {
+            len=snprintf(line,sizeof(line),"         David: %d more photos not recorded (12 per start)\n",(int)dav_other);
             FIO_WriteFile(f,line,len);
         }
+        dav_saved=dav_head;
     }
     if (tap_new) {
         taps_seen=af_taps;
@@ -3889,9 +4247,17 @@ static struct menu_entry xpan_m50_menu[]={
           .help="Rescan ML/XPAN/LUTS and reload the selected file." },
         { .name="Cube strength", .priv=&m50_look_strength, .max=100, .unit=UNIT_PERCENT,
           .update=strength_display, .help="How much of the LUT, 0..100%. 0 keeps the tone base." },
-        { .name="Tone base", .priv=&m50_tone_cineon, .max=2, .update=tone_display, .icon_type=IT_DICE,
-          .choices=CHOICES("Canon Neutral","Cineon log","Cineon +1EV"),
-          .help="What the LUT receives: Canon Neutral, Cineon log, or Cineon log with +1 EV highlight headroom." },
+        { .name="Tone base", .priv=&m50_tone_cineon, .max=M50_TONE_XCIN, .update=tone_display, .icon_type=IT_DICE,
+          .choices=CHOICES("Canon Neutral","Cineon log","XPan Cineon"),
+          .help="What the LUT receives: Canon Neutral, Cineon log (CINLV), or XPan Cineon (the M50's own base)." },
+        { .name="Shoulder knee", .priv=&m50_knee, .max=3, .update=knee_display, .icon_type=IT_DICE,
+          .choices=CHOICES("60%","70%","80%","90%"),
+          .help="XPan Cineon: where the highlight shoulder starts, as a share of white.",
+          .help2="Lower: a longer, softer roll-off. Higher: log further up, a shorter shoulder." },
+        { .name="Shoulder slope", .priv=&m50_slope, .max=4, .update=knee_display, .icon_type=IT_DICE,
+          .choices=CHOICES("0%","25%","50%","75%","100%"),
+          .help="XPan Cineon: how strongly the shoulder compresses at white.",
+          .help2="0%: log right up to Canon's white (hard stop). 100%: flat at white (softest)." },
         { .name="Live LUT preview", .select=live_lut_select, .update=live_lut_display, .icon_type=IT_BOOL,
           .help="Experimental: the LUT also in Live View." },
 #if M50_GRID17_TEST
@@ -3911,25 +4277,30 @@ static struct menu_entry xpan_m50_menu[]={
           .help="Fine, Medium or Coarse grain." },
         MENU_EOL
       } },
+    { .name="Halation", .select=halation_select, .update=halation_display, .icon_type=IT_BOOL,
+      .select_Q=menu_open_submenu,
+      .help="Film halation on the saved JPEG. LEFT/RIGHT: on/off. PLAY: strength.",
+      .children=(struct menu_entry[]) {
+        { .name="Strength", .priv=&halation_strength, .min=1, .max=100, .unit=UNIT_PERCENT,
+          .help="Glow amount: 30 subtle, 50 medium, 70 strong, 100 very strong." },
+        MENU_EOL
+      } },
     { .name="Diagnostics", .icon_type=IT_SUBMENU, .select=menu_open_submenu, .select_Q=menu_open_submenu,
       .shidden=1,                                 /* shown with Debug info ON (debug_info_display) */
       .help="For development: Canon's state, probes and logs. Shown with Debug info ON.",
       .children=(struct menu_entry[]) {
         { .name="65:24 JPEG crop", .update=crop_display, .icon_type=IT_ALWAYS_ON,
           .help="With 65:24 on, Canon writes a 6000x2216 JPEG (centre band). Needs Canon at 3:2, L." },
-#if M50_LV_RESTART
-        { .name="Live View band restart", .priv=&m50_lv_restart, .max=1, .update=lv_restart_display,
-          .help="Opens and closes Canon's menu once when the 65:24 band must change (power-on, layout).",
-          .help2="Canon moves the picture only when Live View restarts. Done/failed counts on the right." },
-#endif
+        { .name="Live View band", .update=band_display, .icon_type=IT_ALWAYS_ON,
+          .help="Where the 65:24 band is on screen. Right: moves at a frame / at Canon's restarts." },
         { .name="Photo LUT", .update=look_diag_display, .icon_type=IT_ALWAYS_ON,
           .help="Canon's colour table for the last photos." },
+        { .name="Video LUT", .update=video_lut_display, .icon_type=IT_ALWAYS_ON,
+          .help="The LUT in video and Live View (Canon's style library): graded, or why not." },
         { .name="Grain stage", .update=grain_diag_display, .icon_type=IT_ALWAYS_ON,
           .help="Canon's filter stage for the film grain." },
         { .name="Canon settings", .update=settings_display, .icon_type=IT_ALWAYS_ON,
           .help="What Canon reports for the settings XPan relies on." },
-        { .name="Learned settings", .select=opts_forget_select, .update=opts_display, .icon_type=IT_ALWAYS_ON,
-          .help="EV, WB, drive, metering and format values recorded from Canon (XPan writes only these)." },
         { .name="Save Canon log", .select=canon_dump_select, .update=canon_dump_display, .icon_type=IT_ACTION,
           .help="Canon writes its own debug messages to the card (dumpf). Use after a good MENU cycle.",
           .help2="Saved by itself, once, when Live View does not come back after the menu." },

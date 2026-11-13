@@ -2796,6 +2796,693 @@ The study below stays valid.
   (Neutral contrast 0 / -4 / +4, HTP on, Standard), ALO off: the words that
   follow contrast are the tone curve.
 
+### Picture style settings under XPan's LUT (ROM study, 2026-11-12)
+
+User: Neutral's contrast and saturation still change XPan's photos. Why, and
+can the LUT get Canon's data before any picture style?
+
+**Why the settings still act.** There are two reasons:
+- **XPan grades Canon's table; it does not replace it.** `xpan_native_table_prepare_cube` takes the table Canon chose for the shot and puts each of its output colours through the LUT. Whatever Canon put into that table for the shot stays under the LUT.
+- **Canon's tone stage comes before the table.** David (DevelopPath, `E00834FC` -> `E00E7320`) runs before Lucky. It gets the shot's three picture blocks (DavidPictParam1 / 2 / Relight from `DEV_PARAM`).
+
+Canon's picture style values are stored as one record per style: sharpness `+0`, contrast `+4`, saturation `+8`, colour tone `+0xC`, filter `+0x10` (setters `E0535262`...`E05352F4`, "FlavorContrast PS(%#x)"). The develop parameters are built from that record and Canon's encrypted style data (`FA_GetDecryptPcsetFlavorLuckyTable`, `pPcsetFlavorParamHeader`), and the parameter builder is not traced yet. So it is not known yet whether a setting goes into the David blocks, into the shot's table, or into both. Contrast is most likely David's curve.
+
+**Linear data before any style: not with Canon's engines.** The study of 2026-11-10 still holds:
+- Lucky is the only 3D table in the still path, and it takes YCbCr after Susan (demosaic) and David.
+- The 14-bit linear data exists only before the demosaic, where there is no RGB pixel to look up.
+- Even with David made linear, a 10-point table on 10-bit YCbCr would put all the shadows into its first cell.
+
+Film LUTs expect log input (XPan's are built on a Cineon base), not linear.
+
+**What can be done with Canon's engines:**
+1. **Pure table:** XPan's table built from the table's input nodes, not from Canon's table. This drops Canon's table colour, including anything the style puts there. Existing hook, no new page.
+2. **Fixed David blocks:** XPan's stills get the same David blocks whatever the style and its settings. Canon's demosaic, white balance and matrix stay; the picture style stops acting.
+3. **XPan's own curve in David** (a Cineon-like log), so the LUT gets a known log image, not Canon's Neutral render. This needs David's block format.
+
+Options 2 and 3 use `E00E7320`, which is in the page already hooked for the colour table, so no new MMU page is needed.
+
+**First step: a read-only probe.** Per photo, it logs the David blocks and a checksum of Canon's shot table:
+- To keep the memory use small, the first photo's blocks are kept whole (2.5 KB). Later photos keep only the words that differ.
+- Photos: Neutral 0, contrast -4 / +4, saturation -4 / +4, colour tone -4 / +4, Standard.
+- The probe then shows where each setting lands.
+
+**About the earlier hang.** The David probe `c82e4ce99741` hung on Canon's menu -> MENU, before any photo. It had the same symptom as the menu hang later found to be ML's patch stall at start, which was fixed in `d31841da9ff2`. So that probe was most likely not the cause. Its source was not kept and has to be written again.
+
+**Probe build `6f96fa8cbae3`** (read only, Debug info only):
+- **The hook:** `E00E7320` is replaced by XPan's `xpan_m50_david`, which makes Canon's two calls with Canon's arguments: `E011E0A4(p1, p2, relight, a3, s0)`, then `return E011E148(s1)`. Its only caller is `E0083570` (DevelopPath). It is in page E00E, already hooked, so the MMU pages stay at 6 of 7.
+- **Records**, 12 photos per start:
+  - photo 1's three blocks whole (640 words);
+  - each later photo only the words that differ from photo 1 (a shared pool of 384);
+  - per photo, the checksums of the blocks and of Canon's table for the shot (taken in the colour-table hook, before XPan grades it).
+- **Memory:** ML grows by 5.4 KB (margin 199808 bytes).
+- **XM50.LOG lines:** "David photo n: p1 .. p2 .. relight .. sum ..; Canon's table .. sum ..; style now ..". Photo 1 is followed by "P1 +off: words" lines; later photos by "P1+off old>new" lines.
+- **Checks:** `check_m50_rom.py` checks the function, its callees and its caller. Build checks: Canon's two calls only, Debug info only, the reads range-checked, nothing of Canon's written, no blocking, and the hook list.
+
+Test (on its own, one new hook in Canon's still develop; if the camera hangs, wait 10 s, then battery out):
+- Debug info ON, ALO (Auto Lighting Optimizer) OFF, HTP OFF, tripod, same scene and exposure for every photo.
+- XPan forces Neutral, so Standard is not tested.
+- One photo each, in this order: Neutral all 0; contrast -4; contrast +4; contrast 0, saturation -4; saturation +4; saturation 0, colour tone -4; colour tone +4; colour tone 0, sharpness strength changed by 4.
+- Then reset everything to 0, wait 10 s, and bring the card.
+
+**Camera test of `6f96fa8cbae3`** (user, 8 photos as listed, no hang). Live LUT preview was on, so Canon's shot table was XPan's graded copy of Neutral's library table.
+- **Canon's table never changed:** the same address `44032480` and the same checksum `f1ddebfd` for all 8 photos. No setting goes into the colour table; all four act in DavidPictParam1 (P2 only for sharpness).
+
+| setting | words that change (P1 offsets) |
+|---|---|
+| contrast -4 / +4 | `+4D8`, the 25-point curve `+4E8`...`+548`, and `+550` `+554` `+55C` `+560` `+564` (31-32 words) |
+| saturation -4 / +4 | `+404` `+408` `+40C` (16-bit pairs; Neutral 0: `7D007D 7007 9B082`) |
+| colour tone -4 / +4 | `+414` `+418` (Neutral 0: `FD00F3 40019`) |
+| sharpness | `+1E0` `+234`, P2 `+15C` `+230` `+280` |
+
+Photos 6 to 8 also differ at `+290` `+294` `+56C` by 1 or 2. These are the same in all three and are not tied to one setting, so they are probably scene or exposure values.
+
+- **Two tone curves in P1:**
+  - **Curve A** at `+32C`...`+39C` (28 values, `100 100 13E 2B6 ... 829`) is the same in all photos: the style's fixed curve.
+  - **Curve B** at `+4E0`...`+548` (`100 100 128 2DE ... 806`) is the contrast curve, pivoting at its 4th point (`3EB`, the same at -4, 0 and +4). At +4 it is an S: the low end goes down (`128` -> `D8`), the mid-tones go up (`594` -> `633`) and the top tops out at `7FE`. At -4 it is flatter: `128` -> `187`, `594` -> `536`, top `807`.
+  - Their input positions and scale (`0x800` = white?) are not decoded.
+- **So the picture style can be taken out without touching Canon's table:**
+  - **(a) Canon's own settings, forced to 0** while XPan is on, as XPan already forces Neutral (Canon's property, not a memory write). Needs the M50's Neutral settings property layout, read first.
+  - **(b) XPan's copy of P1** for XPan's stills, with the style words set to the Neutral 0 values above. That needs no property, but freezes values that may also depend on the scene.
+  - **(c) XPan's own log curve in curve B (and A)**, so the LUT gets a known log image. This needs the curves' input positions, from a calibration like the M50 tone base (photos at known exposure steps).
+
+**Where the two curves go (ROM, 2026-11-12).** David's Param1 writer `E01A025A` copies the block word by word into David's registers at `D0437000`:
+- curve A (P1 `+32C`...) goes to `D0437450`..., in the sub-block written from `D0437400`;
+- curve B (P1 `+4E0`...) goes to `D04376A8`..., in the sub-block written from `D0437694`.
+
+Register addresses and the order of the parameter block do not prove the order in which David's hardware applies them. No ROM string names the two curves. What is known about each:
+- **Curve A:** unchanged by contrast in Neutral. It may be the style's own base curve (Standard could not be tested: XPan forces Neutral) or a curve for a side path.
+- **Curve B:** carries contrast.
+- **Both have the same gamma-like shape at Neutral 0** (`13E 2B6 3D1` / `128 2DE 3EB`). Two such curves in series would apply the gamma twice, so they are most likely not in series on the same signal. One could be luma, the other a separate path.
+
+The test that answers it is a write test: one photo with each curve replaced by a straight line, the other left as Canon's, on a grey ramp. It shows which curve sets the picture's tone, whether they combine, and the input spacing a log curve needs.
+
+**Curve test build `79c670c80ccd`** (on the card, the first XPan change in David):
+- **Layout:** in the camera log both curves are 25 values after the same header `800 100 100`: A at P1 `+33C`...`+39C`, B at `+4E8`...`+548`.
+- **The option:** Diagnostics > Tone curve test: OFF / A straight / B straight / A+B straight. It is not saved and is OFF at every start.
+- **What it does:** for XPan's stills with Debug info, Canon's writer gets a copy of Param1 in which the chosen curves are a line from `0x100` to `0x800` in 25 equal steps. Everything else is Canon's. Canon's block is never written.
+- **When it applies:** only for the checked layout (the header, values `0x80`...`0xFFF`, never falling); otherwise Canon's block is used and counted.
+- **Log:** each "David n:" line says which curves were straight.
+- **Memory:** ML +1.5 KB (margin 198272 bytes); MMU pages unchanged (6 of 7).
+- **Build checks:** Canon's block or XPan's copy only; only the 50 curve words changed, to that line; the conditions; not saved; Canon's block never written.
+
+Test (on its own; if the camera hangs, wait 10 s, then battery out):
+- Debug info ON, ALO OFF, HTP OFF, Neutral at 0, tripod.
+- A scene with deep shadows to bright highlights (a grey card or white paper, something black, a lamp or window). The same exposure for all four.
+- Live LUT preview OFF and Custom LUT OFF, so the JPEG shows Canon's render only.
+- One photo with each setting: OFF, A straight, B straight, A+B straight. Then set it to OFF.
+- Bring the card: the four JPEGs and the log.
+
+**Camera test of `79c670c80ccd`** (user, no hang). Two sets of four (OFF, A, B, A+B), the second a little brighter: IMG_2848-2851 and IMG_2852-2855. All photos had Canon's colour table (no LUT) and Canon's gains, and the log shows the requested curve for each. Analysis on 1/8-size images, per pixel against the OFF photo (`curve_an.py`, scratchpad):
+
+| | luma median (set 1 / set 2) | luma 99 % | chroma (mean abs Cb + Cr) |
+|---|---|---|---|
+| OFF | 111 / 148 | 231 / 245 | 13.3 / 13.5 |
+| A straight | 111 / 148 | 231 / 244 | **5.5 / 7.9** |
+| B straight | **54 / 68** | **151 / 185** | 13.2 / 13.6 |
+| A+B straight | 55 / 68 | 151 / 185 | 5.5 / 8.2 |
+
+- **Curve B is the tone curve.** With B straight every tone changes and the colour does not. Per pixel (set 1): OFF 44 -> 37, 124 -> 58, 228 -> 142, 252 -> 212. Shadows below about 30 stay the same. The picture is much darker and flatter in the mid-tones, with its top at 216 (`0x800`, the line's end).
+- **Curve A is a colour curve.** With A straight the luma is the same within 1-2 levels at every level, but the chroma falls to 40-60 %. So A shapes the colour difference signals, not the tone. It is not a "first" tone curve.
+- **The two do not interact:** A+B = B for the tone, and A+B = A for the colour.
+- **Exposure:** set 2 against set 1 is not a constant ratio with B straight (1.1 to 1.3 in the mid-tones). So B's output is not linear light either, and the input spacing of B's points cannot be read from these two sets.
+
+**For XPan's log curve:**
+- The tone goes in **curve B**.
+- Curve A has to stay Canon's, or be matched to the new tone, or the colour will be wrong.
+- B's input positions need a calibration: B straight, a bracket in known steps (tripod, same scene; e.g. 1/25, 1/50, 1/100, 1/200, 1/400 s at the same ISO and aperture). Fit as for the M50 tone base: neighbouring exposures one EV apart give the curve, with no code change.
+
+**Bracket with B straight (user, 2026-11-12).** IMG_2860, 2859, 2856, 2857 and 2858 at 1/400, 1/200, 1/100, 1/50 and 1/25 s; f/3.5, ISO 100, grain off; the log shows B straight for all five. All five decode.
+- **Crash:** the camera crashed afterwards, while saving a sixth photo. That photo is not on the card, and the log ends 3 s after the fifth (it is written only when the camera is idle). So the log does not say whether the David hook was involved. No Canon or ML crash log was written.
+
+**Fit** (`br_fit.py`, scratchpad): exposure (log2, 0 at Y = 128) as a function of JPEG luma, from 497 pixel pairs between neighbouring photos; residual 0.04 EV median, 0.15 EV at 90 %.
+
+| Y | 16 | 32 | 48 | 64 | 80 | 96 | 112 | 128 | 144 | 160 | 176 | 192 | 208 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| EV | -5.4 | -4.2 | -2.9 | -1.7 | -1.0 | -0.55 | -0.29 | 0 | +0.35 | +0.52 | +0.59 | +0.73 | +1.14 |
+
+Y tops out at 216 with B straight (the line's end), so values above 208 are extrapolated.
+
+- **Not yet the input spacing.** This is the whole chain after the sensor: David with B straight, then Canon's Neutral colour table, then the JPEG encoding. Between Y = 144 and 192 it covers only 0.4 EV, which is steeper than any tone curve Canon would make. Most likely part of it is Canon's colour table (Neutral's own grey axis), applied after David.
+- **Next, offline:** take Canon's grey axis out, using its Neutral table (RAM dump `0x69A820`, the photo's table at `44032480`). What remains is David's output against exposure, and so the input level of each of B's points.
+
+**Offline follow-up (2026-11-12):**
+- **Canon's colour table is not the cause.** The camera's Neutral table has a straight grey axis: nodes 1-8 give 64, 128, ..., 512 (`XM50LUT.LOG`, all eight copies of the current style's table). So on grey it passes David's output through unchanged.
+- **The steep part was clipping.** With B straight the picture clips at Y = 216, but the first fit only dropped pixels above 250. Refitted (`br_fit2.py`, pixels 6..205 only): 407 pairs, residual 0.02 EV median, 0.07 EV at 90 %.
+
+| Y | 16 | 32 | 48 | 64 | 80 | 96 | 112 | 128 | 144 | 160 | 176 | 192 | 205 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| EV | -5.5 | -4.3 | -3.0 | -1.8 | -1.06 | -0.66 | -0.27 | 0 | +0.18 | +0.39 | +0.59 | +0.84 | +1.11 |
+
+From Y 64 to 205 the luma grows smoothly with exposure, about as exposure^0.6. Below Y 56 the steps are irregular (shadow noise at the short exposures).
+
+- **B's input levels are still not pinned down.** Comparing the OFF and B-straight photos of the earlier set (same exposure, same pixel) fits "JPEG luma proportional to David's output" in the mid-tones. Two things break it:
+  - in the shadows, the photos go darker than the curve's start value `0x100` allows;
+  - at the top, Canon's `0x806` gives Y 253 while the line's `0x800` gives 216.
+  So the step from B's output to the JPEG is not a plain scale. Without it, the bracket cannot be turned into B's input levels.
+- **A clean way to measure that step:** photos with B **flat** at one value (every input gives the same output), at several values such as `0x200`, `0x300`, ..., `0x800`. Each photo is then nearly one uniform grey, and its luma is that step at that value. With it, the bracket gives B's input level for each point directly.
+
+**B-flat build `99a442cd5f4a`** (on the card):
+- **The option:** Diagnostics > Tone curve test gets eight more choices, "B flat 100" ... "B flat 800". All 25 values of curve B are set to that one value (hex); curve A and everything else stay Canon's.
+- **What stays the same:** the header before the curve (`800 100 100`) is kept, so the darkest input still starts from `0x100`.
+- **Log:** "curves B flat <value>".
+- **Same rules as the straight test:** XPan's stills with Debug info only, the checked layout, Canon's block never written, not saved.
+- **Build checks:** only curve B, only one value in `0x100`...`0x800`, and the menu range matches the hook. Memory unchanged.
+
+Test: same setup as the bracket (Debug info ON, Custom LUT OFF, ALO OFF, HTP OFF, Neutral 0, grain off, tripod, the same scene). One photo at the correct exposure with each of B flat 100, 200, 300, 400, 500, 600, 700, 800. Then Tone curve test OFF, one photo at the same exposure: this is the OFF reference the crash cut short last time. Bring the card.
+
+**Camera test of `99a442cd5f4a`** (user; several crashes, see below). 11 photos, matched to the 11 log records in order: IMG_2861-2870 = B flat 100, 200, 300, 400, 500, 500, 500, 600, 700, 800; IMG_2871 = OFF. All at 1/100 s, f/3.5, ISO 100, grain off, Canon's table.
+
+| B flat | 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 |
+|---|---|---|---|---|---|---|---|---|
+| JPEG luma (median) | 32 | 64 | 96 | 129 | 161 | 193 | 225 | 250 (clips) |
+
+- **JPEG luma = B's output / 8**, exactly. On grey, nothing after curve B bends the tone. The three B flat 500 photos agree to 1 level. Each flat photo is one uniform grey except its darkest 10 % (p1 2..17), so inputs below the curve's first point run down from it towards 0.
+- **This resolves the earlier contradiction.** With B straight the brightest pixel (Y 216, B output `0x6C0`) sits at point 20.5 of the 25, not at the end. **The sensor clip is about point 20.5**: the last 4-5 points are above anything the sensor records. Canon's own curve there is flat (`7D3`...`806`). That is why Canon's OFF render reaches 253 (`0x7DB` / 8 = 251) while the line's end `0x800` is never reached.
+- **B's input is linear light, with evenly spaced points.**
+  - The B-straight bracket (IMG_2856-2860), with Y = 32 + 8.96 u (u = point index + 1), gives per pair one EV apart in the mid-tones (Y 60-108): Yb = 2 Ya - 8 (60 -> 80, 76 -> 111, 92 -> 146, 108 -> 175), slope 1.98. So the input x is proportional to u - 0.9. Zero light falls a little above the curve's start, about the level of the camera's black offset.
+  - Below Y 55 (the first two or three points) the doubling does not hold: shadow noise around black, or a toe from another stage.
+  - The "exposure^0.6" reading in the refit above was the black offset, not a power law.
+- **Where the points sit, in EV below the sensor clip** (x proportional to u - 0.9, clip at u = 20.5):
+
+| point u | 2 | 3 | 5 | 8 | 11 | 14 | 17 | 20.5 |
+|---|---|---|---|---|---|---|---|---|
+| EV below clip | -4.2 | -3.2 | -2.3 | -1.5 | -0.96 | -0.58 | -0.28 | 0 |
+
+  Half of the points cover the top stop. Everything below about -4 EV falls into the first segment.
+
+**For XPan's log curve:**
+- Curve B can carry a log curve: write the log value of each point's linear input.
+- The camera then draws straight lines between the points. The top 3 stops are well covered (8 or more points per stop at the top). Below -3 EV only 2-3 points remain, so the shadows get a straight-line toe, as in Canon's own curve.
+- The scale is known: JPEG = output / 8, and output `0x800` = 256 (clipped), so a log code maps directly to an output value.
+- Curve A (colour) has to be checked with the log tone: a test photo with Canon's A first.
+
+**The crashes** (XBOOT.LOG, which covers the first 60 s of each start, and XM50.LOG). Four of the five starts of this round, and the bracket round's last start, end the same way:
+- a photo is saved and logged (David record, JPEG on the card);
+- Live View is back; the user opened ML's menu to change the tone curve test and closed it again (no INFO pressed). XPan's state then goes to the Canon layout (UI state `0xD100`, then `0xE500` = Canon layout, frozen), so XPan's current layout was the Canon layout;
+- the logs stop 0.3-0.7 s later.
+The crashing photo itself is not on the card because it was never taken: the camera died in Canon's layout after the previous one. It matches the open "crash after playback in the Canon layout (3:2)" (README, 2026-11-11): after a photo, back into XPan's Live View in the Canon layout, here through ML's menu. The curve test is most likely not the cause:
+- the last start crashed too, after its only photo with the test OFF (the log stops 8 s after it, in Canon's layout);
+- the earlier straight-curve rounds, shot in XPan's layout, never crashed.
+Not proven, because no log covers the crash moment. It needs its own investigation.
+
+### XPan's Cineon log in curve B (2026-11-12, build `c6c66370b78a`, not camera-tested)
+
+User's goal: a consistent tone base before the LUT, whatever Canon's style settings. Colour (curve A, saturation, colour tone, the style) may stay Canon's for now, since every Canon style renders some Rec.709-like colour. The colour matrix comes later.
+
+- **The curve** (`build_tools/xpan_m50_bcurve.py`):
+  - Point u (index + 1) gets the linear scene value X = (u - 0.9) / (20.5 - 0.9), with X = 1 at the sensor clip (RAW white, as XPan's EOS M base), cut at 1 above it.
+  - Its Cineon code uses the EOS M base's encoding: gain 0.18 x 2^3.5, black code 95.
+  - B output = 2 x code, since JPEG luma = output / 8 = code / 4.
+  - Values: `16C 33A 3D7 439 47F 4B7 4E5 50C 52E 54C 566 57F 595 5AA 5BD 5CE 5DF 5EF 5FD 60B 612 612 612 612 612`.
+  - The sensor clip is at Cineon 777 (JPEG 194), as the EOS M base without its shoulder. One stop = 90 Cineon codes = 22.6 JPEG levels.
+- **The option:** Diagnostics > Tone curve test > "B Cineon log", with the same rules as the other choices (XPan's stills, Debug info, checked layout, Canon's block never written, OFF at every start). Everything else in David stays Canon's, so contrast no longer acts; saturation, colour tone and sharpness still do.
+- **With a LUT:** set Tone base to "Canon Neutral" (no base) so the LUT receives B's Cineon directly. "Cineon log" / "+1 EV" would apply the old Canon-to-Cineon base a second time.
+- **Build checks:** the C table equals the script's output; only curve B; test 12 only.
+- **Limits:**
+  - Points are linear, so below about -3 EV from the clip the curve is a straight-line toe (2-3 points).
+  - The 0.9 black offset and the 20.5 clip come from one scene's luma.
+  - White balance gains above 1 clip that channel earlier (the highlight headroom option is not combined with this yet).
+
+Test: Custom LUT OFF, Tone curve test "B Cineon log", ALO OFF, HTP OFF, grain off, tripod. A bracket one stop apart around the correct exposure (5 photos), plus one photo with the test OFF at the correct exposure.
+- In a correct log image every stop moves the mid-tones by the same ~23 JPEG levels, and the sensor clip lands near 194.
+- To avoid the crash: after setting the option, take the photos without opening ML's menu between them, and stay in XPan's layout (not the Canon layout).
+
+**Camera test of `c6c66370b78a`** (user, no crash). IMG_2872-2877 were shot with a LUT by mistake and are not used. IMG_2878-2883, no LUT: B Cineon log at 1/100, 1/50, 1/25, 1/200, 1/400 s, and OFF at 1/100.
+- **Clip: right.** Every Cineon photo tops out at exactly 194 (Cineon 777), the OFF photo at 255.
+- **Steps per stop** (median luma offset for one EV, all four pairs alike; ideal 22.6):
+
+| luma | 15 | 35 | 55 | 65 | 85 | 105 | 125 | 145 | 165 |
+|---|---|---|---|---|---|---|---|---|---|
+| step | +14 | +29 | +39 | +40 | +36 | +30 | +26 | +24 | +24 |
+
+  The top two stops are right within 10 %. The lower mid-tones are up to 1.8x too steep.
+- **Cause:** the points are not evenly spaced in linear light near black. Refitted (`upos.py`, scratchpad): EV of each point, both brackets together (B straight IMG_2856-2860 and this one), anchored at the clip u = 20.5. 795 pairs, residual 0.015 / 0.026 EV median.
+
+| u | 1 | 2 | 3 | 4 | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| EV below clip | -5.38 | -4.08 | -3.35 | -2.92 | -2.28 | -1.82 | -1.44 | -1.24 | -1.02 | -0.78 | -0.45 | -0.11 |
+
+  The model reproduces this test's steps from the first curve (+44, +40, +31, +27, +26, +24 ...).
+
+**Corrected curve, build `c367ff3a476b`** (on the card):
+- `xpan_m50_bcurve.py` now takes each point's Cineon code from its fitted EV.
+- Values: `279 346 3C1 40B 455 47B 4A2 4CD 4F5 510 520 534 544 55B 572 586 59F 5C1 5D5 5FE 612 612 612 612 612`.
+- Predicted steps through the same model: +20...+22 per stop from luma 80 to 172.
+- **Deep shadows:** the header's `0x100` (u = 0, about -5.8 EV) stays Canon's, so below -5.4 EV the curve drops steeply from luma 79 to 32 (a hard toe in the deepest shadows).
+- The make run warned about clock skew; the archived autoexec.bin was checked to hold the new values (and not the old ones).
+
+Test: the same as before (Custom LUT OFF, B Cineon log, a bracket one stop apart, one OFF photo). Expect +20...+23 per stop over the whole range and the top at 194.
+
+**Camera test of `c367ff3a476b`** (user, no crash). IMG_2884-2888: B Cineon log at 1/100, 1/50, 1/25, 1/200, 1/400 s; IMG_2889 OFF at 1/100; no LUT, grain off.
+- **Clip:** every Cineon photo tops out at 193 (`0x612` / 8 = 194.25).
+- **Steps per stop** (median, ideal 22.6; the four pairs agree within 1-2 levels):
+
+| luma | 15 | 35 | 55 | 65 | 75 | 85 | 105 | 125 | 145 | 165 | 175 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| step | +14 | +27 | +31 | +29 | +25 | **+22** | **+22** | **+22** | **+22** | **+22** | +13...+18 |
+
+- **From luma 85 to 165 the curve is a true log, +21...+23 per stop.** That is from about 1.5 EV below Cineon's mid grey (code 470, JPEG ~117) up to about 0.5 EV under the clip.
+- **Above 170** the steps shrink as the pixels reach the sensor clip (some channels clip first).
+- **Below about 80** (the curve's first point, -5.4 EV below the clip, about 2 EV below mid grey) is the toe from Canon's header value `0x100`, as predicted. The steps are +25...+31 there, then fall towards black. Shadows deeper than about 2 EV under mid grey are compressed, not log.
+- **Open:**
+  - The toe could be extended by changing the header's `0x100` values (u = 0 and before). That is not tested; it would be the first change outside the 25 curve values.
+  - The fit used one scene. A different scene or white balance moves the clip per channel.
+
+### Extending the toe: the header test (2026-11-12, build `de32d66f274b`, not camera-tested)
+
+Curve B's 25 values follow the header `800 100 100`, which is unchanged so far. Two hints suggest the two `100` words are the curve's points below the 25:
+- in the B-flat photos the darkest 10 % went below `0x100` / 8 = 32, towards 0, so there is a segment under the 25 points;
+- the point fit puts the last `100` (u = 0) at about -5.8 EV, 0.44 EV under point 1. Between them the Cineon curve jumps from luma 32 to 79, which is the toe.
+
+If u = 0 is a curve point, giving it its Cineon value (about `0x240`, luma 72) continues the log down to about -5.8 EV. If the word before it is a point too, the curve goes further.
+
+**The test:** Diagnostics > Tone curve test gets three more choices. Each is B flat `0x400` (every point the same grey) with:
+- "B400 hdr u0": the last `100` (u = 0) raised to `0x200`;
+- "B400 hdr u-1": the first `100` raised to `0x200`;
+- "B400 hdr both": both raised.
+`0x800` is never changed. The same rules as the other choices apply (XPan's stills, Debug info, checked layout, Canon's block never written, OFF at every start). Build checks: only these two words, only `0x200`, only with B flat `0x400`, tests 13-15.
+
+**Reading it:** with B flat, everything above the points is luma 129 (`0x400` / 8), so only the darkest pixels can differ. If raising a word lifts them towards 64 (`0x200` / 8), that word is a point of the segment under the curve.
+
+Test: a scene with deep shadows (a dark corner, black cloth), one exposure for all four photos (the correct one, or one stop under for more dark pixels), Custom LUT OFF, grain off, tripod. One photo each with: B flat 400 (the reference), B400 hdr u0, B400 hdr u-1, B400 hdr both.
+- Before the first photo, press INFO until XPan's own layout is shown (not the Canon layout): the crashes came when XPan returned to the Canon layout after ML's menu.
+
+**Camera test of `de32d66f274b`** (user, no crash). IMG_2890 B flat 400 (reference), 2891 hdr u0, 2892 hdr u-1, 2893 both; 1/100 s, same framing. Per pixel against the reference (`hdr_an.py`, scratchpad):
+
+| reference luma | 2 | 10 | 22 | 30 | 42 | 54 | 66 | 78 | 94 | 106+ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| hdr u0 200 | 3 | 10 | 22 | 30 | 42 | 54 | 66 | 77 | 94 | = |
+| hdr u-1 200 | 5 | 18 | 41 | 55 | 75 | 92 | 107 | 119 | 128 | 129 |
+| both 200 | 5 | 18 | 41 | 55 | 74 | 92 | 107 | 119 | 128 | 129 |
+
+- **The word right before the curve (`100` at -1) has no effect.**
+- **The first `100` (at -2) is the curve's lowest point.** Raising it to `0x200` lifts everything under point 1: 1.8-1.9x near black, fading out towards point 1 (luma 129 here). The share of the picture under 128 drops from 73 % to 44 %. "Both" equals "u-1". So it acts as a point below the 25 (u = 0 in the fit), and the dark segment runs from black through it to point 1.
+
+**Build `b71d68d02362`** (on the card): Tone curve test > "B Cineon + toe". This is the tested Cineon curve with that word set to the Cineon value of its fitted position (-5.82 EV: code 285, `0x23A`, luma 71) instead of Canon's `0x100` (luma 32).
+- It replaces the jump from luma 79 to 32 in the last 0.44 EV with log (79 -> 71). Below it, the segment still runs to black, now from luma 71.
+- `xpan_m50_bcurve.py --header` computes the value; the build checks it and that only this word is written.
+
+Test: the same as the Cineon bracket (Custom LUT OFF, a bracket one stop apart, a scene with deep shadows, XPan's layout before starting), with "B Cineon + toe". Expect +22 per stop now also from luma ~70 to 85, and the dark pixels lifted compared with IMG_2884-2888.
+
+**Camera test of `b71d68d02362`** (user, no crash). IMG_2894-2898 "B Cineon + toe" at 1/100, 1/50, 1/25, 1/200, 1/400 s; IMG_2899 OFF; another scene with deep shadows.
+
+| luma | 12 | 20 | 28 | 36 | 44 | 52 | 60 | 68 | 76 | 84...140 | 148 | 156 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| step per EV | +13 | +19 | +24 | +29 | +31 | +33 | +31 | +28 | +25 | **+21...+23** | +18 | +13 |
+
+The four pairs agree within 1-3 levels.
+- **84-140: log, as before.** In this scene the steps shrink from 148 up, where its brightest (coloured) areas reach the clip of single channels.
+- **The toe barely changed.** Point 0 (now luma 71) only replaced the last 0.44 EV, from luma 79 down to 71. Below it, the hardware draws a straight line from black: the output is proportional to light. Going up one stop at a time, from 3 EV under point 0 to point 0, that gives +9, +18, +35, against Cineon's +8, +13, +15, which is what the table shows.
+
+| EV under point 0 (-5.82 EV from the clip) | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| Cineon luma | 71 | 56 | 43 | 35 | 30 |
+| curve B (straight toe) | 71 | 36 | 18 | 9 | 4 |
+
+- **No more points exist in David.** The second header word has no effect, and `0x800` is the scale. So curve B gives Cineon from about -5.8 EV under the clip (about 2.3 EV under Cineon's mid grey) upwards, and a linear toe below.
+- **The rest of the toe can be done in XPan's colour table.** On grey it maps luma straight through (Neutral) or as XPan builds it. A 1D lift from the straight toe to Cineon (36 -> 56, 18 -> 43, 9 -> 35) at its grey nodes J = 0, 32, 64 brings the deep shadows close to log. It is coarse below J = 32, since the camera interpolates between nodes. The data there is still about 11-bit from David (luma 0-71 = output 0-570), so it is not banded. Lifting them also lifts their noise, as any log does.
+- `b71d68d02362`'s "B Cineon + toe" is the right curve for the setting: the toe point is where the model puts it, and it is never worse than `0x100`.
+
+**User comparison with the same LUT (IMG_2900 old, IMG_2901 new).** User: the new one is much more saturated, and no highlight gain is visible.
+- **IMG_2900 was "Cineon +1EV", not "Cineon log".** The log shows "gains -1 EV (Cineon log +1 EV)" for it, and Canon's gains for IMG_2901. So the old photo already had XPan's highlight headroom (white balance gains 1 EV lower on the RAW data), while the new curve uses Canon's gains. That is why there is no highlight gain: R reaches 255 on 0.21 % of IMG_2901 and nowhere in IMG_2900 (R max 235).
+- **Measured** (1/8 size):
+
+| | luma median | luma 99 % | chroma (mean abs Cb + Cr) | chroma at luma 128-160 |
+|---|---|---|---|---|
+| old, +1 EV | 83 | 222 | 22.4 | 41.6 |
+| new, B Cineon + toe | 127 | 234 | 39.8 | 73.5 |
+
+- **Why the new one is more saturated:** only the tone is log. David's colour path is still Canon's (curve A and the saturation words, made for Canon's normal tone), so the colour signals keep Canon's display strength under a flat log tone. In the old path the base cube (built from Canon's render to Cineon) also lowers the chroma. Curve A carries the chroma: straightening it cut the chroma to 40-60 %. So curve A has to be log as well, so the colour is as flat as the tone.
+- **Next test:** curve A with the same Cineon values (and its header's first `0x100` as its lowest point, as on B), against "Cineon log" (not +1 EV) for a fair comparison.
+- **Headroom with the new curve:** lowering the gains by 1 EV moves all data down one stop on curve B's linear points. The curve would then have to map each point to Cineon of twice its value. The top stop would then use about half of the points, at the cost of the shadows. Not done yet.
+
+**Build `d81907851e7b`** (on the card, not camera-tested): Tone curve test > "A+B Cineon + toe". Curve A gets the same 25 Cineon values and the same lowest point (`0x23A`) as curve B; everything else stays Canon's. Build checks: only curves A and B, test 17. Curve A's own point positions are not measured; this assumes they match B's, which the shared layout suggests. The chroma result will show it.
+
+Test, the same scene, exposure and LUT, Live LUT preview OFF, XPan's layout before starting:
+1. Tone base "Cineon log" (not +1EV), Tone curve test OFF.
+2. Tone base "Canon Neutral", Tone curve test "B Cineon + toe".
+3. Tone base "Canon Neutral", Tone curve test "A+B Cineon + toe".
+To see the bases themselves, use the IDENT cube (Custom LUT ON): with a tone base it applies the base only; with "Canon Neutral" it keeps Canon's table. Custom LUT OFF also turns the tone base off.
+
+### Old and new Cineon base compared (2026-11-12, user, IMG_2902-2906)
+
+All at 1/15 s and Canon's gains:
+- IMG_2902: old "Cineon log" base, IDENT;
+- IMG_2903: B Cineon + toe, IDENT;
+- IMG_2904: A+B Cineon + toe, IDENT;
+- IMG_2905: A+B with the user's look LUT;
+- IMG_2906: old base with the same look LUT.
+
+User: 2902 and 2904 should match, but 2904 is much brighter, with coarse highlights, and with the look LUT the new one looks bad.
+
+| | luma median | luma 99 % | max R G B | chroma |
+|---|---|---|---|---|
+| 2902 old, IDENT | 93 | 169 | 175 171 169 | 12.9 |
+| 2903 B, IDENT | 119 | 195 | 255 211 199 | 20.2 |
+| 2904 A+B, IDENT | 119 | 195 | 205 197 195 | **13.1** |
+
+- **Curve A in Cineon fixes the colour.** The chroma goes from 20.2 (B only) to 13.1, the old base's level. B only also pushed red to 255.
+- **The new base sat 1.1 EV higher.** Per pixel, old -> new luma: 66 -> 88, 78 -> 102, 90 -> 115, 102 -> 127, 114 -> 140, 126 -> 152, 138 -> 163. That is a constant +25 levels (100 Cineon codes, about 1.1 EV) with the same contrast: both are log, but placed differently.
+  - The new curve put the sensor clip at Cineon 777. The old base's top is about 680: Canon's white mapped by CINLV.
+  - XPan's LUTs are made for the old placement. So the new base gave them every tone 1.1 EV too bright, and pushed the highlights into the top of the LUT's range, where they are not designed to be. That explains the brighter, coarse highlights in IMG_2905.
+- **Fix, build `df4e97500be2`** (on the card): `xpan_m50_bcurve.py` scales the scene value by 2^-1.1 (EV_SHIFT), so the sensor clip lands at code 678, the old top.
+  - New values: `1E4 297 30A 350 397 3BC 3E2 40B 433 44E 45E 471 481 498 4AF 4C2 4DB 4FD 510 539 54D 54D 54D 54D 54D`.
+  - Lowest point `0x1B1`.
+  - Used by "B Cineon + toe" and "A+B Cineon + toe" (the C table and value are checked against the script).
+  - The make run warned about clock skew; the archived autoexec.bin holds the new values.
+- **What this means for highlights:** the new base keeps the old base's white placement. So the highlight range is the same, Canon's clip. There is little above it on the M50 (0.36 EV in green). What the new base improves is precision, a true log from the shadows to the clip, and independence from Canon's contrast. More highlight range would need the lowered gains (+1 EV headroom) combined with this curve.
+
+Test: the same as IMG_2902 and 2904 (IDENT: old "Cineon log" / curve test OFF, then "Canon Neutral" / "A+B Cineon + toe"), then both with the look LUT. The two IDENT photos should now match in brightness within a few levels in the mid-tones.
+
+### Highlight roll-off (2026-11-12, user IMG_2907-2910, build `c273d80756a4`)
+
+IMG_2907 old base IDENT, 2908 old base + look LUT, 2909 A+B Cineon (`df4e97500be2`) IDENT, 2910 A+B + look LUT; 1/15 s, Canon's gains. User: highlight transitions much more abrupt on the new one, colour less saturated in places, the highlights ugly.
+- **Mid-tones:** per pixel, old base -> new base: 54 -> 45, 102 -> 95, 130 -> 122, 150 -> 140. That is the same slope, 8 levels (0.35 EV) lower: the 1.1 EV shift taken from the previous scene was 0.35 EV too much.
+- **Highlights: no roll-off.** Old 158 -> new 147, but 166 -> 162 and 170 -> 171. The new base stays log up to the clip and stops dead: **4343 pixels on one level (171)**, while the old base spreads its top smoothly (about 3500-4100 pixels per level from 150 to 168). The old base's top is Canon's curve rolling into white (its last values `7D3 7E4 7F1 7FB 802 806`), mapped by CINLV. The pure log has no such shoulder, and each channel hits the clip separately, so the hue jumps as well. The look LUT then stretches that edge.
+- **Fix** (`xpan_m50_bcurve.py`), as for the M50's CIN1EV base:
+  - above 1.2 EV below the clip, log2 X becomes a quadratic with slope 1 at the knee and 0 at the clip (a soft shoulder);
+  - EV_SHIFT is -0.75 (mid-tones matched to the old base);
+  - the clip lands at code 656 (JPEG 164, the old top 169-171), approached smoothly over the last 7-8 points.
+  - Values `210 2CD 343 38B 3D2 3F8 41F 448 471 48B 49B 4AF 4BE 4D3 4E5 4F3 502 511 518 51F 520 520 520 520 520`, lowest point `0x1D9`.
+  - The archived autoexec.bin was checked to hold them.
+- Test: the same four photos (old IDENT, new IDENT, old LUT, new LUT) on the same scene.
+
+**Levels and range check (2026-11-12, user: no loss of DR or levels).** Cineon codes (10-bit, the base's precision into the table) per band of scene EV below the sensor clip:
+
+| curve | -7..-6 | -6..-5 | -4..-3 | -2..-1 | -1..-0.5 | -0.5..0 | last 0.25 | top |
+|---|---|---|---|---|---|---|---|---|
+| first (clip 777, no shoulder) | 61 | 73 | 85 | 89 | 45 | 45 | 23 | 777 |
+| `df4e97500be2` (shift -1.1) | 44 | 59 | 80 | 87 | 44 | 45 | 23 | 678 |
+| `c273d80756a4` (shift -0.75, knee 1.2, end slope 0) | 50 | 64 | 82 | 87 | 28 | **9** | **2** | 656 |
+| partial shoulder (end slope 0.5) | 50 | 64 | 82 | 87 | 36 | 27 | 12 | 683 |
+
+- **Dynamic range is the same in every version.** Each maps everything from black to the sensor clip, and the clip is the curve's top. No version cuts scene range.
+- **Levels are not the same:**
+  - **The shift** (needed for XPan's LUTs, which expect the old placement) costs nothing from -5 EV up. It costs 11-28 % in the deepest two stops: Cineon's black floor, exactly where the old base puts them too.
+  - **`c273d80756a4`'s full shoulder costs a lot at the top:** 9 codes for the last half stop instead of 45, and 2 for the last quarter. That would band if a LUT expands the highlights. It should not stay.
+  - **A partial shoulder** (slope 1 at the knee easing to 0.5 at the clip) keeps 27 codes in the last half stop (60 % of pure log, 3x the full shoulder). It removes the hard stop's abruptness (the slope halves instead of dropping to 0 at one point), and puts the top at 683, the old base's top.
+- **Real extra range, not tried yet:** curve B's points 21-25 sit above the sensor clip and are unused. Hilton's clip (OBWB word 0, `0x3074` = 12404 here) is applied after the white balance gains. So a channel with a gain above 1 (blue 1.85 under warm light) clips there before the sensor does: the hue jumps the user saw in the highlights. Raising that clip word to 14-bit full scale (`0x3FFF`) in XPan's copy (the headroom hook already passes Canon's writer a copy) lets those channels go up to 0.4 EV further. The curve's spare points 21-25 then carry it, with no cost to the shadows or mid-tones. Untested: Canon's over-exposure stage (Sibore) may react to values above the old clip.
+
+**Build `41d9639f4e8b`** (on the card, replaces `c273d80756a4`, not camera-tested): the partial shoulder (END_SLOPE 0.5, knee 1.2 EV, EV_SHIFT -0.75).
+- Values `210 2CD 343 38B 3D2 3F8 41F 448 471 48B 49B 4AF 4BE 4D4 4E9 4FA 50D 526 533 54B 556 556 556 556 556`, lowest point `0x1D9`, top code 683.
+- The archived autoexec.bin holds them.
+
+### XPan Cineon tone base (2026-11-12, build `b729a2f45f3e`, not camera-tested)
+
+The new base is now a saved setting, no longer a Debug-only test.
+- **Custom LUT > Tone base > "XPan Cineon"** (choice 3). XPan's photos get the Cineon curve in David's curves A and B (`xpan_m50_david`) and no base in the colour table, so the LUT receives Cineon from Canon's 11-bit tone stage.
+  - Only when XPan grades that shot's table (`m50_shot_graded`, set by the colour-table hook of the same photo): with no LUT loaded, the LUT loading, Live LUT preview on, or XPan off, the photo stays fully Canon's.
+  - Never together with a curve test.
+  - Live LUT preview with this base previews through CINLV, as "Cineon log"; photos taken with the preview on come from the library (Cineon log base) and do not get the David curves.
+- **Shoulder knee** (60 / 70 / 80 / 90 %, saved, default 80 %) and **Shoulder slope** (0 / 25 / 50 / 75 / 100 %, saved, default 50 %), in the Custom LUT submenu; they act only with XPan Cineon.
+  - **Knee:** the shoulder starts where the pure-log output reaches that share of its top (from Cineon black 95). 60 % = 2.8 EV below the clip, 70 % = 2.1, 80 % = 1.4, 90 % = 0.7.
+  - **Slope:** how much of the slope is gone at white. 0 % = pure log to the clip (most levels, hard stop); 100 % = flat at white.
+  - Mid-tones are the same for every setting (EV_SHIFT -0.75, matched to the old base). Only the top changes.
+- **Curves:** `xpan_m50_bcurve.py --tables` precomputes all 2 x 4 x 5 curves (clip raise off/on x knee x slope), so the camera does no floating-point work. The build checks the C block against the script's output. Lowest point `0x1D9` on A and B, as tested.
+- **Highlight clip test** (Diagnostics, Debug info, not saved): with XPan Cineon, the Hilton hook gives Canon's writer a copy of the OBWB block. Its clip level (word 0, applied after the white balance gains) is raised by 5/4, at most `0x3FFF`. The David hook then uses the "raised" curves:
+  - points above the old clip are extrapolated (+0.158 X per point, from the fit's last two) up to X = 1.25;
+  - the shoulder ends there instead of at 1.0.
+  Red and blue with gains above 1 can then go up to 0.32 EV further, if word 0 is the clip for them. Untested: Canon's over-exposure stage may react.
+- **Log:** "David n: ... curves XPan Cineon rks <r><k><s>" (r = clip raised, k = knee index, s = slope index).
+- **Build checks:**
+  - curves A and B only, from the generated table, only on graded shots;
+  - no table base with XPan Cineon;
+  - the clip raise only with the test, Debug info and XPan Cineon, only word 0, at most `0x3FFF`.
+- **Memory:** ML's reserve grows one 16 KB step (0x64290 -> 0x68290). The table is about 2 KB, and the reserve moves in 16 KB steps. Margin 181888 bytes.
+
+Test (XPan's layout before starting; Live LUT preview OFF):
+1. Tone base XPan Cineon, knee 80 %, slope 50 %, IDENT and the look LUT, against Tone base "Cineon log" with the same LUTs.
+2. The same scene with Shoulder slope 0 % and 100 % (the range of roll-off), and knee 60 % / 90 %.
+3. Highlight clip test ON (Debug info) on a warm-lit scene with bright highlights, against OFF; then check the log says "rks 1..".
+
+### Highlight colour bands (2026-11-12, user IMG_2911-2920, build `f14c8685ef89`)
+
+Photos:
+- IMG_2911 old "Cineon log" IDENT, 2912 old + look LUT;
+- 2913 XPan Cineon 80/50 IDENT, 2914 XPan Cineon 80/50 + LUT;
+- 2915-2920 other knee / slope settings (log "rks" 22, 20, 24, 02, 32, 34, 30).
+
+User: with every shoulder setting the highlight transitions are coarser with the new curve, on the white wall and the cabinet near the LED tube.
+- **Not a tone or level problem.** In the top 40 luma levels of every photo all levels are used and none are combed (missing or thin bins). In smooth bright gradients, neighbouring-pixel steps of 2+ levels are as rare as on the old base.
+- **It is colour.** In the cabinet's bright underside (crop 2300-3500 x 0-700, stretched) the new photos go from cream to pink to neutral along the gradient. The old ones stay one even cream. Hue (Cb/Cr angle) against luma in that area:
+  - old IDENT: 145 deg at luma 145, 148 deg at 155: smooth;
+  - new IDENT: 150 deg at 145, 135 deg at 155, 146 deg at 165: a wobble the look LUT then strengthens.
+- **Cause (most likely): the shoulder on curve A.** The new base gave curve A (colour) the same curve as B, including the shoulder and the flat top above the clip. Canon does it differently: its B (tone) flattens at white (`... 7FB 802 806 806`), but its A keeps rising past white (`... 7F2 802 80F 81A 823 829`), with no shoulder. Compressing a colour curve near white bends the channels unevenly, so the hue moves, with every shoulder setting. That matches the report.
+- **Fix:** curve A gets `m50_xcin_a`: pure Cineon log on every point, with no shoulder, continued above the clip (+0.158 X per point), as Canon's A keeps rising. Values `210 2CD 343 38B 3D2 3F8 41F 448 471 48B 49B 4AF 4BE 4D6 4ED 500 519 53B 54F 578 5A0 5C3 5E2 5FE 617`. Curve B keeps the Knee / Slope shoulder. Generated by `xpan_m50_bcurve.py --tables` and build-checked.
+- Test: the same scene, old base and XPan Cineon, with IDENT and the look LUT. The cabinet underside and the wall near the tube should stay one hue towards white.
+
+**Camera test of `f14c8685ef89`** (user, IMG_2921 old "Cineon log" IDENT, IMG_2923 XPan Cineon 80/50 IDENT; 1/15 s). User: next to the wooden wall where the picture clips, the new curve is very coarse, with colour shifts. Crop 2750-3500 x 520-1000 (the LED spot on the wood and the white wall), contrast-stretched: the new photo turns green/cyan towards the brightest areas; the old one goes to neutral white. This shot's gains: R `0x6D7` (1.71), G 1.0, B `0x50F` (1.26), so red has the largest white balance gain.
+
+Mean R-G and B-G (8-bit) by luma below the brightest pixel:
+
+| below top | 40 | 30 | 25 | 20 | 15 | 10 | 5 | 0 |
+|---|---|---|---|---|---|---|---|---|
+| old R-G | +17.7 | +16.2 | +15.0 | +13.3 | +11.2 | +9.2 | +6.1 | +0.3 |
+| new R-G | +14.4 | +9.6 | +7.9 | +10.9 | +15.7 | +16.6 | +16.5 | +4.1 |
+| old B-G | -20.2 | -20.8 | -20.6 | -20.1 | -19.0 | -18.1 | -12.8 | -4.0 |
+| new B-G | -16.6 | -16.5 | -15.4 | -10.7 | -9.7 | -12.5 | -13.5 | -6.9 |
+
+- **Old: the colour fades smoothly into white.** Both differences shrink steadily to about 0 at the top. Canon's own curves end at full scale (`0x806` / `0x829` of `0x800`), where all channels clip together, and CINLV maps that white to code ~680 as neutral.
+- **New: the colour goes down, back up, then drops.** R-G falls to +8 about 25 levels under the top, rises to +16.5 within 5-10 levels of it, then drops to +4. Those are the colour bands.
+  - The rise is where curve B (tone) is in its shoulder or flat, while curve A (colour, pure log since `f14c8685ef89`) keeps rising past the clip, so the colour is stretched while the tone is not.
+  - The dip lower down is where B's shoulder begins.
+  - XPan Cineon's top (code 683, about 2/3 of full scale) is not a common ceiling, so channels that clip at different levels (red first, with its 1.71 gain) do not meet in white the way Canon's curves make them.
+- **Not fixed by guessing again.** A with the same shoulder as B (`b729a2f45f3e`) gave a hue wobble; A without it (`f14c8685ef89`) gives this. The next round should measure A's role directly: one scene, several A variants, judged by this same channel-balance table. The goal is the old base's monotone fade:
+  1. A = B (same shoulder and flat top);
+  2. A = pure log up to the clip, flat from the clip (no rise past it);
+  3. A = B plus Canon's own A-B difference at the top (Canon's A rises a little past B's flat top: `802 80F 81A 823 829` against `802 806 806`).
+  The Highlight clip test (Debug) is a separate lever for the channel that clips first. It was OFF in all these photos (log "rks 22").
+
+**Build `0fb2e553a332`** (on the card, camera-tested below): Diagnostics > "Colour curve test" (Debug info, not saved, acts only with Tone base XPan Cineon):
+- "Pure log" (the default, as `f14c8685ef89`);
+- "A = B";
+- "Log, flat at clip" (the Slope 0 % curve);
+- "Canon-like": B plus a rise past white, `0 1 2 4 5 7 9 12` on points 18-25. That is Canon's own A-B difference above point 18, scaled by 0.47, XPan Cineon's range against Canon's.
+
+The log line shows the variant as "XPan Cineon rks" 0xx / 2xx / 4xx / 6xx. Build checks: the values, Debug info only, not saved.
+
+Test: one scene with a clipping highlight (the LED spot on the wood), tripod, one exposure, Tone base XPan Cineon, knee 80 % slope 50 %, IDENT. One photo with each of the four Colour curve test choices; then "Canon-like" (or whichever looks best) with Highlight clip test ON; then one photo with Tone base "Cineon log" (curve tests OFF) as the reference. Judged by the R-G / B-G table above: a steady fade to 0 at the top, as the old base.
+
+**Camera test of `0fb2e553a332`** (user, IMG_2930-2936, tripod, one exposure, knee 80 % slope 50 %, IDENT; log "rks" 22 / 222 / 422 / 622 / 722 / 322, then the old base): IMG_2930 Pure log, 2931 A = B, 2932 Log flat at clip, 2933 Canon-like, 2934 Canon-like + clip raise, 2935 A = B + clip raise, 2936 old "Cineon log". The brightest level is 170 (old) and 172 (new, 177-178 with the clip raise), the Cineon top in both. Mean R-G / B-G (8-bit) by luma below the brightest pixel, on the wood under the LED (crop 2900-4500 x 0-700):
+
+| below top | 40 | 30 | 25 | 20 | 15 | 10 | 5 | 0 |
+|---|---|---|---|---|---|---|---|---|
+| old R-G | +16.5 | +15.4 | +14.1 | +12.0 | +10.5 | +7.7 | +4.4 | -1.6 |
+| Pure log R-G | +13.6 | +8.1 | +9.1 | +14.0 | +15.8 | +15.7 | +12.0 | +2.2 |
+| Flat at clip R-G | +13.6 | +8.1 | +9.1 | +14.0 | +15.8 | +14.1 | +6.2 | +0.0 |
+| A = B R-G | +13.6 | +8.0 | +8.5 | +11.7 | +11.5 | +9.0 | +4.1 | +0.0 |
+| Canon-like R-G | +13.6 | +8.0 | +8.5 | +11.7 | +11.6 | +9.4 | +4.6 | +0.0 |
+| A = B + raise R-G | +10.1 | +9.6 | +13.3 | +13.0 | +11.6 | +10.6 | +4.4 | +0.3 |
+| old B-G | -19.9 | -20.2 | -19.8 | -19.5 | -19.2 | -16.7 | -9.8 | -2.1 |
+| Pure log B-G | -15.7 | -15.5 | -11.5 | -9.2 | -10.8 | -13.7 | -12.1 | -3.2 |
+| A = B B-G | -15.7 | -15.5 | -11.7 | -9.2 | -10.2 | -11.3 | -7.9 | -0.1 |
+
+The wall left of the wood (crop 1500-2850 x 0-1000) gives the same picture.
+- **A = B and Canon-like fix the band just under the clip.** The colour comes down to 0 at the top, as the old base does. Pure log and "flat at clip" rise again 10-15 levels under the top: those are the colour bands. The two are the same within 0.5, so the rise past white adds nothing. (Withdrawn: "A = B is the choice"; see the user's verdict below.)
+- **Not fixed by curve A:** every variant has the same dip 25-30 levels under the top (R-G +13.6 to +8, B-G -15.5 to -9.2, then back). The variants are equal there, so this comes from curve B or the colour table, not from A. 30 levels under the top is about where the 80 % knee starts (luma ~141).
+- **Highlights carry less colour.** Mean chroma by luma, whole frame: old / A = B: 70: 8.0 / 8.2, 90: 9.1 / 8.8, 110: 11.8 / 11.0, 130: 13.8 / 11.1, 150: 10.9 / 7.5. The mid-tones match; from luma ~130 up XPan Cineon has 20-30 % less colour than the old base.
+- **Levels:** every variant has all 41 levels in the top 40, so nothing is coarse in level count. The pile-up at the top is small (17-98 pixels on the brightest level).
+- **Clip raise:** the top goes from 172 to 178 (+6 levels of range for red and blue). It still fades to about 0, with the bump moved to 20-25 levels under the top.
+
+**User verdict: all of them look bad.** Near the highlights there is a greenish band, then a pinkish band, then the duller tone. That is the dip and bump in the table above (R-G falls to +8 25-30 levels under the top, then comes back to +12), and it is the same in every curve A variant. Averages over the area made it look smaller than it is.
+
+Offline checks (2026-11-12):
+- **Not curve A:** identical in all four variants up to 15 levels under the top.
+- **Not Canon's ROM colour table shape:** the ROM default table (`E0B18330`, same layout) is a plain RGB -> YCbCr matrix. A warm colour at a constant code offset keeps Cb / Cr constant (within 0.1) from node 1.5 to 5.4. **Neutral's own table is not the cause either:** Canon decrypts it into RAM; in the RAM dump (`extras/M50/ROMS/RAM4.BIN`, Neutral at `0x69A820`, grey axis 0, 64 ... 512) the same warm colour sweep keeps hue within 1.5 degrees and saturation within 1 % from node 1.5 to 5.5 (luma ~48 to ~176), so it has no bend where the bands are (scratchpad `neu_an.py`).
+- **R and B do not follow curve B channel by channel.** The point-position fit (`upos.py`, brackets IMG_2856-2860 and 2878-2882) run on each channel alone: G fits as well as luma (median residual 0.04 EV), but R and B fit 3-4x worse (0.10-0.17 EV), and their point positions disagree with G's by up to 0.3 EV. So the colour near white is set by how David and the colour table combine the channels, which XPan does not model. A shoulder made in curve B therefore cannot be expected to keep the hue.
+- **The old base works differently:** Canon's curves stay as they are and the whole roll-off to Cineon is done in the 3D colour table (CINLV), which keeps the hue as the LUT was made. It also reaches the same sensor clip, so XPan Cineon has not gained highlight range over it (top 170 vs 172; only the Debug clip raise adds about 6 levels for red and blue).
+
+**Next: pure log in David, roll-off in the colour table (user's choice).** First a check that needs no build, with `0fb2e553a332`: Shoulder slope 0 % makes curve B pure log flat at the clip (the knee then has no effect; top luma 177 instead of 169), and Colour curve test "A = B" gives curve A the same. If the green and pink bands go away (leaving only a hard stop at the clip), the shoulder in David is their cause and the roll-off belongs in the table; if they stay, they come from the clip itself or from David's point spacing (the fit's last points step 3, 3, 4, 2, **6**, 2 levels), and a table shoulder alone would not fix them. Photos, same scene and exposure, IDENT, Tone base XPan Cineon: (1) slope 0 %, A = B; (2) slope 25 %, A = B; (3) slope 0 %, A = B, Highlight clip test ON; (4) Tone base Cineon log as the reference.
+
+**Answered without a test (user):** the bands were already there with Shoulder slope 0 % in earlier rounds. So the shoulder is not their cause, and a roll-off moved to the table would not remove them. What is left is in David with XPan's curves: most likely the point positions near the top. Fitted on green alone (`upos.py` per channel, the channel that fits best), points 18-20 sit at -0.27 / -0.15 / -0.05 EV against -0.45 / -0.34 / -0.11 in the luma fit the curves use. With green's positions, segment 19-20 of the curve is about 2.3x too steep and 17-18 too shallow. That gives a dip and then a bump just under the clip, as the green-then-pink bands do. Not proven: red and blue fit poorly, so the position of each point is not known well enough to build an exact log. The old base does not depend on it (Canon's own curves, Cineon made in the table), reaches the same sensor clip, and feeds the table Canon's full input range (0..0x800, against about 0x550 for XPan Cineon).
+
+### Measuring the top points (build `30e00acc5bcd`, 2026-11-12)
+
+Diagnostics > Tone curve test > **"B top ramp"** (test 18; Debug info, not saved): curve B only, `118 130 ... 1F0` (3 levels per point up to point 10), then `260 2D0 ... 6C0` (0x70 = 14 JPEG levels per point for points 11-21), then `6D0 ... 700`. Everything stays at or under 0x700, where JPEG luma = B output / 8 exactly (B flat test), and curve A is Canon's, as in the B-straight bracket. With 14 levels per point, a 1/3 EV bracket gives each top point's exposure to a few hundredths of an EV, per channel on a neutral wall. That decides where points 17-21 really sit (luma fit or green fit) and so whether an exact log removes the bands. It is also the input for a full-range XPan Cineon (curve B to about 0x800, the table scaling back to Cineon). Build check: curve B only, these values.
+
+Test: tripod, manual exposure, ISO 100, fixed aperture, Custom LUT OFF, Neutral 0, ALO and HTP OFF, the white wall and wood under the LED, Debug info ON, XPan's layout. Tone curve test = B top ramp. Shutter in 1/3 EV steps from the exposure where the brightest wall is just clipped, faster, about 13 photos (for example 1/15, 1/20, 1/25, 1/30, 1/40, 1/50, 1/60, 1/80, 1/100, 1/125, 1/160, 1/200, 1/250). Then one photo with Tone curve test OFF at the middle exposure as a reference. The steps between shots are fitted, so exact shutter values do not matter.
+
+**Camera test of `30e00acc5bcd`** (user, IMG_2937-2948 = B top ramp, 1/15 ... 1/200 s in 1/3 EV steps, f/4, ISO 100; 12 log records "B top ramp". The 13th shot (1/250) crashed before its develop step; IMG_2949 is Tone curve test OFF after the restart, framing moved). Fit (scratchpad `top_fit.py`): inside a segment the output is linear in linear light X; pairs of neighbouring shots give X(u_a) = 2^(1/3) X(u_b); X at point 20 = 1.
+
+| point u | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| G, EV from point 20 | -1.13 | -1.02 | -0.93 | -0.79 | -0.70 | -0.61 | -0.48 | -0.36 | -0.24 | 0 | +0.21 |
+| B, EV from point 20 | -1.08 | -0.95 | -0.88 | -0.82 | -0.70 | -0.60 | -0.51 | -0.38 | -0.24 | 0 | +0.21 |
+| curves' list (luma fit), from point 20 | -1.24 | -1.13 | -1.04 | -0.91 | -0.78 | -0.67 | -0.53 | -0.34 | -0.23 | 0 | |
+
+- **Green and blue agree** within about 0.05 EV from point 12 up. Red does not fit at all (not monotone): on this warm wall red is not a function of red's input alone, as found before (colour stage mixes channels). Points below 11 have only 3 levels each in this ramp, so the old fit stays for them.
+- **The curves' list is wrong by about 0.1 EV at points 11-17**, and right at 18-20. Measured against the list, the segments' steepness in XPan Cineon is off: point 10 to 11 about 0.6x (too flat, around luma 145 on the 80/50 curve), 14 to 16 about 1.2x, **17 to 18 about 1.5x** (too steep, luma 160-163), 18 to 19 0.85x. Uneven steepness of that size, in the zone 5-30 levels under the top, fits the bands: a flat segment lowers contrast and colour (the green-looking dip), a steep one raises them (the pink bump). The green-only refit of the old bracket (`upos.py`, points 18-20 too low) was wrong: the new bracket puts them where the list has them.
+- **Points are not evenly spaced in linear light:** X steps (G) 0.03-0.06 from 12 to 18, then 0.07, 0.15, 0.15 for 18-19, 19-20, 20-21.
+- **The sensor clip is at point 20.1** in all three channels (top values 203-204, the same level), not 20.5: about 0.02 EV above point 20. All channels clip at one level (Hilton's clip after the gains), so they meet in white there.
+- **Next:** XPan Cineon from these positions (points 11-21 from G and B, the old fit below, clip at 20.1); only the positions change, to see whether the bands go.
+
+**Build `3ced97ccb9b3`** (on the card, camera-tested below): XPan Cineon's curves (every Knee / Slope / clip-raise table and curve A's pure log) rebuilt in `xpan_m50_bcurve.py` from the measured positions (`EV_M`: points 11-21 from G and B, points 1-10 from the old fit moved to the new reference, clip at point 20.1). Point 21 now carries the curve's continuation above the clip (the hardware interpolates 20-21 for the last tenth of a point under the clip). `EV_SHIFT_M` = -0.838 keeps points 1-10 at exactly their old values (checked: 0 difference), so mid-tones and the LUT placement do not move; only the top changes. The 80/50 clip lands at code 671 (was 683), slope 0 at 702. The old curve tests (12, 16, 17) keep their old values. Build checks unchanged (script output = C tables).
+
+Test: the same scene and exposure as IMG_2930-2936, tripod, IDENT, Tone base XPan Cineon, Debug info ON, XPan's layout. (1) Knee 80 %, slope 50 %, Colour curve test "A = B"; (2) the same with "Pure log"; (3) slope 0 %, "A = B"; (4) Tone base Cineon log as the reference. Judged by eye on the bands at the LED and by the R-G / B-G table.
+
+**Camera test of `3ced97ccb9b3`** (user, 1/15 s f/3.5 IDENT; IMG_2950 A = B 80/50 "rks 222", 2951 Pure log A 80/50 "rks 22", 2952 A = B slope 0 "rks 220", 2953 old Cineon log; framing moved since IMG_2930-2936). Mean R-G / B-G by luma below the brightest pixel, wood under the LED (crop 2700-4300 x 0-800):
+
+| below top | 40 | 30 | 25 | 20 | 15 | 10 | 5 | 0 |
+|---|---|---|---|---|---|---|---|---|
+| old R-G | +16.1 | +14.9 | +13.4 | +12.1 | +10.6 | +7.7 | +4.3 | -1.6 |
+| A = B 80/50 R-G | +12.9 | +10.7 | +9.6 | +8.2 | +8.5 | +9.1 | +5.8 | +0.2 |
+| Pure log A R-G | +12.9 | +11.2 | +10.6 | +10.3 | +12.6 | +15.8 | +10.8 | +0.5 |
+| A = B slope 0 R-G | +11.1 | +10.7 | +12.5 | +14.9 | +17.0 | +12.9 | +2.3 | +2.5 |
+| old B-G | -18.1 | -18.5 | -17.7 | -18.0 | -18.3 | -16.0 | -9.4 | -2.1 |
+| A = B 80/50 B-G | -14.2 | -13.6 | -11.0 | -12.1 | -10.4 | -8.1 | -6.3 | -1.2 |
+
+- **A = B 80/50: the dip 25-30 levels under the top is gone** (old positions, IMG_2931: R-G +13.6 -> +8.0 -> +11.7; now +12.9 -> +10.7 -> +9.6 -> +8.2, then a small rise to +9.1 at 10 under the top). The fade to neutral is close to the old base's, with less colour overall (R-G 80 %, B-G 60-80 % of the old base's), and still a small wobble (1 level) at 10-15 under the top. The wall (crop 1500-2600 x 0-1000) gives the same.
+- **Pure log A keeps the colour up to the clip** (+15.8 at 10 under the top), and slope 0 (no shoulder) gives a strong bump at 15 under the top (+17): with the positions fixed, these come from the clip, not from the curve.
+- So the measured positions removed the dip; what is left of the colour bands is the clip itself when the curve has no shoulder or curve A rises to the clip. A = B with a shoulder is the variant to keep.
+
+User: better, but the colours look like a different white balance, as if some colour is missing.
+
+### Full-range XPan Cineon (build `d3a524db1ee5`, 2026-11-12, tested: worse)
+
+User request: the same log curve stretched so the sensor clip lands near 0x800 (Canon's full tone range) instead of ~0x540. Diagnostics > **"Full-range curves"** (Debug info, not saved, only with Tone base XPan Cineon and no Tone curve test):
+- **Colour table:** the colour-table hook gives this shot a tone base that scales the table's input by 2/3 before the LUT: a 2-point cube (`m50_xcin_scale`, corners 0 / 43690 = 65535 x 2/3), exactly linear, so the grid adds nothing. With IDENT the table becomes Neutral's x 2/3 (Neutral is a matrix within 0.5 of 512, median).
+- **Curves:** the David hook scales XPan Cineon's curves A and B (and the toe point) by 3/2, at most 0x800 (Canon's Neutral table reaches white at node 8; its node 9 is the same). Only on a shot whose table got the scale (`m50_shot_full`, set by the colour-table hook, which runs first), so curves and table never disagree. Log: "XPan Cineon rks 8xx" (`a22` = full, A = B, 80/50).
+- Knee 80 % / slope 50 %: points 16-25 `777 78C 7A1 7B7 7DB 7F6 800 ...`, clip about `7DD`. Slope 0 % reaches 0x800 already at point 20 (flat for the last part under the clip), so use a shoulder with this test.
+- Build checks: the scale is exactly 2/3, curves only with the scaled table, x3/2 at most 0x800, not saved.
+
+Test: the same scene and exposure as IMG_2950-2953, IDENT, Tone base XPan Cineon, knee 80 % slope 50 %, Colour curve test A = B, Debug info ON, XPan's layout. (1) Full-range curves OFF; (2) Full-range curves ON; (3) Tone base Cineon log as the reference.
+
+**Camera test of `d3a524db1ee5`** (user, IMG_2954 A = B 80/50 "rks 222", 2955 the same with Full-range curves "rks a22", 2956 old Cineon log; 1/15 s, IDENT). Wood under the LED (crop 2700-4300 x 0-800):
+
+| below top | 40 | 30 | 25 | 20 | 15 | 10 | 5 | 0 |
+|---|---|---|---|---|---|---|---|---|
+| old R-G | +16.2 | +15.0 | +13.6 | +11.8 | +10.2 | +7.5 | +4.3 | -1.7 |
+| A = B 80/50 R-G | +13.0 | +10.7 | +9.6 | +8.1 | +8.3 | +8.9 | +5.9 | +0.1 |
+| full range R-G | +19.2 | +17.3 | +12.0 | +5.3 | +5.4 | +6.5 | +5.4 | -0.2 |
+| old B-G | -18.7 | -19.0 | -18.5 | -18.2 | -17.8 | -15.7 | -9.2 | -1.9 |
+| A = B 80/50 B-G | -14.5 | -13.8 | -11.3 | -12.0 | -9.9 | -7.7 | -5.9 | -0.8 |
+| full range B-G | -15.8 | -15.0 | -16.8 | -17.1 | -8.1 | -5.9 | -5.6 | -1.8 |
+
+- **Worse at the highlights:** full colour (as much as the old base, or more) down to 20-25 levels under the top, then an abrupt drop: R-G +12 to +5.3, B-G -17 to -8 within a few levels. Contrast-stretched, the area around the LED is a large washed yellow-green patch. The wall gives the same.
+- **Better colour level below that:** whole-frame mean R-G / B-G at luma 130: old +12.0 / -15.7, A = B +9.5 / -12.6, full range +11.3 / -11.6. So the "missing colour" is partly the range: stretched, the curves give back most of it.
+- **Cause, most likely:** a ceiling in Canon's pipeline below 0x800. The B flat test already showed 0x700 -> 225 but 0x800 -> 250, not 256: the output clips at about 0x7D0. Neutral's table is linear up to node 7.4 for this colour (it clips only where red passes node 8). Stretched x3/2, red (the hot channel on this wall) reaches that ceiling before the sensor clip, so it stops while green and blue go on: the yellow-green patch. A smaller stretch that keeps the clip under about 0x700 would show whether there is a usable middle.
+- **Correction (same day): the 0x7D0 ceiling is unlikely.** Canon's own Neutral curve B (probe log of IMG_2949, P1 +4E8: `128 2DE 3EA 4A2 529 593 5F2 641 67D 6B3 6E4 70D 730 753 770 788 7A0 7C6 7E1 7F6 808 808 808 808 808`) reaches `7F6` at point 20 and `808` above it, and its curve A rises to `829`, so Canon itself drives the stage past 0x7D0 without a colour shift. The full-range curve's top (`7A1 7B7 7DB 7F6` at points 17-20) is close to Canon's there. The cause of the abrupt yellow-green highlight is open.
+
+### XPan Cineon from Canon's curve (build `a4728a288c70`, 2026-11-12, camera-tested)
+
+User's idea: keep the old base's design (Canon's smooth curves, Cineon made in the colour table) but exact for the M50, and without the style's contrast.
+
+- **CINLV is the EOS M's file** (title "XPan EOS M Cineon log base", identical to the EOS M and 6D packages). The M50 calibration photos (IMG_2736-2747) made CIN1EV, the base for the -1 EV gains.
+- **A model-based base did not work:** inverting Canon's logged curve B through the measured point positions put Canon's render 55 codes (0.6 EV) under CINLV's grey axis in the mid-tones, while the photos show the old base and XPan Cineon within 2 levels of each other there (IMG_2954 / 2956, pixel by pixel). So B's point positions alone do not describe Canon's own render; the model was dropped.
+- **The M50 base fitted on Canon's render instead:** `xpan_m50_cin1ev.py` with `XPAN_RENDER0=1` uses the same fit as CIN1EV (Canon's Neutral tone curve from the gain brackets; CIN1EV reproduced byte for byte) for Canon's render at its own gains: X = X_raw(J) / 2, Canon's white at 0.786 (0.35 EV under the sensor clip), the CIN1EV shoulder (1.5 EV) ending at that white. `data/XPAN/M50/CIN0EV.cube`, 17-point. Grey axis J 32 / 64 / 128 / 192 / 255: **293 / 374 / 492 / 607 / 679** (CINLV 285 / 367 / 480 / 585 / 675): about 10 % more mid-tone contrast (CINLV was measured 8 % too flat on the M50), the same top.
+- **Contrast taken out:** for these photos the David hook writes Canon's Neutral contrast-0 curve B (the copy logged in 84 records, `xpan_m50_bcurve.py --canonb`) and leaves everything else Canon's. Two different Neutral-0 curves B were logged (one session: top `7BD 7D3 7E4 7F1 7FB 802 806`; all later ones: `7C6 7E1 7F6 808`); the copy is the later one.
+- **In the camera:** Tone base XPan Cineon = CIN0EV in the table + that curve B (log "XPan Cineon, Canon B0"). Without CIN0EV loaded, photos keep Canon's table. Shoulder knee / slope and the colour curve, full-range and clip tests act only with Diagnostics > **"Log curves test"** (Debug, not saved), which gives the earlier XPan Cineon (David log curves). Live View keeps CINLV as before.
+- Build checks: Canon's curve B copy = the script's, curve B only, only on a shot that got CIN0EV; a photo that needs a base is never graded without it; the package carries CIN0EV.cube.
+
+Test: the same scene and exposure as IMG_2954-2956, IDENT, Debug info ON, XPan's layout. (1) Tone base XPan Cineon; (2) the same with Neutral contrast at +4 (should look the same as 1); (3) Tone base Cineon log (CINLV) as the reference; (4) optionally a look LUT on (1) and (3).
+
+**Camera test of `a4728a288c70`** (user, 1/15 s; log matched in order): IMG_2957 XPan Cineon IDENT ("Canon B0"), 2958 Canon's table (no grading), 2959 XPan Cineon IDENT with contrast +4, 2960 Cineon log (CINLV) IDENT, 2961 Cineon log + look LUT, 2962 XPan Cineon + the same LUT (top 213 / 215). All with Canon's gains. User: 2961 has better highlights than 2962.
+- **Pixel by pixel, CINLV -> CIN0EV:** the same up to luma 90, then brighter: IDENT 150 -> 153, 160 -> 163; with the LUT 150 -> 154, 170 -> 176, 190 -> 198, 200 -> 207. CIN0EV is the fitted M50 curve (more contrast than CINLV in the upper mid-tones, the same top), so the upper tones get less room before white: its roll-off is shorter.
+- **Colour near the top (wood under the LED, with the LUT):** R-G at 10 / 5 / 0 under the top: CINLV +18.7 / +14.4 / +7.4, CIN0EV +15.7 / +11.4 / +8.8; B-G -35.5 / -29.6 / -25.8 against -34.2 / -24.6 / -20.4. CIN0EV loses the colour sooner near white. No bands in either (IDENT: both fade smoothly).
+- **Contrast +4 (2959 vs 2957):** the colour is identical and the tones within 1 level except luma 70-90 (2-3 levels lower). Contrast also changes Canon's words `+4D8` and `+550`...`+564` (README "Picture style settings under XPan's LUT"); only curve B is replaced, so a small effect remains.
+- **Shoulder:** CIN0EV has a fixed shoulder (1.5 EV under Canon's white, as CIN1EV); Knee / Slope do not change it. CINLV's softer top is the EOS M curve not fully undoing the M50's highlight compression. A longer CIN0EV shoulder (knee 2-2.5 EV) would keep the fitted mid-tones and give the top more room, as CINLV does.
+
+**Build `3c86ee5fcaa8`** (2026-11-12, on the card, not camera-tested): Shoulder knee / slope work again with XPan Cineon, and the study options are gone (user: they only confuse).
+- **The base is built in the camera:** `xpan_m50_cin1ev.py` (XPAN_RENDER0=1) now writes `data/XPAN/M50/cin0ev_nodes.txt`: Canon's white (0.786 of the sensor clip) and the scene value of Canon's 17 grey nodes relative to it. `xpan_m50_bcurve.py --cin0` turns that into `m50_cin0_nodes[knee][slope][17]` (Cineon x 65535, the same Knee / Slope meaning as before: knee = % of the top, from Cineon black, where the shoulder starts; slope = how much slope is gone at Canon's white). The camera fills a 17-point base from the row for the current settings (XPan's task, under the colour-table lock; heap at first use, 29 KB as a base file), and a photo uses it only when it was built for the current settings. CIN0EV.cube is no longer used (left on the card, harmless).
+- Knee points (EV under Canon's white): 60 % 2.95, 70 % 2.20, 80 % 1.46, 90 % 0.73. 80 % / 100 % is the earlier CIN0EV file's shoulder (top code 681). Codes at nodes 8-16 (J 128 ... 255) for slope 0 / 50 / 100 %: knee 60 %: top 746 / 680 / 614; 70 %: 746 / 697 / 648; 80 %: 746 / 713 / 681. CINLV's top is 675.
+- **Removed:** Diagnostics Tone curve test (all study curves), Colour curve test, Log curves test, Full-range curves, Highlight clip test, with their code (David log-curve tables, curve A variants, full-range scale, Hilton clip raise) and build checks. The David hook now only writes Canon's contrast-0 curve B on XPan Cineon photos (and logs with Debug info). ML's reserve is 16 KB smaller (0x64290).
+- Build checks: the node table = the script's, built from the node row under the lock, used only for the current settings; curve B copy = the script's, curve B only, only on a shot with the XPan Cineon base.
+
+Test: the scene of IMG_2961 / 2962 with the same look LUT, Tone base XPan Cineon: Knee 60 % / Slope 50 %, Knee 70 % / Slope 50 %, Knee 70 % / Slope 100 %; then Tone base Cineon log as the reference.
+
+**Camera round IMG_2963-2974** (user, before `e2adc292c17a`): 12 photos, 12 log records. The log of that build gave the tone base and the gains, but not Knee / Slope or the LUT; those were estimated from the photos (top level and highlight curve against the Cineon log IDENT photo 2971) and stay uncertain. 2963-2969 and 2970 / 2974 XPan Cineon, 2964 / 2971 Cineon log, 2972 Cineon log +1 EV, 2973 Canon Neutral.
+
+**Build `e2adc292c17a`** (2026-11-12, on the card, not camera-tested):
+- **Photo log:** every "photo:" line is followed by the shot's tone base, Shoulder knee / slope, cube name and strength, as the colour-table hook saw them ("tone base XPan Cineon, knee 70%, slope 50%, cube KODAK.cube 100%").
+- **Cineon log +1 EV removed** (user: it brings nothing): the tone base choice, CIN1EV (no longer in the package; `data/XPAN/M50/CIN1EV.cube` deleted; `xpan_m50_cin1ev.py` still makes it by default and the XPan Cineon nodes with XPAN_RENDER0=1), the 1 EV lower gains, and the whole Hilton hook (E08DB920: it existed for the gains; its probe log goes with it), with their ROM and build checks. Tone base values: 0 Canon Neutral, 1 Cineon log, 2 XPan Cineon; a saved 3 (XPan Cineon in the earlier builds) or the removed 2 becomes XPan Cineon.
+- ML's reserve 0x63F90.
+
+**Camera round IMG_2975-2987** (user, `e2adc292c17a`, all from the new log lines): KODAK 100 %, 1/15 s; XPan Cineon at knee 60 / 80 / 90 % x slope 25 / 50 / 75 / 100 % (2975-2986, top 190-227), Cineon log as the reference (2987, top 212). The user picked **knee 90 %, slope 25 %**.
+
+**Build `8f66b7a2e967`** (2026-11-12, on the card, not camera-tested):
+- Shoulder defaults knee 90 %, slope 25 % (build check). A card whose config already saved other values keeps them (ML saves only values that differ from the default).
+- The M50 zip carries the boot-flag installer `BOOT_M50.FIR` (from `extras/M50`, unchanged; build check: byte for byte), as other ML zips carry ML-SETUP.FIR. `xpan_update_card.ps1` leaves every `.FIR` of the package out of the copy, so the working card still never holds one (its check 5 stays).
+
+## Controls: Canon's values (build `da4df89eb1b9`, 2026-11-12)
+
+User: a new install asked to change WB in Canon's menu "so XPan learns its values"; the learning should not be needed and costs resources. The learned settings (README "Controls, step 6") existed because the M50's encodings were not known. The camera's own record of them (`ML/SETTINGS/XM50OPTS.BIN` and `ML/LOGS/XM50OPTS.LOG` from the 32 GB card, 2026-11-08...12) gives them; every property is one 4-byte little-endian word:
+
+| Setting | Property | Values Canon reported |
+|---|---|---|
+| EV | `PROP_AE` | byte 1 = thirds, -9..+9 (`00 f7 00 00` ... `00 09 00 00`); bytes 0, 2, 3 always 0 |
+| WB | `PROP_WB_MODE_LV` + `_PH` (same value) | 0 AWB, 1 daylight, 8 shade, 2 cloudy, 3 tungsten, 4 fluorescent, 9 Kelvin (ML's `WB_*`) |
+| Drive | `PROP_DRIVE` | 0 single, 4 high-speed, 5 continuous, 0x10 10 s, 0x11 2 s, 7 timer continuous (ML's `DRIVE_*` of the 60D / 7D / 5D3) |
+| Metering | `PROP_METERING_MODE` | 3 evaluative, 4 partial, 1 spot, 5 centre-weighted |
+
+- **Now:** fixed tables of these values in Canon's screen order (EV stops at both ends, the others cycle); the current value from ML's own handlers (`lens_info.wb_mode`, `drive_mode`, `metering_mode`) and PROP_AE's byte 1 (one 32-bit word shared by the handler). XPan's task writes only these values, with Canon's `_prop_request_change`, not while half-pressed, busy or recording. Flash and custom WB were never set on the camera, so they are not offered.
+- **Removed:** the learning (8 property handlers, the 400 ms settle step every task cycle, 5 x 24 option slots), `XM50OPTS.BIN` (read at start, written after changes), the report log `XM50OPTS.LOG`, Diagnostics "Learned settings" and the "change it once in Canon's screen" message. ML's reserve 0x63590 (2.5 KB less). Old `XM50OPTS.*` files on a card are ignored.
+- `src/property.h`: the M50 gets `DRIVE_HISPEED_CONTINUOUS 4` / `DRIVE_CONTINUOUS 5` (it had the generic 1, so the HUD showed both bursts as "OTHER"); the HUD shows "BURST H" for 4.
+- Build checks: the tables, the EV range and byte, the writer's guard and value check, the property-write list, no learning code.
+
+**WB as on the EOS M** (build `dceb2acbd0e8`, 2026-11-13, not camera-tested; user request):
+- With WB selected, the dial steps the presets Auto, Daylight, Shade, Cloudy, Tungsten, Fluorescent, Kelvin. In Kelvin the dial changes the temperature with ML's `kelvin_toggle` steps (100 K, 500 K above 7000 K, wrapping), in Canon's M50 range 2500..10000 K; quick clicks go on from the last request.
+- A tap on the selected WB field steps to the next preset (from Kelvin: Auto), and the field stays selected, so the dial goes on through the presets until Kelvin again (EOS M: `xpan-hud-controls.c` `step_wb`, `value_step`).
+- Kelvin is written as ML's `lens_set_kelvin` writes it (WB mode 9 if needed, then `PROP_WB_KELVIN_LV` and `_PH`, one 4-byte word each), with Canon's `_prop_request_change` from XPan's task, and only while Canon reports a Kelvin value in range. The Kelvin write is new on the M50: the first camera test should confirm the HUD value and the photo's colour change.
+- Build checks: the Kelvin range and guard, the tap step, the property-write list.
+
+### Video LUT status (build `774cc23ddf55`, 2026-11-13, diagnostic)
+
+User: the LUT on video (from a photo mode with the movie button, and in movie mode) worked before and does not now. The video path (`m50_live_poll`: Canon's style library graded with the LUT and CINLV) is unchanged since `fbcd57e8d`, and the card's logs hold no video session, so the cause is not known. Possible causes: Custom LUT off, no LUT loaded, CINLV not loaded, XPan off in movie mode, Canon's library tables not found, or no memory for their copy (80-160 KB from the heap, which XPan Cineon's base now also uses, 29 KB).
+- Diagnostics > **"Video LUT"** (Debug info): "graded" or "Canon's", and in its help the reason or "N library tables graded". With Debug info, `XM50.LOG` gets "Video LUT: ..." each time the text changes. Read only, no memory added.
+- Test: Debug info ON; in movie mode (and from a photo mode with the movie button) open XPan > Diagnostics > Video LUT and note the value and help text; record a short clip; bring the card.
+- **Resolved (user):** the video LUT works; the failure was a setting on the camera, not the code. The status row stays as a diagnostic.
+
+### Video LUT selector (build `05d5ec370686`, 2026-11-13, not camera-tested)
+
+User: in the photo modes the LUT can be changed while recording (HUD), but movie mode has no XPan HUD, so no LUT selector. Now, in movie mode with XPan ON, Custom LUT on and two or more LUTs, a small "<  NAME  >" box sits above Canon's setting bar (y 372-404, centred; the name without its extension or 8.3 tail, in the theme colour, redrawn every 0.5 s as the loading box is). A tap on its left third picks the previous LUT, anywhere else on it the next one; the LUT then loads and grades Canon's library as from the HUD (`m50_lut_step`), also while recording. Only a tap on the box is XPan's; every other touch stays Canon's. Hidden under the loading box, in menus and dialogs. Build check: shown and taking touches only in that state, only on a hit.
+
+**Build `ef55406f2f85`** (not camera-tested): the box fits the whole name in the large font (y 366-412, 18 px each side, at most 700 px). The first box gave the text exactly its width, but `xpan_hud_text` keeps 1 px for the bold stroke, so it shrank or cut the name; the width now includes it.
+
+### Clean Canon screen (2026-11-13, not camera-tested)
+
+User: with XPan off, INFO cycles Canon's Live View screens (up to 5, chosen in Canon's menu): four Live View screens and one with only the settings. Turning XPan on while Canon shows the settings-only screen leaves touch AF dead. ML draws on Canon's clean screen, INFO mode 3 (`LV_OVERLAYS_MODE`, 0x13CC8, written by Canon's `LvInfoToggle_Update`; ML's `get_global_draw` uses the same value). The EOS M already returns Canon to mode 3 with ML INFO presses (`keep_clean_display`); the M50 now does the same.
+
+* **How:** XPan's view (Top, Bottom, Split, 3:2 HUD) and Canon not in mode 3: INFO presses through Canon's own button path (`fake_simple_button`, Canon's GUI queue; the fake MENU press was tested on this path in `46a84ccbd3f2`). XPan's INFO handler lets fake INFO through to Canon.
+* **Bounds:** the next press only once Canon has changed its mode (1 s without a change counts as a try), at most 6 presses per episode, not while half-pressed or busy. Never in XPan's Canon layout, which shows Canon's own screen.
+* **Clean screen switched off in Canon's INFO settings:** 6 presses never reach mode 3, and XPan says so once.
+* Build check: the M50 branch, its bounds and its Canon-layout exception; XPan's INFO handler skips fakes.
+
+### Halation prototype (2026-11-13, offline)
+
+User: an optional, realistic film halation. On film, light from a strong highlight goes through the emulsion, reflects off the base and exposes the red-sensitive layer (nearest the base) again from behind: an orange-red rim around lamps, windows and bright lines against darker surroundings. The highlight itself stays white.
+
+`build_tools/xpan_halation_proto.py` (offline, on finished JPEGs; `--synthetic` writes a night test scene):
+
+1. **Key at 1/8 scale:** mean of key(Y) over 8x8 blocks, key = smoothstep from 30 levels under the base's white to the white, squared (XPan Cineon's white is Y 222: no pixel clips, so the threshold is relative to the base's white, not 255).
+2. **Two radii:** Gaussian sigma 0.25 % of the width (inner) and 1.2 % (tail, 35 %), on the small map; tints in linear light: inner (1, 0.30, 0.10), tail (1, 0.12, 0.03).
+3. **Only outside the highlight:** glow minus the pixel's own key, so a large bright area (a wall) gets a rim at its edge, not a cast over itself. The first version without this warmed the whole wall.
+4. **Screen blend in linear light**, then back to display.
+
+`--camera` does it with the camera's integer maths: 16-bit glow map per channel (about 2.2 MB at 750 x 500), a 256-entry key table, a 256-entry linear table and a 4096-entry inverse table; pixels with no glow are not touched. Against the float version: mean 1.3 levels, max 14 (synthetic scene). Pixels touched: 16 % (synthetic), 32 % (IMG_2975), so the cost depends on the scene.
+
+Results: synthetic scene: orange-red rims, white cores, the grey card under the threshold untouched. IMG_2826 / IMG_2975: a thin red edge along the LED strip and a light warm spill around the lit area. Small points (8 px) glow little: the 1/8 map averages them, and after the clip a small lamp and a white card look the same.
+
+In the camera it would run in XPan's Film grain stage (Canon's filter stage, both CPUs, YCbCr after the LUT): one pass for the small map, the blur on the map, the glow in the grain row pass. Estimate 0.3-1.2 s per 3:2 photo on top of the grain, to be measured. Not yet in the camera.
+
+### Halation (build `e530206a6bf1`, 2026-11-13, not camera-tested)
+
+XPan > **Halation** ON/OFF, PLAY: **Strength** 1-100 % (default 50; the prototype's 1.0 = 100 %). Saved JPEG only, P/Tv/Av/M, paused with RAW, like Film grain. With Film grain too: the glow first, the grain over it (as on film), in the same row pass.
+
+* **Code:** `src/xpan-halation.inc`, pure C (no camera calls); `build_tools/xpan_halation_test.c` runs the same code on the host. Its file mode against the prototype (`xpan_halation_proto.py`): mean 1.1-1.7 levels, 99 % of pixels within 3-6 levels (IMG_2826, IMG_2975, synthetic scene; includes the 4:2:2 round trip of the test). Words changed: 7-21 %.
+* **Differences from the prototype, for memory:** inner map at 1/16 (not 1/8), tail map at 1/32, both stored gamma-coded in 8 bits (fine steps near zero) in place of 16-bit linear; white = 99.99th percentile of every 8th row, at least Y 210 (so a scene without highlights does not glow).
+* **Memory:** heap only while Halation is ON, four blocks: 192000 (1/16 map), 48000 (1/32 map), 17248 (tables), 26448 (two workers' row buffers) bytes; each under ML's 512 KB shoot_malloc limit (host test). Freed when OFF. ML's static size unchanged apart from code (margin 201344 bytes).
+* **Stage** (`m50_stage_grain`, the same Canon filter stage and job checks as Film grain; `film_stage_wanted` now grain OR halation, so Canon's filter switch and the Live View colour fix follow either):
+  1. histogram, every 8th row (both workers), 2. white and key tables (worker 0), 3. 1/16 key map (each worker its own cell rows), 4. blur and coding (worker 0), 5. the image: glow, then grain (both workers). Steps 1-4 within 2.5 s of the stage start (`HAL_STEPS_MS`); the image's budget is the grain's 6 s less their time; all within `STAGE_WAIT_MS` (9 s, Canon waits 10 s).
+  * Late step (never expected): no halation for that photo, grain only, Halation off until restart; a worker that does not come back keeps the buffers (never freed) and the stage copies the image itself.
+  * Cache (two CPUs, coherency unknown): halves split on 32 rows and map rows padded to 384 cells, so the workers never write the same cache line; every core writes back and drops every halation line at the end of each step.
+* **Log** (XM50.LOG, per photo): `grain stage: N ms, R of R rows grained|done, halation: white W, steps S ms, P% changed`. Diagnostics > Grain stage shows the halation status.
+* **To check on the camera:** the glow's colour. Canon's still YUV is taken as U in byte 0 and V in byte 2 (ML's UYVY): orange-red = right; blue-violet = the two are swapped. Then the time per photo (log), and the look at a few strengths.
+* Build checks: the host test (rim red-orange outside a lamp, core and far pixels unchanged, no change without highlights, allocations under 512 KB), the gate, the 32-row halves, the buffer lock and stuck-worker rule, phase limits, no printing or allocation in the stage.
+
+**Camera test of `e530206a6bf1`:** the user: "it looks very good" (so the U/V order is right). Asked for a stronger range and the menu row right below Film grain.
+
+**Build `32b37a5b2952`** (not camera-tested): Strength rescaled, 70 % = the old 100 % (the prototype's 1.0), 100 % = 1.43 x; the default 50 % is now about the old 71 %. The XPan menu has a "Halation" placeholder right after "Film grain" (cropmarks.c; ML placed the row lower without one; on the EOS M it stays hidden). Build checks for both.
+
 ### Canon's main menu breaks Live View (2026-11-10, cause: the 65:24 live placement; no fix yet)
 
 * **Symptom (user):** XPan view -> MENU (Canon's menu) -> MENU: black
@@ -3511,6 +4198,139 @@ Camera test of `f83e397e5bbb`: the menu stays open, but every 2 s pieces of Cano
 `96a036ae8395`: under `FEATURE_VRAM_RGBA` the refresh starts ML's redraw flood first (`start_redraw_flood`), as `piggyback_canon_menu` does when it opens the menu on the same mode. That is five full menu redraws about 20 ms apart, then a push. Build check added.
 
 Test: open ML's menu in Live View and leave it for 30 s or more. It should stay open with no Canon icons; at most a brief flash every 2 s. Then close it normally, and open and close Canon's menu once. Keep Debug info ON.
+
+Camera test of `96a036ae8395`: OK, no icons. Committed as `fbcd57e8d`.
+
+### Layout changes without Canon's menu (2026-11-11, `8ebaedbfdf40`, not camera-tested)
+
+On the EOS M a layout change is instant. On the M50 every change of the 65:24 band (power-on, layout, 65:24 / 3:2) opened and closed Canon's menu (the forced Live View restart, `46a84ccbd3f2`), because the band moved only on Canon's transition call.
+
+- **Why the restart existed.** It was built on the theory that moving the picture on a normal frame breaks Canon's next Live View restart (README "Canon's main menu breaks Live View: the cause"). Later Canon logs disproved it. The hang came with the band never moved (README "Menu hang without the band"), and its cause was ML's patch stall at start (README "Menu hang: Canon's own log"), fixed in `d31841da9ff2`. The Err 70 of `332341d80a0c` came with its hang snapshot and 8 MMU pages. `8f344d055b96` moved the band on normal frames and passed its layout tests. Its menu hangs were the stall.
+- **ROM (no change to Canon).** Canon's setters are called only from `E0104192` (`localSetOnlyParamIMGRepVram`), panel `E010422E`, EVF `E010424A`. a2 is the output's image-mute mask from Canon's display state (+0x3C panel, +0x40 EVF), set and cleared per mute class by Canon's mute handlers (`E010360A`, `E01036A2`, `E010380E`; "Not Space Setting MuteClassID"). Canon reprograms the image layer from the block at every frame (`E0154B64` / `E01550F8`), so a new geometry at a frame boundary is what Canon's own frames do.
+- **Change.** The XPan task (every 50 ms, after ML's start) compares each output's latched band with the settings. While Canon shows plain Live View and is idle (`lv`, not magnified, no playback / review, display on, `GUISTATE_IDLE`, no half-press, lens idle, not recording) it sets a request flag. Canon's next setter call applies it (`band_decide`, as at a transition), so the geometry still changes only inside Canon's call, between two frames. The forced restart, its menu row and config entry are removed: XPan makes no MENU presses and no GUI mode requests. Diagnostics > "Live View band" shows each output's band and the frame / transition counts.
+- **Also:** the Canon layout (INFO) and video now show Canon's 3:2 picture at once; before, the band stayed until Canon's next restart.
+- **Checks:** `build_xpan.sh` fails if the geometry changes outside the setter call, if the request runs without those conditions or blocks, or if MENU presses or GUI mode requests come back.
+
+### Faster start (2026-11-11, `8ebaedbfdf40`, not camera-tested)
+
+The XPan task held its start steps on fixed delays from its own start (~1.4 s): learned settings, forced Canon settings, Canon's grain filter and the 65:24 JPEG crop at +3 s, the LUT list at +6 s (so the Live LUT came at ~7.5 s), and the forced restart after that. They now wait for ML's own start (`ml_started`, ~2.2 s: settings, fonts and menus loaded), as ML's features do. The crop patch's ROM page copy runs before `cli()` since `d31841da9ff2`, as for ML's boot hooks. Boot log mark 78 (Debug info) records each step: 1 settings, 2 LUT list, 3 LUT loaded, 4 style write, 5 format write. The next start log shows what still changes the screen. Build check: no start step on a fixed delay.
+
+Test (one round, the band change first: it may hang, so watch the first menu / playback cycles):
+1. Power on in P/Tv/Av/M with 65:24: the band and XPan's view should come without Canon's menu, the Live LUT within about a second.
+2. Change the layout (Top / Split / Bottom) and 65:24 / 3:2 several times: instant, no menu.
+3. INFO to the Canon layout and back; playback and back; Canon's menu and back, three times each; LCD / EVF.
+4. A photo in each layout, then tap-to-focus in Bottom.
+Keep Debug info ON and bring the card (XBOOT.LOG, XM50.LOG).
+
+Camera test of `8ebaedbfdf40`: works very well. Start: settings at 2.16 s, LUT list 2.41 s, LUT loaded 3.48 s, band moved at 3.60 s (boot log mark 78 / 74), no menu cycle. Layout changes move the band at the next frame (LCD and EVF). One issue, below.
+
+### Canon layout exit: HUD missing (2026-11-11, diagnostic `0aba2b6a960d`)
+
+- **Symptom (user):** on the LCD, INFO from the Canon layout to the next XPan layout: most times XPan's HUD is missing (only the black bands around the picture), sometimes pieces of Canon's screen on top.
+- **Timeline (boot log, LCD):** INFO at 12020 ms; band moved back at 12109 (next frame after XPan's task asked); XPan's exit step at 12191 (`canon_layout_state` 2 -> 0, unfreeze, `xpan_photo_hud_force_redraw()`, `redraw()`). XPan's own swallows INFO, so Canon gets no INFO press.
+- **Why it showed only now:** before `8ebaedbfdf40`, leaving the Canon layout changed the band, so 1 s later the forced restart opened and closed Canon's menu and everything was redrawn. That covered whatever the exit left on screen.
+- **Not known from the code:** on DIGIC 8 `redraw()` makes Canon repaint its Live View screen into the shared layer (`dialog_redraw(LiveViewApp_dialog)`, GuiMainTask) while XPan's HUD draws from the shoot task and ML's layer push runs from `redraw_task`. The push writes every pixel only when `zebra_should_run()`, else it keeps Canon's pixels under ML's transparent ones (`rgb_layer_partial`). With Debug info ON the HUD redraws at every LV info pass, so a HUD that stays missing means its draw or its push is blocked, not a one-off race. Which one is what the trace shows.
+- **Trace (Debug info only, read only, ~1 KB):** for 3 s after each Canon layout exit, at each shoot-task step for 1.5 s then at each change: HUD draws, ML layer pushes (all pixels / partial), `zebra_should_run`, `get_global_draw`, `liveview_display_idle`, refresh frozen / needed, Canon front buffer, ML redraw stage, gui state, Canon's overlay and GUI modes, HUD row, band, display, HUD on, Canon layout. Written to XM50.LOG ("LX" lines) after the 3 s. Build check: read only, Debug info only.
+
+Test: Debug info ON, LCD, 65:24. Cycle INFO through every layout 6-8 times, pausing ~4 s after leaving the Canon layout each time. Note which exits showed the fault (e.g. "2nd and 5th"), then bring the card.
+
+Camera test of `0aba2b6a960d` (user): every exit from the Canon layout, the HUD never came back; black background, sometimes parts of Canon's screen. Trace (XM50.LOG, exits at 21770, 36750 ...): the whole 3 s, `zebra_should_run` 1, global draw 1, display idle 1, not frozen, HUD on, not clipped, HUD row 266, Canon's front buffer off; `need` goes 1 -> 0 every 50-250 ms, so the HUD draws and ML's layer is pushed in full (every pixel) all the time. The HUD is in ML's layer and pushed, yet not on screen. (The counters printed "u": ML's snprintf has no `%u`.) The Ximr words the log keeps (+0x00..+0xBC) were the same as at start, but ML's own RGBA layer record sits after them: RAM dump, context +0xD8 `MARV`, data `0x02B9E100` (= ML's push target), format `0x05040100`, 960x540, Canon's MARV `0x02D9851C`-0x1C, flags 0x100, alpha 0xFF.
+
+Diagnostic `8f24dadbfa61`: snapshots at the Canon layout entry, the exit and the exit + 1.5 s, each with Ximr context words +0xC0..+0xFC (ML's layer record) and one HUD row (HUD row + 40) of ML's bitmap compared with Canon's RGBA layer (`rgb_layer_probe_row`, bmp.c: ML pixels not empty, layer pixels with alpha, layer pixels equal to ML's). Read only, Debug info only, build check. If the layer holds ML's pixels after the exit, the compositor is not showing that layer (its record changed); if not, the pixels are overwritten after the push.
+
+Test: Debug info ON, LCD, 65:24: INFO into the Canon layout and out 4 times, ~4 s after each exit.
+
+Camera test of `8f24dadbfa61` (user: all exits failed except the first, maybe the second, and the last). Snapshots, every exit: at exit + 1.5 s the HUD row is 720/720 in ML's bitmap, 720/720 in Canon's RGBA layer, layer == ML 720/720; Ximr's record of that layer (+0xD8: MARV, data `0x02B9E100`, `0x05040100`, 960x540, flags 0x100, alpha 0xFF) never changes. So ML's pixels are in the layer the compositor reads, and are still not on screen: the compositor's output is not what the display shows.
+
+**Cause (ROM):** Canon's surface refresh `refreshVrmsSurface` (E0528540, its own message "Call refreshVrmsSurface But m_fRefreshDisplay is FALSE"; state at 0xFC08) does: if `m_fRefreshDisplay` (+0x7C); set the output (E0528258); `take_semaphore(winsys_sem, 0)` (E0528660); `XimrExe(0x9329C)` (E052866A) into the current OSD buffer (Ximr context +0x90: UYVY 736x480 + alpha, two buffers `0x41100100` / `0x41340400`); build the OSD info (E0527FFC) and `DISP_SetUpdateOSDVram` (E0537E54) so the display shows that buffer; switch to the other buffer. winsys_sem is given back by the display (`E0525FA0`, registered with E0538218 at E05260B2) once it has switched. Canon's window system calls it from its refresh-rect paths ("refresh x=%d y=%d w=%d h=%d", "refresh2 ..."), bracketed only by its performance markers (`E01494D6`, winsys_util.c "WinSys_Draw").
+ML's push did only `XimrExe` and gave winsys_sem itself: it renders into whatever buffer the context names and never asks the display to show it. It shows only while that buffer is the one on screen. In the Canon layout Canon refreshes several times; after the exit the context can name the other buffer, and since Canon's screen then stays still, nothing shows ML's render again. The successful exits are the ones where the buffers happened to line up.
+
+**Fix (`5761b9766d0c`, first use of Canon's refresh by ML, not camera-tested):** ML writes its pixels under winsys_sem as before, gives it, and calls Canon's `refreshVrmsSurface()` (stub E0528540), which takes winsys_sem itself, renders, shows the buffer and lets the display give the semaphore back, as for Canon's own GUI. No other change. Callers of the push: redraw_task, the menu redraw flood, XPan's Canon UI dim (GUI task) and Canon layout push (shoot task), none under bmp_lock, all only with the display on (the push returns first otherwise; Canon's function also returns at once when `m_fRefreshDisplay` is false). `check_m50_rom.py` checks the function, its semaphore take, XimrExe and DISP calls, the context literal and the callback registration; `build_xpan.sh` checks that the M50 push no longer calls XimrExe itself and gives winsys_sem right before the call. The exit trace stays (Debug info).
+
+Test (on its own; it changes how every ML screen update reaches the display): power on, HUD as usual; INFO through all layouts and the Canon layout several times on the LCD and the EVF; ML's menu open/close; Canon's menu and playback and back; a photo. If the screen freezes or goes black, wait 10 s, then battery out.
+
+**Camera test of `5761b9766d0c`: FAILED.** Err 70 at the first start; at the next start every layout was broken. Boot log of the Err 70 start: ML's start done at 2.13 s, then at 2.30 s Canon's GUI left idle (XPan dimmed for "Canon's UI"), PROP_LV_ACTION 1 at 2.36 s, Live View stopped, the display setter got 15 calls in that second and 0 after: Canon died within 0.2 s of ML's first pushes through `refreshVrmsSurface`. Its first part (output setup E0528258, one-time init E0528496 with flag +0x50, buffer bookkeeping +0x18..+0x24) runs before it takes winsys_sem, so it is not safe to call from a second task next to Canon's GUI task; also the display's callback gives winsys_sem once per Canon refresh, and ML's extra take/give pairs around it may not match Canon's count. Not proven which; no Canon log of that start.
+Reverted (`63ad38560f4e` = source of `8f24dadbfa61` + this note + a build check: no `refreshVrmsSurface` stub or call). The card is back on `8f24dadbfa61` (tested: works, HUD missing after the Canon layout).
+
+Open (offline first): which task(s) Canon calls `refreshVrmsSurface` from (winsys refresh-rect paths E054D3C4 / E054DDFA); whether a refresh can be asked of Canon's own task without Canon drawing its Live View screen; and when Canon's output buffer (context +0x90) differs from the one on display. ML's own `src/compositor.c` (other DIGIC 8 bodies) notes that refreshVrmsSurface is "not needed as we do XimrExe() in bmp.c".
+
+**ROM study (2026-11-12, offline, no build).**
+- *Who refreshes.* Only `refreshVrmsSurface` (E0528540) sets Ximr's output (E0528258; its tail call E011BF50 copies Canon's current buffer record into the context) and asks the display to show a buffer (E0537E54 is called only at E0528686). It runs only through the wrapper E05286C4 when the wrapper's 6th argument is set. The callers are Canon's window-system refresh paths (E054D466, E054DAFE, E054DD4E, E054DE3C) and a BMP viewer app (E01FEBC0..., DlgMnBmpDisplay, not in Live View). E054DE3C is skipped while word +0x20 of 0xFCE4 is set. Each call clears `m_fRefreshDisplay` (+0x7C) at its end; when that flag is false the call only prints its message. It never gives winsys_sem itself.
+- *Order inside it.* It sets the output to Canon's current buffer (+0x20), takes winsys_sem and runs XimrExe into that buffer. It then builds PDISPOSDINFO from the same buffer (E0527FFC: its +4 / +8 / +0x10 / +0x14), calls `DISP_SetUpdateOSDVram`, and moves +0x20 to the other buffer. So after a Canon refresh the context names the buffer just sent to the display, and ML's bare XimrExe renders into that one. A mismatch can only happen if the display did not switch.
+- *The display side.* `DISP_SetUpdateOSDVram` posts two events to DispVCtrl: 19 (`DV_NotifyOSDVramAddr`) and 15 (`DV_SetUpdateOSDVram`). DispVCtrl's struct is at `*(0x8E08)`; its state object `DispVramCtrlState` is at +8 (table E0B4CBBC: 22 events x 2 states).
+  - Event 19 (both states) and event 15 in state 0 (E0103C64) only store the info (+0x1D0, 40 bytes; +0x1CC is the output) and give winsys_sem back at once. The panel is **not** switched.
+  - Event 15 in state 1 (E0104038, then localSetUpdateOSDVram E0103EA8) switches each output that is on (+0x1C8: 1 panel, 0x10 EVF, 0x1000 HDMI) through E01388EE (panel, with the OSD mute +0x30). It gives winsys_sem from the output's vsync callback (E0103CF2 "PanelVsyncCallBack2").
+  - The stored info is applied again when an output turns on (E0105F64, from E0106176).
+- *Two explanations fit the camera data, and the ROM cannot pick one:*
+  - (A) After the Canon layout, Canon's later refreshes reach DispVCtrl in state 0, or with the panel off in +0x1C8. They are stored, not shown. The panel keeps an older buffer (stale Canon pieces) while Canon and ML go on rendering into the others.
+  - (B) Canon makes no refresh after the exit (`m_fRefreshDisplay` false, or the window-system refresh suspended), and the panel's last switch was to a buffer ML no longer renders into.
+- *What would tell them apart:* a read-only, Debug-info-only log taken with the exit snapshots, recording:
+  - Ximr's LCD output address (context +0x94);
+  - Canon's 0xFC08 +0x18 / +0x1C / +0x20 (each record's +4) and +0x7C;
+  - DispVCtrl's state (`*(*(0x8E08)+8)+8`), +0x1C8, +0x1CC and the first two words of the stored info (+0x1D0, +0x1D4).
+  If +0x1D0 (the buffer Canon last asked for) equals the context output while the screen is stale, it is (A). If they differ, it is (B).
+- *A fix stays on Canon's own path.* For (B) the answer is a Canon refresh in Canon's own task (the GUI's own redraw), not ML calling Canon's refresh (`5761b9766d0c`). For (A) it is whatever puts DispVCtrl back in state 1, which Canon does itself when Live View or the panel comes back.
+
+Diagnostic `b0f2c6ac5e0a` (= `63ad38560f4e` + the values above): each Canon layout snapshot (entry, exit, exit + 1.5 s) adds two lines to its LXS entry in XM50.LOG:
+- "OSD out lcd / evf": Ximr's output addresses;
+- "canon rec / cur / refresh / bufs": 0xFC08 +0x18, +0x1C, +0x20, +0x7C and each record's address;
+- "OSD disp state / on / out / sent / mute": DispVCtrl's state, +0x1C8, +0x1CC, +0x1D0 / +0x1D4, +0x30;
+- "winsys skip": 0xFCE4 +0x20.
+Read only, each word through a RAM check (`lx_word`, 0xDEAD0000 if a pointer is bad); Debug info only; about 0.7 KB. The build checks it reads only, calls nothing of Canon's and runs only from the snapshot. No change to how ML or Canon draw.
+
+Test: Debug info ON, LCD, 65:24. INFO into the Canon layout and out 4 times, ~4 s after each exit; note which exits lost the HUD. Then bring the card.
+
+**Camera test of `b0f2c6ac5e0a`** (user): exits 1-3 lost the HUD, exit 4 was right. Leaving ML's menu after boot also lost it, so this is not only the Canon layout.
+- DispVCtrl's state was 0 in every snapshot, good and bad, so (A) is ruled out. State 0 is the normal state; the ROM study's table read had the two states the wrong way round.
+- In the record lines, A = record 41202d00 / buffer 41100100, B = record 41443000 / buffer 41340400.
+- A completed Canon refresh always leaves: Ximr output = the buffer sent = not Canon's next buffer. Every good snapshot shows this, for example entry 43261: output B, next A, sent B.
+- Every bad exit + 1.5 s shows: Ximr output B, Canon's next buffer **B**, sent **A**, `m_fRefreshDisplay` 0. The good exit + 1.5 s shows output B, next A, sent B.
+- So on the bad exits Canon's next refresh had begun. Its first part had set Ximr's output to Canon's next buffer B (E0528258), but it had not rendered, sent or switched. The screen stays on A, which holds Canon's old screen; ML renders into B, which is not shown.
+- The only blocking step between those two points is `take_semaphore(winsys_sem, 0)` at E0528660. The refresh finished by the next Canon layout entry, when XPan freezes ML's pushes.
+
+Diagnostic `3b386d43f38f` (= `b0f2c6ac5e0a` + this): at exit + 1.5 s, if the Ximr output differs from the buffer last sent, XPan asks for Canon's log once per start, through the menu request's tested path. That path writes the task states into Canon's log (`m50_log_tasks`: each task's state, wait object and stack return addresses), then calls `dumpf`. The log also gets a new "XPW" line: winsys_sem's first four words (count, waiters), read only. Boot mark 81 = 4. Debug info only; build checks for once-only, Debug-only and the request path.
+
+Test: as before (Debug info ON, LCD, INFO into the Canon layout and out 4 times), then wait 10 s and bring the card. A new LOGnnn.LOG should be on the card.
+
+**Camera test of `3b386d43f38f`** (user): exits 1 and 2 bad, 3 and 4 right. Canon's log `LOG022.LOG` was saved at exit 1 + 1.5 s.
+- **Task states.** GuiMainTask was waiting on its message queue (w4), and no task was waiting on winsys_sem. So Canon's refresh is not stuck, and the "next refresh waiting at take_semaphore" reading is wrong.
+- **Snapshots.** Exit 2 was already wrong at the exit (output B, next B, sent A, refresh pending), and wrong again at + 1.5 s with the letters swapped (output A, next A, sent B). A single refresh always leaves output = sent, so each refresh there produced the mismatch again.
+- **Only code path that fits.** Two refreshVrmsSurface calls overlap:
+  - the first sets the output to Canon's next buffer X and waits for winsys_sem;
+  - a second, from another task, also sets the output to X and waits;
+  - the first renders X, sends X and moves Canon's next buffer to Y;
+  - the second renders X again but sends Y.
+  The screen shows Y (old content); ML renders into X.
+- **Why ML matters.** The window for this is the wait on winsys_sem. ML's layer push holds it while converting 720x480 pixels, which widens that wait; Canon alone rarely overlaps.
+- **Who calls.** Canon's log at exit 1 shows Canon handling INFO itself ("SwINFO_Button", "AFFrame PRESS_BUTTON_SOMETHING", "MainGuide_Clear") and two full window refreshes 70 ms apart ("[WINSYS] refresh x=120 y=30 w=720 h=480"; Canon's log time = XPan's + about 2116 ms).
+  - ML's `redraw()` posts `MLEV_REDRAW`, so its `dialog_redraw` runs in GuiMainTask.
+  - The whole-screen refresh E054DAD0 has hundreds of callers across the firmware, so the ROM alone cannot say which other task makes the second call.
+- **No refreshVrmsSurface hook.** Its page (E052) is not hooked yet; an 8th MMU page is what gave Err 70 at boot on 2026-11-10 (memory rule), and every hooked page is in use by a working feature.
+
+Diagnostic `8a8dce8ae6f3` (= `3b386d43f38f` + an OSD send probe):
+- **The hook.** It sits on `DV_SetUpdateOSDVram` E00EF372, the end of each refreshVrmsSurface, in the calling task. E00EF372 is in the page already hooked for the colour table (E00E), so the MMU pages stay at 7 and ML grows by under 1 KB.
+- **What it records, per send:** the task, the buffer sent (OSD info word 0) and the buffer Ximr rendered (context +0x94).
+- **XM50.LOG lines** (Debug info):
+  - "OSD sends from <task>: n, rendered != sent m" for each task that sends;
+  - for each bad send, the send before it and the bad one ("OSD send before/BAD: <task> sent X rendered Y").
+- **Checks.** The trampoline replays 8 bytes (push, mov, movs, the bl through r3) and resumes at E00EF37C. `check_m50_rom.py` checks the bytes, the callee E055B094 and the tail call E0537EC8. Build checks: read only, Canon's call made exactly once, hook list.
+
+Test (on its own, a new hook in Canon's display path; if the screen freezes or goes black, wait 10 s, then battery out): Debug info ON, LCD, INFO into the Canon layout and out 4 times; then ML's menu open and closed once; wait 10 s; bring the card.
+
+**Camera test of `8a8dce8ae6f3`** (user): no hang; only the 4th exit right. The probe confirms the overlap:
+- **Two senders only:** CtrlSrv (9 sends, 6 bad) and GuiMainTask (26 sends, 1 bad).
+- **Every bad send** comes 4 to 19 ms after a send from the other task, at a Canon layout entry or exit. Example at exit: CtrlSrv sent B (rendered B), then GuiMainTask sent A with B rendered. The later refresh rendered the buffer the earlier one had just shown and sent the other one.
+- **Who they are.** CtrlSrv is Canon's own refresh for the INFO change. GuiMainTask's is ML's `redraw()`, which XPan posts at each layout change (`dialog_redraw` → winsys refresh → refreshVrmsSurface). The two run at the same moment because both react to the same INFO press.
+- **Next (proposed fix).** Repair on the event, with no wait: when the probe sees a send whose buffer differs from the rendered one, XPan's task calls `redraw()` once more. That runs one more full refresh in GuiMainTask, which leaves output = sent. No new hook or MMU page; the probe stays, without its log in normal builds.
+
+Fix build `5968e6e94392`:
+- **Probe:** a bad send right after a send from another task (the overlap's signature) adds 1 to a count. The probe still only reads and counts; it never redraws in Canon's display path.
+- **XPan's task** (`xpan_m50_canon_ui_step`): when the count changes, it calls `redraw()` once, only in XPan's Live View with the display on, Canon idle, no menu and not in the Canon layout. A count from inside the Canon layout waits for the exit. Debug info marks each repair (boot mark 82).
+- **Bounded:** a repair redraw can collide again only with another CtrlSrv refresh, which is rare, and each collision costs one more redraw. A steady mismatch from a single task (no overlap) is never counted.
+- **Build checks:** no redraw in the probe; the count is written only there and only on the signature; the repair conditions; one redraw per count.
+- Memory unchanged (margin 205184 bytes, MMU pages 7).
+
+Test: Debug info ON, LCD, INFO into the Canon layout and out 6 times; ML's menu open and closed twice; the HUD should come back each time.
 
 ## Next phases
 

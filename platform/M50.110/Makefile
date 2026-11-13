@@ -58,8 +58,9 @@ zip_contents:: $(ZIP_DIR) $(BUILD_DIR)/magiclantern.sym | $(BUILD_DIR)
 	find $(XPAN_DATA_DIR)/LUTS -maxdepth 1 -type f -iname '*.cube' -exec $(CP) {} $(ZIP_DIR)/ML/XPAN/LUTS/ \;
 	# Cineon tone base for the Custom LUT (xpan-m50.c m50_base_load).
 	$(CP) $(XPAN_DATA_DIR)/CINLV.cube $(ZIP_DIR)/ML/XPAN/
-	# M50's own base for Cineon log +1 EV (build_tools/xpan_m50_cin1ev.py).
-	$(CP) $(XPAN_DATA_DIR)/M50/CIN1EV.cube $(ZIP_DIR)/ML/XPAN/
+	# Boot-flag installer (Canon menu > Firmware update), as other ML zips carry
+	# ML-SETUP.FIR; xpan_update_card.ps1 never copies it to the working card.
+	$(CP) $(TOP_DIR)/extras/M50/BOOT_M50.FIR $(ZIP_DIR)/
 	rm -f $(ZIP_MODULES_DIR)/*.mo $(ZIP_MODULES_DIR)/*.MO $(ZIP_MODULES_DIR)/*.hid $(ZIP_MODULES_DIR)/*.HID
 endif
 .DEFAULT_GOAL := $(BUILD_DIR)/cam_complete

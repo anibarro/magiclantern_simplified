@@ -159,6 +159,34 @@ def C(J):
     """Target: Cineon code (0..1) of a -1 EV render value J."""
     return cineon((shoulder(X_of(J)) if J > 0 else 0.0) * gain)
 
+# Normal render (XPAN_RENDER0=1, README "XPan Cineon from Canon's curve"):
+# the same fitted curve for Canon's render at its own gains, the M50's
+# replacement for the EOS M's CINLV. A gain-0 value J is the scene of the
+# -1 EV render's J at half the light: X = X_raw(J) / 2. Canon's normal white
+# sits at W0 (the -1 EV render's J = w above: 0.35 EV under the sensor
+# clip), so the curve ends there and the shoulder ends at W0, not at 1.
+import os
+RENDER0 = os.environ.get('XPAN_RENDER0') == '1'
+W0 = X_of(w)
+if RENDER0:
+    def C(J):
+        if J <= 0: return cineon(0.0)
+        return cineon(W0 * shoulder(min(1.0, X_raw(J) / 2 / W0)) * gain)
+    print('normal render: Canon white at %.3f (%.2f EV under the sensor clip); Cineon top %.0f; J 32/64/128/192/255 -> %s' % (
+        W0, -math.log2(W0), C(255) * 1023, ' '.join('%.0f' % (C(j) * 1023) for j in (32, 64, 128, 192, 255))))
+    # The camera builds this base itself (src/xpan-m50.c m50_cin0_build),
+    # with the user's Shoulder knee / slope: it needs only the scene value
+    # of Canon's 17 grey nodes J = 0, 255/16, ... 255, relative to Canon's
+    # white (xpan_m50_bcurve.py --cin0 makes the node table from them).
+    with open(out_path, 'w') as nf:
+        nf.write('# xpan_m50_cin1ev.py XPAN_RENDER0=1: Canon white %.6f of the sensor clip; scene / white at J = j x 255/16\n' % W0)
+        nf.write('%.6f\n' % W0)
+        for j in range(17):
+            J = j * 255 / 16
+            nf.write('%.6f\n' % (min(1.0, X_raw(J) / 2 / W0) if J > 0 else 0.0))
+    print('written %s (17 grey nodes)' % out_path)
+    sys.exit(0)
+
 # Table-step compensation (camera test IMG_2754-2761: lower mid-tones about
 # 12 % too steep). The camera applies the base only at Canon's colour table
 # nodes; on the grey axis Canon's Neutral nodes sit at J = 0, 32, ... 255
@@ -231,11 +259,10 @@ for name, fn in (('exact curve', C), ('table, without', lambda J: table(plain, J
 # the photos' own pixels it cuts the error from 23 to 21 codes per pixel and
 # makes other tones worse; the error sits inside Canon's first table segment
 # (J 0..32), which no node value can bend. XPAN_STEPCOMP=1 applies it anyway.
-import os
 STEP = os.environ.get('XPAN_STEPCOMP') == '1'
 N = 17
-lines = ['TITLE "XPan M50 Cineon log base, highlight headroom -1 EV (Canon Neutral tone curve inverted, fitted on IMG_2736-2747; shoulder from %.1f EV below the clip%s)"' % (
-             knee, '; table-step compensated' if STEP else ''),
+lines = ['TITLE "XPan M50 Cineon log base, %s (Canon Neutral tone curve inverted, fitted on IMG_2736-2747; shoulder from %.1f EV below the %s%s)"' % (
+             "Canon's own gains" if RENDER0 else 'highlight headroom -1 EV', knee, "render's white" if RENDER0 else 'clip', '; table-step compensated' if STEP else ''),
          'LUT_3D_SIZE %d' % N, 'DOMAIN_MIN 0 0 0', 'DOMAIN_MAX 1 1 1']
 for bi in range(N):
     for gi in range(N):

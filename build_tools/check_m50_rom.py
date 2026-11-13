@@ -202,15 +202,6 @@ def main():
         0xE0426684: "01eb500080b27047",  # add.w r0,r1,r0,lsr #1; uxth r0,r0; bx lr (where the trampoline continues)
         0xE04266A4: "70b50546fff7e8ff04462846faf7ecfaa4eb500080b270bd",  # top getter: bl E042667C; bl E0420C8C; sub.w r0,r4,r0,lsr #1; uxth (unsigned: Bottom cannot shift the area)
         0xE042268A: "2de9fc5f04469846",  # AF box on screen: push.w {r2-r11,ip,lr}; mov r4,r0; mov r8,r3
-        # Hilton probe (README "Still processing path"): the whole function XPan's replaces, its two
-        # register writers and its two callers
-        0xE08DB920: "10b50c4608b109f0e6fe002c04d02046bde8104009f039bf10bd",  # if (obwb) E08E56F6(obwb); if (corr) return E08E57AA(corr);
-        0xE08E56F6: "4b490268c1f8d020",  # Hilton OBWB writer: ldr r1,=regs; ldr r2,[r0]; str.w r2,[r1,#0xd0]
-        0xE08E57AA: "1e490268c1f83021",  # Hilton Corr writer: ldr r1,=regs; ldr r2,[r0]; str.w r2,[r1,#0x130]
-        0xE08C7FC4: "13f0acbc",          # wrapper: b.w E08DB920
-        0xE08C8A54: "12f064bf",          # wrapper: b.w E08DB920
-        0xE08AF01A: "18f0d3ff",          # StartPreDevelopPath: bl E08C7FC4
-        0xE08B02BA: "18f0cbfb",          # StartRecoverPath: bl E08C8A54
     }
     gs_ok = True
     for addr, hexbytes in gs.items():
@@ -244,6 +235,47 @@ def main():
     if dsp_ok:
         print("ROM check: display-off flag 0x8EB9 and its writers (GUILock E065AD8A) as expected")
     ok = ok and dsp_ok
+
+    # Canon's surface refresh (src/bmp.c refresh_yuv_from_rgb, README-XPAN-M50.md
+    # "Canon layout exit: HUD missing"): refreshVrmsSurface E0528540 (no
+    # arguments, state at 0xFC08, m_fRefreshDisplay +0x7C) takes winsys_sem
+    # (E0528660: take_semaphore(*(FC08+8), 0)), XimrExe(0x9329C) at
+    # E052866A, then DISP_SetUpdateOSDVram E0537E54 at E0528686; the display
+    # gives winsys_sem back through E0525FA0, registered at E05260B2.
+    rvs = {
+        0xE0528540: "70b50a4c8ab0e06f70b1606a04f1800558b1a169206aaa6888426ad1",
+        0xE0528660: "a06800214ff0fafaf348adf7cbf6",
+        0xE0528680: "fff7bcfc68460ff0e5fb",
+        0xE052856C: "08fc0000",
+        0xE0528A38: "9c320900",
+        0xE0525FA0: "f948806851f097be",
+        0xE0526388: "08fc0000",
+        0xE05260B2: "d648002112f0aff8",
+        0xE052640C: "a15f52e0",
+        # OSD send probe (xpan_m50_osdupd): DV_SetUpdateOSDVram's first 10
+        # bytes (the trampoline replays 8, resumes at E00EF37C), the function
+        # its bl calls, and DISP_SetUpdateOSDVram's tail call to it.
+        0xE00EF372: "38b5054628206bf08cf6",
+        0xE055B094: "30b50546",
+        0xE0537EC8: "b7f753b2",
+        # David probe (xpan_m50_david): the whole function XPan's replaces
+        # (E011E0A4(p1, p2, relight, a3, s0); return E011E148(s1)), its two
+        # callees and its only caller (DevelopPath).
+        0xE00E7320: "38b5dde90445009436f0bcfe2846bde8384036f009bf",
+        0xE011E0A4: "2de9fe430f460100",
+        0xE011E148: "1fb5002101280091",
+        0xE0083570: "63f0d6fe",
+    }
+    rvs_ok = True
+    for addr, hexbytes in rvs.items():
+        want = bytes.fromhex(hexbytes)
+        got = rom[addr - ROM0_BASE: addr - ROM0_BASE + len(want)]
+        if got != want:
+            print("ROM check: ERROR surface refresh code at %08X differs (%s)" % (addr, got.hex()))
+            rvs_ok = False
+    if rvs_ok:
+        print("ROM check: refreshVrmsSurface E0528540 (winsys_sem, XimrExe, DISP_SetUpdateOSDVram) as expected")
+    ok = ok and rvs_ok
     return 0 if ok else 1
 
 

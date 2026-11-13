@@ -205,6 +205,10 @@ extern struct semaphore *winsys_sem;
  * skipped refresh stays pending and is retried, never a wait forever. XPan
  * logs the layer (xpan-m50.c, XM50.LOG). */
 volatile unsigned rgb_layer_changes, rgb_layer_skips;
+/* Pushes of ML's layer, and those that kept Canon's pixels under ML's
+ * transparent ones (zebra_should_run() off): XPan's Canon layout exit trace
+ * (README-XPAN-M50.md "Canon layout exit: HUD missing"), read only. */
+volatile unsigned rgb_layer_pushes, rgb_layer_partial;
 volatile uint32_t rgb_layer_marv, rgb_layer_data, rgb_layer_w, rgb_layer_h;
 #define RGB_LAYER_LOCK_MS 200
 static int rgb_layer_current(void)
@@ -305,6 +309,9 @@ void refresh_yuv_from_rgb(void)
         }
 #endif
 #if !defined(CONFIG_INSTALLER)
+#if defined(CONFIG_M50)
+        rgb_layer_partial++;
+#endif
     }
 #endif
 
@@ -312,8 +319,12 @@ void refresh_yuv_from_rgb(void)
 #ifdef CONFIG_DIGIC_VI
     XimrExe((void *)XIMR_CONTEXT);
 #elif defined(CONFIG_M50)
+    /* Not Canon's refreshVrmsSurface from here: called from ML's tasks
+     * next to Canon's GUI task it ended in Err 70 at the first start
+     * (5761b9766d0c, README-XPAN-M50.md "Canon layout exit: HUD missing"). */
     XimrExe((void *)XIMR_CONTEXT);      /* winsys_sem taken above */
     give_semaphore(winsys_sem);
+    rgb_layer_pushes++;
 #else
     take_semaphore(winsys_sem, 0);
     XimrExe((void *)XIMR_CONTEXT);
@@ -321,6 +332,30 @@ void refresh_yuv_from_rgb(void)
 #endif
     ml_refresh_display_needed = 0;
 }
+
+#if defined(CONFIG_M50)
+/* XPan's Canon layout exit trace (README-XPAN-M50.md "Canon layout exit:
+ * HUD missing"), read only: one row of ML's 720x480 bitmap against the same
+ * row of Canon's RGBA layer as ML's push writes it. n[0] ML pixels not
+ * empty, n[1] layer pixels with alpha, n[2] layer pixels equal to ML's. */
+void rgb_layer_probe_row(int y, int n[3])
+{
+    n[0]=n[1]=n[2]=-1;
+    struct MARV *m = _rgb_vram_info;
+    if (!bmp_vram_indexed || !m || !m->bitmap_data || y < 0 || y >= 480) return;
+    if ((uint32_t)m != rgb_layer_marv || (uint32_t)m->bitmap_data != rgb_layer_data) return;
+    const uint8_t *b = bmp_vram_indexed + BMP_HDMI_OFFSET + y * BMPPITCH;
+    const uint32_t *rgb = (const uint32_t *)m->bitmap_data + (b - bmp_vram_indexed);
+    n[0]=n[1]=n[2]=0;
+    for (int x = 0; x < 720; x++)
+    {
+        uint32_t want = indexed2rgb(b[x]);
+        if (b[x] != COLOR_EMPTY) n[0]++;
+        if (rgb[x] & 0xff000000) n[1]++;
+        if (rgb[x] == want) n[2]++;
+    }
+}
+#endif
 
 void rgba_buffer_clear()
 {

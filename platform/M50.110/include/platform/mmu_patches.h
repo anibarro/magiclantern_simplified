@@ -51,11 +51,18 @@ extern int xpan_m50_area_cy(void);
 /* src/xpan-m50.c: AF box on-screen rectangle, row moved down with the band
  * in the Bottom layout. */
 extern int xpan_m50_af_box(void *out, int r1, int r2, int r3, int s0, int s1, int s2);
-/* src/xpan-m50.c: Canon's hand-over of the Hilton blocks (black level / white
- * balance gains on the 14-bit data) to their register writers; XPan's
- * function makes the same two calls and logs the blocks. Read only.
- * README-XPAN-M50.md "Still processing path". */
-extern int xpan_m50_hilton(void *obwb, void *corr);
+/* src/xpan-m50.c: Canon's OSD send (DV_SetUpdateOSDVram) probe, read only:
+ * which task sends which buffer, against the one Ximr rendered. A stale send
+ * from overlapping refreshes is counted; XPan's task then redraws once.
+ * README-XPAN-M50.md "Canon layout exit: HUD missing". Same 64 KB page as
+ * the colour table hook. */
+extern int xpan_m50_osdupd(void *info);
+/* src/xpan-m50.c: Canon's hand-over of the still's David blocks (picture
+ * parameters) to their register writers: XPan's function makes Canon's two
+ * calls, logs the blocks (Debug info) and, for Tone base XPan Cineon, passes
+ * a copy with Canon's contrast-0 curve B. README-XPAN-M50.md "XPan Cineon
+ * from Canon's curve". Same 64 KB page as the colour table hook. */
+extern int xpan_m50_david(void *p1, void *p2, void *relight, int a3, int s0, int s1);
 #endif
 
 struct function_hook_patch normal_code_patches[] =
@@ -110,10 +117,16 @@ struct function_hook_patch normal_code_patches[] =
         .description = "XPan AF box (Bottom)"
     },
     {
-        .patch_addr = 0xe08db920, // pre-develop: Hilton blocks -> register writers (E08E56F6, E08E57AA)
-        .orig_content = {0x10, 0xb5, 0x0c, 0x46, 0x08, 0xb1, 0x09, 0xf0}, // push {r4,lr}; mov r4,r1; cbz r0,+; bl E08E56F6 (first half)
-        .target_function_addr = (uint32_t)xpan_m50_hilton,
-        .description = "XPan Hilton probe"
+        .patch_addr = 0xe00ef372, // DV_SetUpdateOSDVram (tail of DISP_SetUpdateOSDVram E0537EC8, from refreshVrmsSurface)
+        .orig_content = {0x38, 0xb5, 0x05, 0x46, 0x28, 0x20, 0x6b, 0xf0}, // push {r3-r5,lr}; mov r5,r0; movs r0,#40; bl E055B094 (first half)
+        .target_function_addr = (uint32_t)xpan_m50_osdupd,
+        .description = "XPan OSD send probe"
+    },
+    {
+        .patch_addr = 0xe00e7320, // David blocks -> register writers (E011E0A4, E011E148), only caller E0083570 (DevelopPath)
+        .orig_content = {0x38, 0xb5, 0xdd, 0xe9, 0x04, 0x45, 0x00, 0x94}, // push {r3-r5,lr}; ldrd r4,r5,[sp,#16]; str r4,[sp]
+        .target_function_addr = (uint32_t)xpan_m50_david,
+        .description = "XPan David probe"
     },
 #endif
 };
