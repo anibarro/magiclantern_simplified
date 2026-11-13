@@ -150,3 +150,32 @@ unsigned int UnLockEngineResources(struct LockEntry *lockEntry)
 {
    return 0;
 }
+
+/* fsuDecodePartitionTable is inlined in Canon's M50 code (the old stub was a
+ * placeholder that would crash). ML's bootflags.c needs only the type and
+ * the start sector of the first MBR entry; read byte by byte, since the
+ * entry at offset 446 is not 4-byte aligned (README-XPAN-M50.md "Keep ML
+ * after a Canon format"). */
+struct partition_table
+{
+    uint8_t  state;
+    uint8_t  start_head;
+    uint16_t start_cylinder_sector;
+    uint8_t  type;
+    uint8_t  end_head;
+    uint16_t end_cylinder_sector;
+    uint32_t sectors_before_partition;
+    uint32_t sectors_in_partition;
+}__attribute__((packed));
+void fsuDecodePartitionTable(void *part_in, struct partition_table *t)
+{
+    const uint8_t *p=(const uint8_t *)part_in;
+    t->state=p[0];
+    t->start_head=p[1];
+    t->start_cylinder_sector=(uint16_t)(p[2]|p[3]<<8);
+    t->type=p[4];
+    t->end_head=p[5];
+    t->end_cylinder_sector=(uint16_t)(p[6]|p[7]<<8);
+    t->sectors_before_partition=(uint32_t)p[8]|(uint32_t)p[9]<<8|(uint32_t)p[10]<<16|(uint32_t)p[11]<<24;
+    t->sectors_in_partition=(uint32_t)p[12]|(uint32_t)p[13]<<8|(uint32_t)p[14]<<16|(uint32_t)p[15]<<24;
+}

@@ -132,7 +132,11 @@ bootflag_write_bootblock( void )
         #endif
     }
 
-#elif defined(CONFIG_R) || defined(CONFIG_200D) || defined(CONFIG_6D2) || defined(CONFIG_750D)
+#elif defined(CONFIG_R) || defined(CONFIG_200D) || defined(CONFIG_6D2) || defined(CONFIG_750D) || defined(CONFIG_M50)
+    // M50 (README-XPAN-M50.md "Keep ML after a Canon format"): RAM dump
+    // sd_device = {0xBC64FC (the device: read E01232BF, write E0123649),
+    // 0xE12781A4 (ROM data)}; read_block(dev, buf, sector, count) returns the
+    // sectors read (camera test a753e986ff2e: 1 and 24).
     // These only have one device struct.  Struct is 4 u32s,
     // first two are function pointers.  Check the "second" device
     // doesn't use the first two fields as function pointers.

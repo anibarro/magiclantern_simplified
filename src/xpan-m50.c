@@ -2683,14 +2683,14 @@ static void hal_cache_drop(void)
 /* XPan task: buffers and tables while Halation is ON, freed when OFF. */
 static void hal_poll(void)
 {
-    if (hal_broken==2) { hal_ready=0; snprintf(hal_status,sizeof(hal_status),"off: a stage worker is late (restart the camera)"); return; }   /* never free: a worker may still use the buffers */
+    if (hal_broken==2) { hal_ready=0; snprintf(hal_status,sizeof(hal_status),"off: worker late, restart"); return; }   /* never free: a worker may still use the buffers */
     int want=halation_wanted() && !hal_broken, pct=COERCE(halation_strength,1,100);
     if (want ? hal_ready && pct==hal_pct : !hal_raw[0]) return;
     if (get_halfshutter_pressed() || !grain_lock || take_semaphore(grain_lock,1000)) return;   /* 0 = taken */
     hal_ready=0;
     if (!want) {
         hal_free(); hal_pct=-1;
-        snprintf(hal_status,sizeof(hal_status),hal_broken ? "off: a halation step was late (restart the camera)" : "off");
+        snprintf(hal_status,sizeof(hal_status),hal_broken ? "off: step late, restart" : "off");
         give_semaphore(grain_lock);
         return;
     }
@@ -3438,16 +3438,19 @@ int xpan_m50_osdupd(void *info)
     uint32_t sent=cfg_ram((uint32_t)info) ? *(const volatile uint32_t *)info : 0;
     uint32_t out=((const volatile uint32_t *)XIMR_CONTEXT)[0x94/4];
     uint32_t old=cli();
-    osd_sends++;
-    int k=0;
-    while (k<OSD_TASKS && osd_tasks[k].name && osd_tasks[k].name!=me) k++;
-    if (k<OSD_TASKS && !osd_tasks[k].name) { osd_tasks[k].name=me; osd_names++; }
-    int bad=sent && sent!=out;
-    if (k<OSD_TASKS) { osd_tasks[k].sends++; if (bad) osd_tasks[k].bad++; }
+    int bad=sent && sent!=out, dbg=m50_dbg();
     /* The overlap's signature: a bad send right after a send from another
      * task. Counted only; XPan's task repairs it (xpan_m50_canon_ui_step). */
     if (bad && osd_last.task && osd_last.task!=me) osd_stale++;
-    if (bad && osd_ev_head-osd_ev_saved<=OSD_EVS-2) {
+    /* Per-task counts and the event log: Debug info only. */
+    if (dbg) {
+        osd_sends++;
+        int k=0;
+        while (k<OSD_TASKS && osd_tasks[k].name && osd_tasks[k].name!=me) k++;
+        if (k<OSD_TASKS && !osd_tasks[k].name) { osd_tasks[k].name=me; osd_names++; }
+        if (k<OSD_TASKS) { osd_tasks[k].sends++; if (bad) osd_tasks[k].bad++; }
+    }
+    if (dbg && bad && osd_ev_head-osd_ev_saved<=OSD_EVS-2) {
         osd_evs[osd_ev_head%OSD_EVS]=osd_last; osd_ev_head++;
         struct osd_ev *e=&osd_evs[osd_ev_head%OSD_EVS];
         e->ms=now; e->task=me; e->sent=sent; e->out=out; osd_ev_head++;
@@ -3616,6 +3619,11 @@ static int canon_dump_stuck_off(void)
     call("dumpf");
     return 1;
 }
+/* Keep ML after a Canon format (README-XPAN-M50.md): ML's own
+ * CONFIG_RESTORE_AFTER_FORMAT with the M50's values (consts.h, src/debug.c,
+ * src/bootflags.c, the M50 is_dir in src/fio-ml.c). XPan's probes for it
+ * (a753e986ff2e, c953fbf21b35, d56760d94889, 33312bc0ca31, 3d5d04c2510a)
+ * are removed. */
 static MENU_SELECT_FUNC(canon_dump_select) { (void)priv; (void)delta; canon_dump_request=1; }
 static MENU_UPDATE_FUNC(canon_dump_display)
 {
@@ -3817,6 +3825,7 @@ int xpan_m50_af_box(void *out, int r1, int r2, int r3, int s0, int s1, int s2)
         *row=(int16_t)(*row+td);
         moved=1;
     }
+    if (!m50_dbg()) return ret;                 /* caller counts: Debug info only */
     unsigned n=box_ncallers, i;
     for (i=0;i<n && box_callers[i].lr!=lr;i++) ;
     if (i==n && n<BOX_CALLERS) { box_callers[n].lr=lr; asm volatile("dmb" ::: "memory"); box_ncallers=n+1; }
@@ -4282,7 +4291,7 @@ static struct menu_entry xpan_m50_menu[]={
       .help="Film halation on the saved JPEG. LEFT/RIGHT: on/off. PLAY: strength.",
       .children=(struct menu_entry[]) {
         { .name="Strength", .priv=&halation_strength, .min=1, .max=100, .unit=UNIT_PERCENT,
-          .help="Glow amount: 30 subtle, 50 medium, 70 strong, 100 very strong." },
+          .help="30 subtle, 50 medium, 70 strong, 100 very strong." },
         MENU_EOL
       } },
     { .name="Diagnostics", .icon_type=IT_SUBMENU, .select=menu_open_submenu, .select_Q=menu_open_submenu,

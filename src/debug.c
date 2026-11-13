@@ -1485,9 +1485,16 @@ static int keep_ml_after_format = 1;
 static void HijackFormatDialogBox()
 {
     if (MEM(DIALOG_MnCardFormatBegin) == 0) return;
+#ifdef CONFIG_M50
+    /* M50: Canon's own pointer to its Format dialog (camera-tested), not
+     * gui_task_list's current task, whose layout is not checked on this body.
+     * Called in Canon's GUI task (MLEV_HIJACK_FORMAT_DIALOG_BOX). */
+    struct dialog * dialog = (struct dialog *) MEM(DIALOG_MnCardFormatBegin);
+#else
     struct gui_task * current = gui_task_list.current;
     struct dialog * dialog = current->priv;
     if (dialog && !streq(dialog->type, "DIALOG")) return;
+#endif
 
     if (keep_ml_after_format)
         dialog_set_property_str(dialog, 4, "Format card, keep ML " FORMAT_BTN_NAME);
@@ -1498,6 +1505,18 @@ static void HijackFormatDialogBox()
 
 static void HijackCurrentDialogBox(int string_id, char* msg)
 {
+#ifdef CONFIG_M50
+    /* M50: called from ML's debug task, and after the format the current
+     * dialog is Canon's menu: progress goes to ML's notify box instead of
+     * writing into whatever Canon dialog is current. Not while Canon's
+     * Format dialog is open (camera test 92589fc035bf: the "Reading..."
+     * boxes erased the dialog, black until a button press); that dialog
+     * already says "keep / remove ML". Errors are always shown. */
+    (void)string_id;
+    if (MEM(DIALOG_MnCardFormatBegin) && !strstr(msg, "error")) return;
+    NotifyBox(3000, "%s", msg);
+    return;
+#endif
     struct gui_task * current = gui_task_list.current;
     struct dialog * dialog = current->priv;
     if (dialog && !streq(dialog->type, "DIALOG")) return;
@@ -1766,6 +1785,14 @@ static void CopyMLFilesBack_AfterFormat()
 
 static void restart_after_format()
 {
+#ifdef CONFIG_M50
+    /* M50: PROP_REBOOT is not in the write whitelist (property_whitelist.h),
+     * so the request would be dropped: ask for an off/on instead. */
+    NotifyBox(10000, "Magic Lantern restored.\nTurn the camera off and on.");
+    beep();
+    msleep(10000);
+    return;
+#endif
     /* restart the camera after formatting */
     HijackCurrentDialogBox(FORMAT_STR_LOC, "Restarting camera...");
     msleep(1000);

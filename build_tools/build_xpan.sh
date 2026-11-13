@@ -638,6 +638,34 @@ PYEOF
     grep -A1 -F 'MENU_PLACEHOLDER("Film grain"),' src/cropmarks.c | grep -qF 'MENU_PLACEHOLDER("Halation"),' || fail "Halation not right below Film grain in the XPan menu"
     grep -qF 'j->ai[c]=4096*pct*65/70*in[c]/100000;' src/xpan-halation.inc || fail "halation strength scale changed (70 % = the prototype's 1.0)"
     echo "ok: halation host test, gate, halves, buffer lock, menu position"
+    # Keep ML after format, step 1 (README "Keep ML after a Canon format"): the probe
+    # only reads (no write_block call anywhere in XPan), only through sd_device[0]
+    # (entry 1 points into ROM data), only with Debug info, at the ROM-checked
+    # dialog addresses; Canon's dialog text only from its GUI task.
+    if grep -n 'write_block(' src/xpan-m50.c; then fail "XPan calls Canon's SD sector write"; fi
+    if grep -q 'sd_device\[1\]' src/xpan-m50.c; then fail "XPan uses sd_device[1] (ROM data on the M50)"; fi
+    grep -qF '#define DIALOG_MnCardFormatBegin   (0x1AE94)' platform/M50.110/consts.h && grep -qF '#define DIALOG_MnCardFormatExecute (0x20C14)' platform/M50.110/consts.h || fail "Format dialog addresses differ from the ROM study"
+    # Step 3: ML's own keep-after-format with the M50's tested values: the dialogs at the
+    # ROM-checked addresses, line 4, DOWN (INFO is Canon's), the device sd_device[0],
+    # the C partition decode (no placeholder stub), dialog text only in Canon's Format
+    # dialog, no reboot request.
+    grep -qF '#define DIALOG_MnCardFormatBegin   (0x1AE94)' platform/M50.110/consts.h && grep -qF '#define DIALOG_MnCardFormatExecute (0x20C14)' platform/M50.110/consts.h && grep -qF '#define FORMAT_BTN       BGMT_PRESS_DOWN' platform/M50.110/consts.h && grep -qF '#define FORMAT_STR_LOC   4' platform/M50.110/consts.h || fail "M50 format dialog values differ from the tested ones"
+    grep -F 'defined(CONFIG_750D) || defined(CONFIG_M50)' -A14 src/bootflags.c | grep -qF 'dev = (struct cf_device *) sd_device[0];' || fail "M50 bootflag write not on sd_device[0]"
+    if grep -n 'fsuDecodePartitionTable' platform/M50.110/stubs.S | grep -v '^.*://'; then fail "placeholder fsuDecodePartitionTable stub is back"; fi
+    grep -qF 'void fsuDecodePartitionTable(void *part_in, struct partition_table *t)' platform/M50.110/function_overrides.c || fail "M50 partition decode missing"
+    grep -A10 -F 'static void HijackFormatDialogBox()' src/debug.c | grep -qF 'struct dialog * dialog = (struct dialog *) MEM(DIALOG_MnCardFormatBegin);' && grep -A16 -F 'static void HijackCurrentDialogBox(int string_id, char* msg)' src/debug.c | grep -qF 'NotifyBox(3000, "%s", msg);' && grep -A10 -F 'static void restart_after_format()' src/debug.c | grep -qF 'Turn the camera off and on.' || fail "M50 format restore writes into other Canon dialogs or requests a reboot"
+    if grep -q 'PROP_REBOOT\|PROP_ICU_UILOCK' platform/M50.110/property_whitelist.h; then fail "reboot / UI lock writes enabled without a check"; fi
+    grep -qF 'if (MEM(DIALOG_MnCardFormatBegin) && !strstr(msg, "error")) return;' src/debug.c || fail "M50 format: notify boxes over Canon's open Format dialog (they black it out)"
+    # M50 is_dir (README "Search handles"): a failed search keeps a Canon handle, so
+    # is_dir looks the name up in its parent's listing and never searches the path itself.
+    ID=$(sed -n '/^int is_dir(const char\* path)/,/^}/p' src/fio-ml.c)
+    grep -qF 'return m50_is_dir_fixed(fixed);' <<< "$ID" && grep -qF 'if (!m50_is_dir_fixed(p)) return 0;' src/fio-ml.c && grep -qF 'if ((file.mode & ATTR_DIRECTORY) && !strcasecmp(file.name, name)) { found = 1; break; }' src/fio-ml.c || fail "M50 is_dir searches paths that may be missing (Canon search handle leak)"
+    # Keep ML after format is ON with the M50 is_dir fix and FIO_FindFirstEx's guard (no
+    # search of a missing folder); no XPan probe or trace code is left.
+    grep -qE '^#define CONFIG_RESTORE_AFTER_FORMAT' platform/M50.110/features.h || fail "keep ML after format is off"
+    sed -n '/^struct fio_dirent \* FIO_FindFirstEx(const char \* dirname/,/^}/p' src/fio-ml.c | grep -qF 'if (!m50_is_dir_fixed(new_dirname))' || fail "M50 FIO_FindFirstEx searches folders that may be missing (Canon search handle leak)"
+    if grep -nE 'fio_dir_trace|FIO_DIR_TRACE|ml_format_restoring|m50_fmt_note|m50_fmt_poll' src/*.c src/*.h; then fail "format test code is back"; fi
+    echo "ok: keep ML after format: tested dialog values, sd_device[0], partition decode, dialog text only in Canon's Format dialog, no reboot"
     grep -A3 -F '#elif defined(CONFIG_M50)' src/property.h | grep -qF '#define DRIVE_HISPEED_CONTINUOUS 4' && grep -A4 -F '#elif defined(CONFIG_M50)' src/property.h | grep -qF '#define DRIVE_CONTINUOUS 5' || fail "M50 drive values (4, 5) missing in property.h"
     if grep -n 'XM50OPTS.BIN"\|XM50OPTS.LOG"\|m50_ctl_learn\|nopts' src/xpan-m50.c; then fail "learned settings code is back"; fi
     if grep -n "_prop_request_change(" src/xpan-m50.c | grep -vqE "PROP_ISO|PROP_SHUTTER|PROP_APERTURE|PROP_M50_LV_CFILTER|PROP_PIC_QUALITY2?,&q,4|PROP_PICTURE_STYLE,&v,lutp_ps_len|PROP_IMAGE_ASPECT_RATIO,&v,4|PROP_AE,&w,4|PROP_WB_MODE_LV,&w,4|PROP_WB_MODE_PH,&w,4|PROP_WB_KELVIN_LV,&kw,4|PROP_WB_KELVIN_PH,&kw,4|PROP_DRIVE : PROP_METERING_MODE,&w,4|extern void"; then fail "a property write outside the checked writers in xpan-m50.c"; fi

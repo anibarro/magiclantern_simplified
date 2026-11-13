@@ -4332,6 +4332,135 @@ Fix build `5968e6e94392`:
 
 Test: Debug info ON, LCD, INFO into the Canon layout and out 6 times; ML's menu open and closed twice; the HUD should come back each time.
 
+## Keep ML after a Canon format: ROM study (2026-11-13, offline, nothing built)
+
+ML's generic `CONFIG_RESTORE_AFTER_FORMAT` (src/debug.c): while Canon's Format dialog is open, copy `autoexec.bin`, `ML/` (6.4 MB on the card now) and root `.FIR` files to RAM; after Canon has formatted, write them back, write the boot flag (src/bootflags.c), restart. A button in the dialog toggles keep / remove. The EOS M and the R enable it; the M50 never did. Found in ROM0 / RAM4 (M50 1.1.0):
+
+| Piece | M50 | How it was found / checked |
+| --- | --- | --- |
+| `DIALOG_MnCardFormatBegin` | **0x1AE94** | `StartMnCardFormatBeginApp` (E0686976) stores `CreateDialogBox`'s (E054F1A4) result at [0x1AE90+4]; `StopMnCardFormatBeginApp` (E0686524) deletes the dialog and writes 0 there. |
+| `DIALOG_MnCardFormatExecute` | **0x20C14** | `StartMnCardFormatexcuteApp` (E06BFD3A, Canon's typo) stores it at [0x20C10+4]; `StopMnCardFormatexcuteApp` (E06BF712) clears it. |
+| `dialog_set_property_str` | **E05408B8** | Same pattern as the 750D port: `UpdateStroboZoomGuidance` (E08F2D94) calls it with (dialog, 5, text on the stack). Body: strlen(text)+1, then Canon's generic dialog property setter E054FE28 with type 0xB (string) and the index. `dialog_redraw` (E054F3CA) is already a stub. |
+| `sd_device` | **index 0** | RAM dump: `sd_device` (0x115B8) = {0xBC64FC, 0xE12781A4}. Entry 0 is the device (read E01232BF, write E0123649, Thumb); entry 1 points into ROM data. **ML's bootflag code uses entry 1 for the M50** (it falls to the generic `#else`): it would call into data. The M50 must join the R / 200D / 6D2 / 750D case (`sd_device[0]`). |
+| read / write signature | (dev, ?, ?, count) | Both take the device struct (they read its drive letter at +0xC4 and +0x50) and three more arguments, as the R's (dev, buf, block, count); the order of buf and block is not provable from the prologue. |
+| `fsuDecodePartitionTable` | inlined | The stub is a placeholder (0xDF00D365): calling it crashes. The R's C replacement (platform/R.180/function_overrides.c) decodes the MBR entry; the M50 can use it. The exFAT branch then matches what xpan_update_card.ps1 writes. |
+
+**Not offline:**
+* **Which string line** of Canon's dialog ML rewrites (`FORMAT_STR_LOC`, and index 4 in `HijackFormatDialogBox`): the R port marks its value "WRONG, taken from 5D3". ML's `HijackDialogBox` test writes each index's number into the dialog: one look on the camera.
+* **The toggle button** (`FORMAT_BTN`): one Canon does not use in its Format dialog (the R uses INFO; TRASH may be Canon's low-level-format toggle).
+* **Memory:** ML asks `fio_malloc` for 15 MB (`TMP_MAX_BUF_SIZE`); on the M50 that is Canon's shooting pool (`shoot_malloc`), which crashed the camera during photos (comment at FILM_TEX). In Canon's menu no photo is running, but whether Canon's format uses that pool is unknown. Smaller buffer (the ML folder's size) and a read-only test of the allocation first.
+* **Restart:** ML writes `PROP_REBOOT` with `prop_request_change`, which the M50's whitelist (empty) refuses. Either add it after checking, or skip the restart and ask for an off/on.
+
+**Test order (each step its own round, a spare card, nothing written to the card before step 3):**
+1. Read only: log the two dialog pointers while the user opens and leaves Canon's Format dialog; read sector 0 through `sd_device[0]` with (buf, block) and check 0x55AA and the partition type; run `HijackDialogBox` once to see the string indices.
+2. RAM copy only: copy the ML files to RAM and back into RAM, compare signatures; no format.
+3. The real thing on a spare card: format, restore, boot flag, off/on.
+
+**Read/write argument order, settled offline:** in the read routine E01232BE the loop advances its 2nd argument by `block size x blocks done` (`mla sl, [dev+0x30], r4, sl`) and its 3rd by the blocks done (`add r6, r4`), and counts the 4th down: **read_block(dev, buf, sector, count)**, as the R. The write routine E0123648 has the same prologue.
+
+### Step 1 build `a753e986ff2e` (2026-11-13, not camera-tested): read-only probe
+
+Debug info only (XPan > Diagnostics). Nothing is written to the card except XPan's own log; no Canon setting changes.
+* **Dialog watch:** every change of Canon's two Format dialog pointers goes to XM50.LOG ("format dialog: begin X, execute Y (menu M)").
+* **Card boot sector** (action): XPan's task reads sector 0 through `sd_device[0]` (refused unless it is a RAM struct whose read routine is a ROM Thumb address) into 12 KB of Canon's uncached DMA heap memory, then the partition's boot sector (exFAT: 24 sectors, main and backup; FAT32/16: 1). Help and log: MBR signature, partition type and start, the read results, whether the file system and both boot flags are there.
+* **Format dialog lines** (action, arms once): the next time Canon's Format dialog opens, XPan sends an ML event (`MLEV_XPAN_FORMAT_LINES`, handled in Canon's GUI task in `handle_tricky_canon_calls`) that writes each line's number (0..39) with `dialog_set_property_str` (stub E05408B8, added) and redraws; Canon refuses lines it does not have (lookup E054FB48, error 0xD), and the log lists the lines that took text. **Do not format** during this test.
+* Texts on the heap (allocated with Debug info ON): ML's fixed memory unchanged (margin 201344 bytes).
+* Build checks: no `write_block` call in XPan, `sd_device[0]` only, the dialog addresses, Debug info only, dialog text only from the GUI task; `check_m50_rom.py`: the four Start/Stop literals and first bytes, and E05408B8's body.
+
+Test: Debug info ON. 1. Diagnostics > Card boot sector: read the help (expect "MBR ok, type 7, ... file system ok, boot flags present" on the 250 GB card). 2. Diagnostics > Format dialog lines, then Canon's menu > Format card: photograph the dialog, press MENU / cancel (no format). 3. Leave Canon's menu; the card's XM50.LOG has the lines.
+
+**Camera test of `a753e986ff2e` (2026-11-13): all three work, no hang.**
+* **Card boot sector:** `sd_device[0]` 0xBC64FC, read routine E01232BF; sector 0: rc 1, signature AA55, partition type 7 (exFAT), start 2048; boot region (24 sectors): rc 24, "EXFAT", both boot flags present. The read routine returns the number of sectors read (1, 24), which is what ML's bootflag code checks (`rc != 1`).
+* **Dialog watch:** begin 0x92C380 while Canon's Format dialog is open, 0 when it closes (three opens); execute stayed 0 (no format was run).
+* **Lines that took text:** 3 4 5 8 9 10 11 15 16. From the photo: 3 the title (above the yellow line), 4 the main message (centred), 5 the line under it, the capacity bar, 8 and the two 9s the capacity texts, **15 and 16 the INFO "Low level format" check box and its label**, 10 Cancel, 11 OK.
+* So for ML: `FORMAT_STR_LOC 4` (the centred message, as on the EOS M; also the index `HijackFormatDialogBox` uses). **INFO is Canon's own low-level-format toggle in this dialog**, so the R's `FORMAT_BTN BGMT_INFO` would take it from Canon: the M50 uses DOWN, as the EOS M (the dialog's buttons are left/right, SET, INFO, MENU).
+* Still open: the 15 MB `fio_malloc` (step 2: RAM copy only, no format) and the restart (PROP_REBOOT is not in the M50's write whitelist).
+
+### Step 2 build `c953fbf21b35` (2026-11-13, not camera-tested): ML's RAM copy, checked
+
+XPan > Diagnostics (Debug info) > **Format RAM copy** (arms once): the next time Canon's Format dialog is open (begin dialog set, execute 0, Canon's menu), XPan's task does what ML's `TmpMem_Init` and `CopyMLFilesToRAM_BeforeFormat` do: `fio_malloc(15000000)` (ML's `TMP_MAX_BUF_SIZE`; on the M50 this size goes to `MEM_TEMPORARY`, Canon's shooting pool) and a 200-entry file list, then the same files in the same order (AUTOEXEC.BIN, ML/FONTS, ML/MODULES, ML/SETTINGS one level down, root .FIR, all of ML/ two levels down, root .LOG). Then each file is read again from the card in 32 KB pieces and compared with its RAM copy, and both buffers are freed. Nothing is written to the card except XPan's log, and nothing is formatted.
+* Log / help: the buffer's address and allocation time; files, MB, **files skipped for lack of room** (ML drops them silently), files that differ or cannot be read, copy and total time.
+* Step 1's probe (sector read, dialog lines) is removed: its results are above, and its code pushed ML's reserve one 16 KB step (margin 184960); without it the margin is 201344 bytes again. The dialog watch stays.
+* Build checks: the RAM test opens no file for writing, runs only with Canon's Format dialog open and not formatting, uses ML's buffer size; no `sd_device[1]` in XPan.
+
+Test: Debug info ON, Diagnostics > Format RAM copy, then Canon's menu > Format card, wait about 10 s on the dialog, cancel (**do not format**). Then take a few photos (Canon's shooting pool was used: any Err 70 or hang matters), and read the help line or XM50.LOG.
+
+**Camera test of `c953fbf21b35` (2026-11-13): the RAM copy works.** Four runs with Canon's Format dialog open (36.6, 53.7, 71.3, 100.6 s): `fio_malloc(15000000)` = 0x46110084 in 3 ms every time; 52 files, 3.2-3.3 MB, **0 skipped, 0 differ, 0 unreadable**; copy about 125 ms, with the check about 1.4 s. Photos afterwards (138-164 s) normal: no Err 70, no hang.
+* The card's ML files really are 3.4 MB (`du` says 6.9 MB because of the exFAT clusters), so ML's 15 MB buffer has plenty of room.
+* The user saw Canon's menu black the first time. In the log that menu visit is at 28.3-32.0 s (guimode 3), **before** the first Format dialog and before any RAM copy (36.6 s): not the test. It looks like the earlier "Canon's menu came up blank" symptom (README "Display on"); open.
+* Left for step 3: the format itself, the boot flag write (ML's bootflags.c with `sd_device[0]` and the R's partition decode), DOWN as the toggle, line 4 for the messages, and the restart (PROP_REBOOT not in the M50's write whitelist).
+
+### Step 3 build `92589fc035bf` (2026-11-13, not camera-tested): ML's keep-after-format on the M50
+
+ML's own `CONFIG_RESTORE_AFTER_FORMAT` (src/debug.c), now defined in the M50's features.h, with:
+* **consts.h:** `DIALOG_MnCardFormatBegin` 0x1AE94, `DIALOG_MnCardFormatExecute` 0x20C14, `FORMAT_STR_LOC` 4, `FORMAT_BTN` DOWN ("[DOWN]"; INFO is Canon's low-level toggle in this dialog).
+* **src/bootflags.c:** the M50 joins the R / 200D / 6D2 / 750D case, `sd_device[0]`. This also fixes ML's Bootflag menu item (`FEATURE_BOOTFLAG_MENU`, already on in the M50 build), which would have called into ROM data through `sd_device[1]`.
+* **Partition decode:** the placeholder stub (0xDF00D365) is gone; `platform/M50.110/function_overrides.c` has `fsuDecodePartitionTable` in C, reading the MBR entry byte by byte (offset 446 is not 4-byte aligned).
+* **src/debug.c, M50 only:** the "keep / remove ML" text goes into Canon's Format dialog through Canon's own pointer (`MEM(DIALOG_MnCardFormatBegin)`), not `gui_task_list` (layout unchecked on this body), still from Canon's GUI task. Progress ("Reading...", "Restoring...", "Writing bootflags...") goes to ML's notify box instead of the current Canon dialog (ML's debug task; after the format the current dialog is Canon's menu). No reboot request (PROP_REBOOT is not whitelisted): "Magic Lantern restored. Turn the camera off and on."
+* `gui_uilock` does nothing on the M50 (PROP_ICU_UILOCK not whitelisted, refused at once), so Canon's buttons are not locked during the copy; it takes about 0.13 s (step 2).
+* Step 2's RAM test code is removed (the dialog watch stays, Debug info). ML's memory unchanged (margin 201344 bytes).
+* Build checks: the tested dialog values, `sd_device[0]`, no placeholder stub, the C decode, dialog text only in Canon's Format dialog, no reboot / UI lock whitelisted.
+
+Test (a card whose photos you do not need; the format erases it): Canon's menu > Format card. The dialog should say "Format card, keep ML [DOWN]" (DOWN: "remove ML"); OK. After Canon's format, the notify boxes, then "Turn the camera off and on". Off/on: ML should start. Then on the PC the card script's boot check (or EOScard) shows whether the boot flags are right.
+
+**Camera test of `92589fc035bf` (2026-11-13): it works.** The card was formatted in Canon's menu with "keep ML", ML restored itself and started after an off/on; on the PC the card script found the exFAT boot markers and boot checksum right (written by ML's `bootflag_write_bootblock` through `sd_device[0]`). One fault: opening the Format dialog showed a black screen with ML's notify box on top ("Reading ..." while copying), black after it went away until a button press. ML's notify box erases its area through ML's layer, which takes Canon's dialog with it until Canon redraws.
+
+**Build `57687f1f491d`** (not camera-tested): on the M50 no notify box while Canon's Format dialog is open (the dialog itself says "keep / remove ML"); error messages and the messages after the format stay. Build check for it.
+
+**Found on the PC after that test: five root "ML" directories.** `dir P:\` lists `ML` five times (created within one second, 19:34:27-28 camera time); Windows shows only the first (cropmks, data, doc, FONTS, LOGS, MODULES, scripts, SETTINGS, XPAN, README). exFAT never allows two entries with one name: the file system is inconsistent. DCIM was empty (freshly formatted), so no photos were at risk. Root `log000.log` is Canon's own log (XPan's automatic dumpf when Live View does not come back after Canon's menu, 19:35: the black Format screen).
+* **Likely cause (not proven):** ML's restore creates each file with `FIO_CreateFile` -> `_FIO_CreateFileEx` -> `_FIO_CreateDir_recursive`, which asks `is_dir()` for every parent; `is_dir` is `FIO_FindFirstEx(path)` succeeding. On exFAT an empty directory has no "." / ".." entries, and ML passes the path without a trailing "/" ("B:/ML"), so on the M50 `is_dir` may answer "missing" for a directory that exists, and Canon's `_FIO_CreateDirectory` then adds a second entry with the same name instead of refusing. On the FAT32 cards of the other bodies that use this code, "." and ".." make the check work.
+* **Feature OFF again** (`// #define CONFIG_RESTORE_AFTER_FORMAT`, build `cc6fbf76e525`, on the card): a Canon format now removes ML, as before.
+* Next, read only: log what `FIO_FindFirstEx` answers on the M50 for an existing directory with and without the trailing "/", for an empty one, and what `_FIO_CreateDirectory` returns for a name that exists; then a fix in `_FIO_CreateDir_recursive` (an existence check that works on exFAT), and the format test again on a spare card.
+* The card: repair it by formatting it on the PC or in the camera (ML is removed with this build), then the card script and EOScard for the boot flags.
+
+**Folder probe build `d56760d94889`** (2026-11-13, not camera-tested): XPan > Diagnostics (Debug info) > **Folder check probe**. Logs to XM50.LOG what `FIO_FindFirstEx` answers for `B:/ML`, `B:/ML/`, `B:/ML/LOGS`, `B:/ML/LOGS/` (error, or the first entry), `is_dir` with and without "/", Canon's size call on a folder, and how many root entries are named "ML" (5 expected on the damaged card). Then it creates one new empty folder `ML/LOGS/XEnnnnn` (a unique name, checked absent first: it cannot become a duplicate) and asks the same questions about it, plus whether the parent's listing finds it. Keep-ML-after-format stays OFF (build check). Run it once **before** reformatting the card: the duplicates are part of what it measures.
+
+**Camera test of `d56760d94889` (2026-11-13): the folder checks work in normal use.** `FindFirstEx` succeeds for `B:/ML`, `B:/ML/`, `B:/ML/LOGS`, `B:/ML/LOGS/` (mode 0x10 / 0x20 entries); `is_dir` is 1 with and without "/"; a new empty folder (`CreateDirectory` = 0) is found too (`FindFirstEx` ok with an empty first entry, `is_dir` 1 / 1, listed once); Canon's size call returns 262144 for any folder (one cluster), so it cannot tell folders apart. The root has **5 entries named ML** (the camera sees the duplicates too). So neither the empty exFAT folder nor the missing "/" is the cause.
+* **New lead:** camera-time stamps of the root after the restore: DCIM and MISC 19:34:27 (Canon creates them right after its format), ML 19:34:27, four more ML 19:34:28. ML's restore starts the moment Canon's "executing" dialog closes, while Canon is still setting the new card up; for about a second ML's `is_dir("B:/ML")` right after its own create most likely still answered "missing", so each new first-level folder (FONTS, MODULES, SETTINGS, ...) made ML create "ML" again. Not proven.
+* Next: log ML's restore itself on the next format (each `_FIO_CreateDirectory` with its path and time, the `is_dir` answers before it, whether DCIM and MISC exist yet), then a fix that waits for Canon's own state after the format (its folders in place) rather than a fixed time.
+
+**Logged format test build `33312bc0ca31`** (2026-11-13, not camera-tested; keep-ML-after-format ON for this test only, build check: only with the trace):
+* `src/fio-ml.c` (M50 only): `fio_dir_trace`, a hook XPan sets with Debug info ON; `_FIO_CreateDir_recursive` reports each `is_dir` answer (the path and each parent) and each `_FIO_CreateDirectory` result, `_FIO_CreateFileEx` each first create that failed. NULL otherwise: no change in behaviour.
+* XPan logs each with the calling task's name and whether `B:/DCIM` exists yet (Canon's own folder after a format), in a 96-line heap ring with the Format dialog watch.
+* Second lead, from planning this: ML's restore is not the only writer right after a format. XPan's task writes XM50.LOG and saves ML's settings every 2 s; both create missing `ML/...` folders through the same check-then-create code, so two tasks at once could give the duplicates. The task names in the trace will tell.
+* ML's restore writes back the old XM50.LOG from RAM, so XPan's log writer waits while `ml_format_restoring` (set by debug.c around `CopyMLFilesBack_AfterFormat`) and then writes the whole trace.
+* Memory: the folder probe is removed and a few new log strings are shorter; `_bss_start` is exactly on its 16 KB boundary (0x124000), margin 201344 bytes.
+
+Test: Debug info ON; Canon's menu > Format card with "keep ML"; after "Turn the camera off and on", wait until it goes away (about 10 s, while XPan writes its log), then off/on, and the card to the PC.
+
+**Camera test of `33312bc0ca31` (2026-11-13): 12 root "ML" folders; the trace shows why.**
+* **One task only:** every folder check and creation came from ML's `debug_task` (the restore); no XPan writes, no race.
+* **Not too early:** Canon's DCIM was visible when the restore started (DCIM 1).
+* **What fails:** the restore made FONTS, MODULES, SETTINGS, cropmks, data (each: file create failed, `is_dir(B:/ML/x)` 0, `is_dir(B:/ML)` 1, `mkdir` 0). Right after `mkdir B:/ML/scripts`, **every `FindFirstEx` fails, even for DCIM** (DCIM 1 -> 0, line 529 of XM50.LOG) and stays failed; from then on `is_dir(B:/ML)` is 0 and every new folder makes ML create "ML" again (scripts, scripts/lib, XPAN, XPAN/LUTS, ...). `mkdir` returns 0 every time, also for the duplicates. The visible ML has 33 files.
+* **So:** after some number of calls Canon's directory search stops working altogether: a resource that runs out. The first run (no trace) failed later, with 5 duplicates; this one makes about twice the searches (the trace checks DCIM on each line) and failed sooner with 12, which fits a fixed pool. Candidates: `FIO_FindClose` (E05483DA, "CloseEnt") not releasing the search handle, or Canon's `FindFirstEntry` keeping a handle when it fails (ML's `is_dir` does not close after a failure; the restore asks about many missing folders).
+* Next, read only, on a working card: repeat `is_dir` of an existing folder, then of a missing one, a few hundred times each, and log the call number where `FindFirstEx` first fails and whether DCIM is still found after each series. That says which call leaks.
+
+**Search leak probe build `3d5d04c2510a`** (2026-11-13, not camera-tested): keep-ML-after-format OFF again. XPan > Diagnostics (Debug info) > **Search leak probe**, read only: (A) search `B:/DCIM` and close it, up to 300 times; (B) search a missing folder `B:/XNONE` (an error, not closed, as ML's `is_dir` does), up to 300 times, checking every 10th call that DCIM is still found. Logs the call where searching first fails. Build check: the probe creates, writes and removes nothing. `ml_format_restoring` now lives outside the (off) feature. Margin 201344 bytes, `_bss_start` 0x123A00.
+
+**Camera test of `3d5d04c2510a` (2026-11-13): failed searches leak.** (A) search + close of DCIM: never failed in 300 calls. (B) search of a missing folder: **DCIM lost after 110 calls**. Every failed `FIO_FindFirstEx` on the M50 keeps one of Canon's search handles, and there is nothing to close (the call returns an error, not a handle); after about 100 of them no search works until a restart. ML's `is_dir` answers "missing" by a failed search, and the restore asks about many folders that do not exist yet: that used the pool up, and from then on `is_dir` said "missing" for everything and ML created "ML" again and again.
+* **Fix to build (M50):** `is_dir` that never searches a path that may be missing: list the parent folder (it exists: the root, or a folder already found the same way) and look for the name; every search succeeds and is closed. Then the format test again.
+* Other searches of possibly missing folders also cost a handle each on the M50: XPan's LUT scan (xpan-m50.c, `FIO_FindFirstEx(path)`), the cube list (xpan-native-cube.c), the cropmarks list (cropmarks.c). They run at start or on a refresh, so a missing folder costs a few handles per boot, not a hundred; worth the same treatment later.
+* The card (12 root "ML" folders): format it **in the camera** (Canon's own layout; with this build ML is simply removed), then on the PC the card script (it copies ML and stops at "boot markers missing") and EOScard for the boot flags.
+
+**Fix build `f50ef0122795`** (2026-11-13, not camera-tested; on the 250 GB card):
+* `src/fio-ml.c`, M50 only: `is_dir` no longer searches the path itself. It fixes the path up, then looks the last name up in its parent's listing (`m50_dir_has`, directories only, case-insensitive); a parent other than the root is checked the same way first, so only folders already known to exist are ever searched, and each search is closed. Host-tested with a fake listing (root, missing parent, nested, trailing "/", case).
+* Keep-ML-after-format ON again for the format test, with the folder trace (task names; the trace's own DCIM check is gone, it was a failed search too). XPan's log still waits for `ml_format_restoring`.
+* Memory: the leak probe and the Format dialog watch are removed (both done; the dialog addresses are in consts.h and check_m50_rom.py); margin 201344 bytes, `_bss_start` 0x124000 (on the boundary: the next code may push ML's reserve one 16 KB step).
+* Build check: the M50 `is_dir` only lists parents.
+
+Test: this card (with its 12 "ML" folders) is fine for it, the format erases it. Debug info ON, Canon's menu > Format card, "keep ML", OK; wait for "Turn the camera off and on" to go away; off/on; card to the PC: the root should have one "ML", and the card script checks files and boot flags.
+
+**Camera test of `f50ef0122795` (2026-11-13): works.** Format with "keep ML": one root "ML", 43 files, ML starts after off/on, the card script finds the files and the exFAT boot flags right. The trace shows each folder created once (FONTS, MODULES, SETTINGS, cropmks, data, scripts, scripts/lib, XPAN, XPAN/LUTS ...), `is_dir(B:/ML)` 1 throughout.
+
+### Build `dd1cc8193c52` (2026-11-13): keep ML after format final, test code removed, every folder search protected
+
+* **Keep ML after format ON** (features.h), as tested: dialogs 0x1AE94 / 0x20C14, line 4, DOWN, `sd_device[0]`, the C partition decode, notify boxes only outside Canon's Format dialog, off/on instead of a reboot.
+* **`FIO_FindFirstEx` (src/fio-ml.c), M50:** checks the folder with the leak-free `is_dir` first and answers "missing" itself (`PTR_INVALID`), so Canon never searches a missing folder. This covers every caller that may search one: the beep / sound list (beep.c), config (config.c), Eye-Fi (tweaks-eyefi.c), the cropmarks list (cropmarks.c), XPan's LUT list (xpan-m50.c), ML's restore. Each search now first lists the parents (all present, all closed); a few extra searches, no leak.
+* **Removed (format test code):** the folder trace (`fio_dir_trace` in fio-ml.c), `ml_format_restoring` (debug.c), XPan's format log ring, its notes and log-writer part (xpan-m50.c). fio-ml.c is back to the committed version plus the M50 `is_dir` and the `FIO_FindFirstEx` check.
+* **Debug info OFF now stops** the OSD send hook's per-task counts and event log and the AF box hook's caller counts (the parts the fixes use, `osd_stale` and the touch correction, keep running). The exposure / lens property handlers already logged only with Debug info.
+* Not checked: whether Canon's other calls on a missing **file** (size, open) leak too; XPan opens only files it found in a listing, and ML's `is_file` asks for a size.
+* Build checks: keep-ML ON, the `FIO_FindFirstEx` guard, no test code back. Margin 201344 bytes, `_bss_start` 0x123E40.
+
 ## Next phases
 
 See [HANDOFF-XPAN-M50.md](HANDOFF-XPAN-M50.md), "Open / next".

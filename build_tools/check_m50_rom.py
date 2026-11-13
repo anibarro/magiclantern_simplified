@@ -276,6 +276,30 @@ def main():
     if rvs_ok:
         print("ROM check: refreshVrmsSurface E0528540 (winsys_sem, XimrExe, DISP_SetUpdateOSDVram) as expected")
     ok = ok and rvs_ok
+
+    # Keep ML after a Canon format, step 1 (README-XPAN-M50.md "Keep ML after a
+    # Canon format"): Canon's Format dialogs at 0x1AE94 / 0x20C14 (the literal
+    # each Start/Stop function uses: Begin start 0x1AE98-8, Begin stop
+    # 0x1AE90, Execute start and stop 0x20C10; the dialog at +4), the four
+    # functions' first bytes, and dialog_set_property_str E05408B8 (strlen+1,
+    # then E054FE28 with type 0xB).
+    fmt = {
+        0xE0686AF4: "98ae0100", 0xE0686644: "90ae0100",
+        0xE06BFFEC: "100c0200", 0xE06BFAE4: "100c0200",
+        0xE0686976: "2de9fc4106460321822077a2", 0xE0686524: "10b50321822078a2f1f650fd",
+        0xE06BFD3A: "2de9fe438046002503218220", 0xE06BF712: "10b503218220f3a2b8f659fc",
+        0xE05408B8: "f8b506460d461446104636f003fe401c0b212246009583b230460ff0a9faf8bd",
+    }
+    fmt_ok = True
+    for addr, hexbytes in fmt.items():
+        want = bytes.fromhex(hexbytes)
+        got = rom[addr - ROM0_BASE: addr - ROM0_BASE + len(want)]
+        if got != want:
+            print("ROM check: ERROR format dialog code at %08X differs (%s)" % (addr, got.hex()))
+            fmt_ok = False
+    if fmt_ok:
+        print("ROM check: Format dialogs 0x1AE94 / 0x20C14 and dialog_set_property_str E05408B8 as expected")
+    ok = ok and fmt_ok
     return 0 if ok else 1
 
 

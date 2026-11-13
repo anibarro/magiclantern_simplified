@@ -171,6 +171,7 @@ THUMB_FN(0xe0577c2c,  take_semaphore_now)
 DATA_PTR(    0xfb38,  gui_task_list)                        // based on R. Ref to "CtrlMan: Use RecursiveLock"
 THUMB_FN(0xe0519d94,  SetGUIRequestMode)                    // by debug message
 THUMB_FN(0xe004f032,  gui_main_task)                        // task_create("GuiMainTask"...
+THUMB_FN(0xe05408b8,  dialog_set_property_str)              // (dialog, index, text): strlen+1, then E054FE28 with type 0xB; as 750D: called from "UpdateStroboZoomGuidance" with a text buffer (README "Keep ML after a Canon format")
 THUMB_FN(0xe054f3ca,  dialog_redraw)                        // via xrefs to "pDialog->pSignature == pcSignature"
 THUMB_FN(0xe037719e,  gui_massive_event_loop)               // various "GUICMD_"* strings
 THUMB_FN(0xe004efcc,  gui_enqueue_message)                  // via string "warning! QueueLength=" and "GUI::GUI.c" in one function
@@ -269,4 +270,4 @@ DATA_PTR(   0x139b8,  LiveViewApp_dialog)                   // in StartLiveViewA
  * STUFF BELOW IS WRONG!
  **/
 
-THUMB_FN(0xdf00d365,  fsuDecodePartitionTable)             // inlined like in EOS R. See R180 function_overrides.c for WIP alternative
+// fsuDecodePartitionTable: inlined in Canon's code (as on the R); ML's C version is in function_overrides.c.

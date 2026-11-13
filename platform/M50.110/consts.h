@@ -194,3 +194,15 @@ extern int winsys_bmp_dirty_bit_neg;
 
 //address of XimrContext structure to redraw in FEATURE_VRAM_RGBA
 #define XIMR_CONTEXT 0x9329C
+
+/* Keep ML after a Canon format (README-XPAN-M50.md "Keep ML after a Canon
+ * format"): Canon's Format dialogs, from the ROM study (Start/Stop
+ * MnCardFormatBeginApp / MnCardFormatexcuteApp store and clear them;
+ * check_m50_rom.py) and camera-tested (a753e986ff2e). Line 4 is the dialog's
+ * centred message; INFO is Canon's own low-level-format toggle there, so ML
+ * toggles keep / remove with DOWN, as on the EOS M. */
+#define DIALOG_MnCardFormatBegin   (0x1AE94)
+#define DIALOG_MnCardFormatExecute (0x20C14)
+#define FORMAT_BTN       BGMT_PRESS_DOWN
+#define FORMAT_BTN_NAME  "[DOWN]"
+#define FORMAT_STR_LOC   4

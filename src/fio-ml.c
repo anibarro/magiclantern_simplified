@@ -415,6 +415,9 @@ int FIO_RemoveFile(const char * filename)
 }
 
 struct fio_dirent * _FIO_FindFirstEx(const char * dirname, struct fio_file * file);
+#ifdef CONFIG_M50
+static int m50_is_dir_fixed(const char *path);   /* below, with is_dir */
+#endif
 struct fio_dirent * FIO_FindFirstEx(const char * dirname, struct fio_file * file)
 {
     char new_dirname[FIO_MAX_PATH_LENGTH];
@@ -424,6 +427,16 @@ struct fio_dirent * FIO_FindFirstEx(const char * dirname, struct fio_file * file
     }
 
     fixup_filename(new_dirname, dirname, sizeof(new_dirname));
+#ifdef CONFIG_M50
+    /* M50: a failed search keeps one of Canon's search handles (README-XPAN-M50.md
+     * "Search handles"), so a folder that is not there is answered here, without
+     * asking Canon to search it (the beep / config / Eye-Fi / cropmarks / XPan
+     * LUT lists all search folders that may be missing). */
+    if (!m50_is_dir_fixed(new_dirname))
+    {
+        return PTR_INVALID;
+    }
+#endif
     return _FIO_FindFirstEx(new_dirname, file);
 }
 
@@ -776,8 +789,58 @@ int is_file(const char* path)
     return !FIO_GetFileSize(path, &file_size);
 }
 
+#ifdef CONFIG_M50
+/* M50 (README-XPAN-M50.md "Search handles"): every failed FindFirstEx keeps
+ * one of Canon's search handles, with nothing to close; after about 100,
+ * no search works until a restart (camera test 3d5d04c2510a: DCIM lost
+ * after 110 failed searches; search + close of an existing folder never
+ * fails). ML's restore after a format asked about many missing folders this
+ * way and then created "ML" twelve times. So on the M50 a folder is looked
+ * up by name in its parent's listing, and only folders already known to
+ * exist are searched: every search succeeds and is closed. */
+static int m50_dir_has(const char *parent, const char *name)
+{
+    struct fio_file file;
+    struct fio_dirent * d = _FIO_FindFirstEx(parent, &file);
+    if (IS_ERROR(d)) return 0;   /* not expected: the parent was found */
+    int found = 0;
+    do {
+        if ((file.mode & ATTR_DIRECTORY) && !strcasecmp(file.name, name)) { found = 1; break; }
+    } while (FIO_FindNextEx(d, &file) == 0);
+    FIO_FindClose(d);
+    return found;
+}
+/* path: a full "B:/..." path (fixup_filename done). */
+static int m50_is_dir_fixed(const char *path)
+{
+    char p[FIO_MAX_PATH_LENGTH];
+    snprintf(p, sizeof(p), "%s", path);
+    int n = strlen(p);
+    while (n > 3 && p[n-1] == '/') p[--n] = '\0';   /* "B:/ML/" -> "B:/ML" */
+    if (n <= 3) return 1;                           /* "B:" or "B:/": the card's root */
+    int s = n - 1;
+    while (s > 2 && p[s] != '/') s--;               /* last "/" of the path */
+    if (p[s] != '/' || s < 2) return 0;
+    char leaf[FIO_MAX_PATH_LENGTH];
+    snprintf(leaf, sizeof(leaf), "%s", p + s + 1);
+    if (s > 2)                                      /* not in the root: its parent must exist first */
+    {
+        p[s] = '\0';                                /* "B:/ML/LOGS" -> "B:/ML" */
+        if (!m50_is_dir_fixed(p)) return 0;
+    }
+    p[s] = '/'; p[s+1] = '\0';                      /* the parent, with its "/" */
+    return m50_dir_has(p, leaf);
+}
+#endif
+
 int is_dir(const char* path)
 {
+#ifdef CONFIG_M50
+    char fixed[FIO_MAX_PATH_LENGTH];
+    if (path == NULL) return 0;
+    fixup_filename(fixed, path, sizeof(fixed));
+    return m50_is_dir_fixed(fixed);
+#endif
     struct fio_file file;
     struct fio_dirent * dirent = FIO_FindFirstEx( path, &file );
     if( IS_ERROR(dirent) )

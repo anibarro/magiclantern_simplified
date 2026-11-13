@@ -54,3 +54,7 @@
 #undef CONFIG_AUTOBACKUP_ROM
 
 #undef CONFIG_PROP_REQUEST_CHANGE
+
+/* Keep ML after a Canon format (src/debug.c; README-XPAN-M50.md "Keep ML after
+ * a Canon format"): camera-tested (f50ef0122795) with the M50 is_dir fix. */
+#define CONFIG_RESTORE_AFTER_FORMAT
